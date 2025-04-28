@@ -1,5 +1,5 @@
 document.addEventListener('DOMContentLoaded', () => {
-    const scriptInput = document.getElementById('scriptInput');
+    const scriptInputTextArea = document.getElementById('scriptInput');
     const runButton = document.getElementById('runButton');
     const incrementCounterButton = document.getElementById('incrementCounterButton');
     const canvas = document.getElementById('displayCanvas');
@@ -16,6 +16,16 @@ document.addEventListener('DOMContentLoaded', () => {
         WIDTH: canvas.width,
         HEIGHT: canvas.height,
     };
+
+    // Initialize CodeMirror
+    const codeMirrorEditor = CodeMirror.fromTextArea(scriptInputTextArea, {
+        lineNumbers: true,
+        mode: null, // No specific mode for MicroPatterns yet
+        theme: "neat", // Use a theme
+        indentUnit: 4,
+        tabSize: 4,
+        lineWrapping: true,
+    });
 
     function getEnvironmentVariables() {
         return {
@@ -51,7 +61,7 @@ document.addEventListener('DOMContentLoaded', () => {
         clearDisplay();
         updateDefinedAssetsUI({ patterns: {}, icons: {} }); // Clear assets UI initially
 
-        const scriptText = scriptInput.value;
+        const scriptText = codeMirrorEditor.getValue(); // Get text from CodeMirror
         const environment = getEnvironmentVariables();
         const parser = new MicroPatternsParser();
         let parseResult;
