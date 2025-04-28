@@ -18,6 +18,7 @@ For the full MicroPatterns language specification and project details, please se
 
 *   The emulator uses the HTML Canvas 2D API for rendering.
 *   It simulates integer math where specified by the DSL (e.g., rotation, division in `LET`, coordinate calculations).
+*   **Case-Insensitive:** Following the DSL spec v1.0 update, keywords, parameter names, variable names, pattern names, icon names, and environment variable names are treated case-insensitively by the parser and runtime. They are typically converted to uppercase internally for consistent handling.
 *   Rotation uses pre-calculated sine/cosine tables scaled for integer operations, mimicking a potential target environment.
 *   Pattern filling for rotated rectangles is currently simplified/approximated and might not perfectly match a hardware implementation.
 *   The parser (`parser.js`) and runtime (`runtime.js`) handle script execution and basic error checking/reporting.
