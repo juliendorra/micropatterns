@@ -76,6 +76,15 @@
             font-family: monospace;
             font-size: 12px;
         }
+        /* Basic Syntax Highlighting Styles (complementing the theme) */
+        .cm-keyword { color: #708; } /* Magenta */
+        .cm-variable-2 { color: #05a; } /* Blue for env vars */
+        .cm-variable-3 { color: #085; } /* Teal for user vars */
+        .cm-number { color: #164; } /* Dark blue/green */
+        .cm-string { color: #a11; } /* Red */
+        .cm-comment { color: #a80; } /* Orange/brown */
+        .cm-operator { color: #c0c; } /* Purple */
+        .cm-property { color: #30a; } /* Dark blue for param names */
     </style>
 </head>
 
@@ -146,8 +155,8 @@ FILL_RECT X=10 Y=180 WIDTH=30 HEIGHT=$bar_height
 
     <!-- CodeMirror JS -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.15/codemirror.min.js"></script>
-    <!-- Optional: Add modes if needed, e.g., for syntax highlighting -->
-    <!-- <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.15/mode/javascript/javascript.min.js"></script> -->
+    <!-- MicroPatterns Mode for CodeMirror -->
+    <script src="micropatterns-mode.js"></script>
 
     <script src="drawing.js"></script>
     <script src="parser.js"></script>

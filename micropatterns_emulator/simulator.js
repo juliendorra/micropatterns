@@ -20,7 +20,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // Initialize CodeMirror
     const codeMirrorEditor = CodeMirror.fromTextArea(scriptInputTextArea, {
         lineNumbers: true,
-        mode: null, // No specific mode for MicroPatterns yet
+        mode: "micropatterns", // Use the custom MicroPatterns mode
         theme: "neat", // Use a theme
         indentUnit: 4,
         tabSize: 4,
