@@ -1,20 +1,17 @@
 class MicroPatternsRuntime {
     constructor(ctx, assets, environment, errorCallback) {
         this.ctx = ctx;
-        this.assets = assets; // { patterns: {...}, icons: {...} }
+        this.assets = assets; // { patterns: {UPPER_NAME: data}, icons: {UPPER_NAME: data} }
         this.environment = environment; // { HOUR, MINUTE, SECOND, COUNTER, WIDTH, HEIGHT }
         this.errorCallback = errorCallback || console.error;
         this.drawing = new MicroPatternsDrawing(ctx); // Drawing primitives instance
-
-        // Precompute sin/cos tables (scaled by 256 for integer math) - Moved to drawing.js
-        // this.sinTable = this.drawing.sinTable;
-        // this.cosTable = this.drawing.cosTable;
 
         this.resetState();
     }
 
     resetState() {
-        this.variables = {}; // User-defined variables { name: value }
+        // User variables stored with UPPERCASE names as keys
+        this.variables = {}; // { $UPPER_VAR_NAME: value }
         this.state = {
             color: 'black', // 'black' or 'white'
             pattern: null, // null (solid) or pattern object from assets
@@ -47,92 +44,116 @@ class MicroPatternsRuntime {
     }
 
      // Centralized value resolver
-     _resolveValue(valueSource, currentEnv) {
+     // Expects valueSource to be number or variable reference string (e.g., "$MYVAR" - already uppercase from parser)
+     // lineNumber is crucial for accurate error reporting.
+     _resolveValue(valueSource, currentEnv, lineNumber) {
          if (typeof valueSource === 'number') {
              return valueSource; // It's an integer literal
          }
-         if (typeof valueSource === 'string') {
-             if (valueSource.startsWith('$')) {
-                 const varName = valueSource.substring(1);
-                 // Check environment variables first (including $INDEX from currentEnv)
-                 if (varName === 'HOUR') return currentEnv.HOUR;
-                 if (varName === 'MINUTE') return currentEnv.MINUTE;
-                 if (varName === 'SECOND') return currentEnv.SECOND;
-                 if (varName === 'COUNTER') return currentEnv.COUNTER;
-                 if (varName === 'WIDTH') return currentEnv.WIDTH;
-                 if (varName === 'HEIGHT') return currentEnv.HEIGHT;
-                 if (varName === 'INDEX' && currentEnv.INDEX !== undefined) return currentEnv.INDEX;
+          if (typeof valueSource === 'string' && valueSource.startsWith('$')) {
+              // Variable name expected to be uppercase from parser ($VARNAME)
+              const varNameUpper = valueSource; // Already includes '$'
 
-                 // Check user variables
-                 if (this.variables.hasOwnProperty(varName)) {
-                     return this.variables[varName];
-                 } else {
-                     // This should have been caught by parser, but defensive check
-                     throw this.runtimeError(`Undefined variable: ${valueSource}`);
-                 }
-             } else {
-                 // It's likely a string literal (e.g., pattern name, color name)
-                 // The parser should have handled validation/normalization
-                 return valueSource;
-             }
-         }
-         // Should not happen with valid parsing
-         throw this.runtimeError(`Invalid value type encountered: ${typeof valueSource}`);
+              // Check environment variables first (using uppercase names)
+              if (varNameUpper === '$HOUR') return currentEnv.HOUR;
+              if (varNameUpper === '$MINUTE') return currentEnv.MINUTE;
+              if (varNameUpper === '$SECOND') return currentEnv.SECOND;
+              if (varNameUpper === '$COUNTER') return currentEnv.COUNTER;
+              if (varNameUpper === '$WIDTH') return currentEnv.WIDTH;
+              if (varNameUpper === '$HEIGHT') return currentEnv.HEIGHT;
+              if (varNameUpper === '$INDEX' && currentEnv.INDEX !== undefined) return currentEnv.INDEX;
+
+              // Check user variables (using uppercase names)
+              if (this.variables.hasOwnProperty(varNameUpper)) {
+                  return this.variables[varNameUpper];
+              } else {
+                  // This should have been caught by parser, but defensive check
+                  throw this.runtimeError(`Undefined variable: ${valueSource}`, lineNumber);
+              }
+          } else {
+              // Handle cases where valueSource is not number or variable string
+              // (e.g. keywords like SOLID passed incorrectly, or just invalid type)
+              throw this.runtimeError(`Cannot resolve value: Expected number or variable ($VAR), got ${valueSource} (type: ${typeof valueSource})`, lineNumber);
+          }
      }
 
      executeCommand(command, loopIndex = null) {
          // Make $INDEX available if we are in a loop
          const currentEnv = { ...this.environment };
          if (loopIndex !== null) {
+             // Store $INDEX as uppercase key consistent with other env vars
              currentEnv.INDEX = loopIndex;
          }
 
          // Helper to resolve all parameters in a command using the central resolver
-         const resolveParams = (params) => {
+         // Parameter values can be numbers or variable references ($VARNAME - uppercase)
+         // Skips resolving specific keys like NAME for COLOR/PATTERN.
+         const resolveParams = (params, commandType, lineNumber) => {
              const resolved = {};
+             const skipResolveKeys = (commandType === 'COLOR' || commandType === 'PATTERN' || commandType === 'ICON') ? ['NAME'] : [];
+
              for (const key in params) {
-                 // Resolve each parameter value using the current environment context
-                 resolved[key] = this._resolveValue(params[key], currentEnv);
+                 if (skipResolveKeys.includes(key)) {
+                     // Pass the original parsed value (keyword or identifier string) directly
+                     resolved[key] = params[key];
+                 } else {
+                     // Resolve other parameter values using the current environment context
+                     // Pass the uppercase variable reference (e.g., $MYVAR) or number directly
+                     resolved[key] = this._resolveValue(params[key], currentEnv, lineNumber);
+                 }
              }
              return resolved;
          };
 
         try {
-            // Resolve parameters ONLY if the command has them
-            const p = command.params ? resolveParams(command.params) : {};
+            // Resolve parameters ONLY if the command has them and is not VAR/LET/IF/REPEAT
+            // These special commands handle their own value resolution/parsing logic
+            // COLOR, PATTERN, ICON are now handled by resolveParams skipping NAME
+            let p = {};
+            const standardParamCommands = ['PIXEL', 'LINE', 'RECT', 'FILL_RECT', 'CIRCLE', 'FILL_CIRCLE', 'ICON', 'TRANSLATE', 'ROTATE', 'SCALE', 'COLOR', 'PATTERN', 'RESET_TRANSFORMS']; // Added COLOR, PATTERN, ICON here
+            if (command.params && standardParamCommands.includes(command.type)) {
+                 // Pass command type and line number for context and error reporting
+                 p = resolveParams(command.params, command.type, command.line);
+            }
+
 
             switch (command.type) {
                 case 'NOOP': // For commands handled at parse time like DEFINE
                     break;
+                 case 'VAR':
+                     // Declaration handled by parser, initialize variable here
+                     // command.varName is already uppercase from parser (e.g., "MYVAR")
+                     // Store variable reference with '$' prefix and uppercase name
+                     this.variables['$' + command.varName] = 0;
+                     break;
 
-                case 'VAR':
-                    // Declaration handled by parser, initialize variable here
-                    this.variables[command.varName] = 0;
-                    break;
+                 case 'LET':
+                     // Target variable was validated by parser
+                     // command.targetVar is already uppercase from parser (e.g., "MYVAR")
+                     // command.expression contains tokens with uppercase variable names (e.g., {type:'var', value:'$OTHERVAR'})
+                     const value = this.evaluateExpression(command.expression, currentEnv, command.line);
+                     // Assign to uppercase variable reference ('$' prefix)
+                     this.variables['$' + command.targetVar] = value;
+                     break;
 
-                case 'LET':
-                    // Target variable was validated by parser
-                    const value = this.evaluateExpression(command.expression, currentEnv);
-                    this.variables[command.targetVar] = value;
-                    break;
+                 case 'COLOR':
+                     // p.NAME was passed directly by resolveParams, it's 'BLACK' or 'WHITE' (uppercase)
+                     this.state.color = p.NAME.toLowerCase(); // Store as lowercase 'black'/'white' for canvas
+                     break;
 
-                case 'COLOR':
-                    this.state.color = p.NAME.toLowerCase(); // Already validated/normalized by parser
-                    break;
-
-                case 'PATTERN':
-                    if (p.NAME === 'SOLID') {
-                        this.state.pattern = null;
-                    } else {
-                        const patternName = p.NAME; // Already resolved & unquoted by parser
-                        if (!this.assets.patterns[patternName]) {
-                            // Should ideally not happen if parser validates against defined assets,
-                            // but good runtime check.
-                            throw this.runtimeError(`Pattern "${patternName}" not defined.`);
-                        }
-                        this.state.pattern = this.assets.patterns[patternName];
-                    }
-                    break;
+                 case 'PATTERN':
+                     // p.NAME was passed directly by resolveParams, it's 'SOLID' or an uppercase pattern name
+                     if (p.NAME === 'SOLID') {
+                         this.state.pattern = null;
+                     } else {
+                         const patternNameUpper = p.NAME; // Already uppercase from parser
+                         if (!this.assets.patterns[patternNameUpper]) {
+                             // Use command.line for error reporting
+                             throw this.runtimeError(`Pattern "${patternNameUpper}" not defined (check definition).`, command.line);
+                         }
+                         this.state.pattern = this.assets.patterns[patternNameUpper];
+                     }
+                     break;
 
                 case 'RESET_TRANSFORMS':
                     this.state.translateX = 0;
@@ -142,23 +163,24 @@ class MicroPatternsRuntime {
                     break;
 
                 case 'TRANSLATE':
+                    // p.DX, p.DY are resolved numbers
                     this.state.translateX += p.DX;
                     this.state.translateY += p.DY;
                     break;
 
                 case 'ROTATE':
-                    // Ensure degrees are within 0-359
+                    // p.DEGREES is resolved number
                     let degrees = p.DEGREES % 360;
                     if (degrees < 0) degrees += 360;
                     this.state.rotation = degrees;
                     break;
 
                 case 'SCALE':
-                     // Factor >= 1 validated by parser
+                    // p.FACTOR is resolved number >= 1
                     this.state.scale = p.FACTOR;
                     break;
 
-                // --- Drawing Commands ---
+                // --- Drawing Commands (use resolved parameters p) ---
                 case 'PIXEL':
                     this.drawing.drawPixel(p.X, p.Y, this.state);
                     break;
@@ -177,38 +199,44 @@ class MicroPatternsRuntime {
                 case 'FILL_CIRCLE':
                     this.drawing.fillCircle(p.X, p.Y, p.RADIUS, this.state);
                     break;
-                case 'ICON':
-                    const iconName = p.NAME; // Already resolved & unquoted by parser
-                    const iconData = this.assets.icons[iconName];
-                    if (!iconData) {
-                        throw this.runtimeError(`Icon "${iconName}" not defined.`);
-                    }
-                    this.drawing.drawIcon(p.X, p.Y, iconData, this.state);
-                    break;
+                 case 'ICON':
+                     // p.NAME was passed directly by resolveParams (unquoted, uppercased identifier)
+                     const iconNameUpper = p.NAME;
+                     const iconData = this.assets.icons[iconNameUpper];
+                     if (!iconData) {
+                         // Use command.line for error reporting
+                         throw this.runtimeError(`Icon "${iconNameUpper}" not defined (check definition).`, command.line);
+                     }
+                     // p.X, p.Y are resolved numbers
+                     this.drawing.drawIcon(p.X, p.Y, iconData, this.state);
+                     break;
 
                 // --- Control Flow ---
                 case 'REPEAT':
-                    // Resolve count using current environment (in case $INDEX is used inside count)
-                    const count = this._resolveValue(command.count, currentEnv);
+                    // Resolve count using current environment and command line number
+                    // command.count is number or uppercase variable reference ($VAR) from parser
+                    const count = this._resolveValue(command.count, currentEnv, command.line);
                     if (!Number.isInteger(count) || count < 0) {
-                         throw this.runtimeError(`REPEAT COUNT must resolve to a non-negative integer. Got: ${count}`);
+                         // Use command.line for error reporting
+                         throw this.runtimeError(`REPEAT COUNT must resolve to a non-negative integer. Got: ${count}`, command.line);
                     }
                     for (let i = 0; i < count; i++) {
-                        // Execute nested commands, passing the loop index
+                        // Execute nested commands, passing the loop index 'i'
                         for (const nestedCmd of command.commands) {
-                            // Pass index 'i' to nested command execution
                             this.executeCommand(nestedCmd, i);
                         }
                     }
                     break;
 
                 case 'IF':
-                    const conditionMet = this.evaluateCondition(command.condition, currentEnv);
+                    // command.condition has uppercase variable references ($VAR) from parser
+                    // Pass command line number for condition evaluation errors
+                    const conditionMet = this.evaluateCondition(command.condition, currentEnv, command.line);
                     const blockToExecute = conditionMet ? command.thenCommands : command.elseCommands;
 
                     if (blockToExecute) {
                         for (const nestedCmd of blockToExecute) {
-                            // Pass loop index if any
+                            // Pass loop index if any (relevant if IF is inside REPEAT)
                             this.executeCommand(nestedCmd, loopIndex);
                         }
                     }
@@ -216,48 +244,70 @@ class MicroPatternsRuntime {
 
                 default:
                     // Should be caught by parser
-                    throw this.runtimeError(`Unsupported command type encountered: ${command.type}`);
+                    throw this.runtimeError(`Unsupported command type encountered: ${command.type}`, command.line);
             }
         } catch (e) {
              // If it's already a runtime error, add line number and rethrow
              // Otherwise, wrap it in a runtime error with the current command's line number
              if (e.isRuntimeError) {
-                 throw e; // Already has line number info
+                 // Ensure line number is present if possible
+                 if (!e.lineNumber && command && command.line) {
+                     throw this.runtimeError(e.message.replace(/^Runtime Error(\s*\(Line \d+\))?:\s*/, ''), command.line);
+                 }
+                 throw e; // Already has line number info or couldn't add it
              } else {
+                  // Add line number from the command that caused the unexpected error
                   throw this.runtimeError(e.message, command.line);
              }
         }
     }
 
      // Evaluate parsed expression tokens
-     evaluateExpression(tokens, currentEnv) {
+     // Tokens have type 'num', 'op', or 'var' with value being number, operator string, or uppercase variable reference ($VARNAME)
+     // lineNumber is for error reporting during value resolution.
+     evaluateExpression(tokens, currentEnv, lineNumber) {
          // Resolve values first using the centralized resolver
          const resolvedTokens = tokens.map(token => {
              if (token.type === 'num') return token.value;
-             if (token.type === 'var') return this._resolveValue(token.value, currentEnv);
+             if (token.type === 'var') {
+                 // token.value is uppercase variable reference like $MYVAR
+                 // Pass lineNumber for error reporting if variable is undefined
+                 return this._resolveValue(token.value, currentEnv, lineNumber);
+             }
              if (token.type === 'op') return token.value; // Keep operators as is
-             throw this.runtimeError(`Invalid token type in expression: ${token.type}`);
+             throw this.runtimeError(`Invalid token type in expression: ${token.type}`, lineNumber);
          });
 
-         // Separate values and operators
-         let values = resolvedTokens.filter(t => typeof t === 'number');
-         let ops = resolvedTokens.filter(t => typeof t === 'string'); // Operators
+         // Basic Shunting-yard / Operator Precedence Logic (Simplified for limited operators)
+         // We only have +, -, *, /, % with standard precedence. No parentheses.
 
          // Helper for applying an operation
          const applyOp = (val1, op, val2) => {
+             // Ensure operands are numbers before operation
+             if (typeof val1 !== 'number' || typeof val2 !== 'number') {
+                 throw this.runtimeError(`Cannot perform operation '${op}' on non-numeric values: ${val1}, ${val2}`, lineNumber);
+             }
              switch (op) {
                  case '+': return val1 + val2;
                  case '-': return val1 - val2;
                  case '*': return val1 * val2;
                  case '/':
-                     if (val2 === 0) throw this.runtimeError(`Division by zero.`);
+                     if (val2 === 0) throw this.runtimeError(`Division by zero.`, lineNumber);
                      return Math.trunc(val1 / val2); // Integer division
                  case '%':
-                     if (val2 === 0) throw this.runtimeError(`Modulo by zero.`);
+                     if (val2 === 0) throw this.runtimeError(`Modulo by zero.`, lineNumber);
+                     // Ensure operands are integers for modulo, as JS % handles floats differently
+                     if (!Number.isInteger(val1) || !Number.isInteger(val2)) {
+                         throw this.runtimeError(`Modulo requires integer operands. Got: ${val1}, ${val2}`, lineNumber);
+                     }
                      return val1 % val2;
-                 default: throw this.runtimeError(`Unknown operator in expression: ${op}`);
+                 default: throw this.runtimeError(`Unknown operator in expression: ${op}`, lineNumber);
              }
          };
+
+         // Create copies for manipulation
+         let values = resolvedTokens.filter(t => typeof t === 'number');
+         let ops = resolvedTokens.filter(t => typeof t === 'string'); // Operators
 
          // Phase 1: Multiplication, Division, Modulo (left-to-right)
          let i = 0;
@@ -266,8 +316,10 @@ class MicroPatternsRuntime {
                  values[i] = applyOp(values[i], ops[i], values[i + 1]);
                  values.splice(i + 1, 1); // Remove right operand value
                  ops.splice(i, 1); // Remove operator
+                 // Do not increment i, as the current index now holds the result
+                 // and the next operator is now at index i.
              } else {
-                 i++; // Move to next operator
+                 i++; // Move to next operator only if it wasn't high precedence
              }
          }
 
@@ -280,56 +332,76 @@ class MicroPatternsRuntime {
          }
 
          if (values.length !== 1) {
-             // Should not happen if parsing was correct
-             throw this.runtimeError(`Expression evaluation failed. Remaining values: ${values.length}`);
+             // Should not happen if parsing was correct and evaluation logic is sound
+             throw this.runtimeError(`Expression evaluation failed. Remaining values: ${values.length}`, lineNumber);
          }
-         return values[0]; // Final result
+         // Final result must be a number
+         if (typeof values[0] !== 'number') {
+              throw this.runtimeError(`Expression evaluation did not result in a number. Result: ${values[0]}`, lineNumber);
+         }
+         return values[0];
      }
 
 
      // Evaluate parsed condition object
-     evaluateCondition(condition, currentEnv) {
+     // Condition object has uppercase variable references ($VARNAME) from parser
+     // lineNumber is for error reporting during value resolution.
+     evaluateCondition(condition, currentEnv, lineNumber) {
          let leftVal, rightVal;
 
          // Resolve values using the central resolver
-         const resolve = (val) => this._resolveValue(val, currentEnv);
+         // Pass the uppercase variable reference (e.g., $MYVAR) or number directly
+         // Pass lineNumber for error reporting
+         const resolve = (val) => this._resolveValue(val, currentEnv, lineNumber);
 
-         if (condition.type === 'modulo') {
-             const varValue = resolve(condition.leftVar);
-             const literal = condition.literal; // Literal is already a number from parser
-             const rightRaw = resolve(condition.right);
+         try {
+             if (condition.type === 'modulo') {
+                 // leftVar is uppercase variable reference $VARNAME
+                 const varValue = resolve(condition.leftVar);
+                 const literal = condition.literal; // Literal is already a number from parser
+                 // right is number or uppercase variable reference $VARNAME
+                 const rightRaw = resolve(condition.right);
 
-             if (!Number.isInteger(varValue)) throw this.runtimeError(`Left side of modulo must be an integer. Got: ${varValue}`);
-             if (!Number.isInteger(rightRaw)) throw this.runtimeError(`Right side of modulo comparison must be an integer. Got: ${rightRaw}`);
-             if (literal === 0) throw this.runtimeError(`Modulo by zero in condition.`);
+                 if (!Number.isInteger(varValue)) throw this.runtimeError(`Left side of modulo ($VAR) must resolve to an integer. Got: ${varValue}`, lineNumber);
+                 if (!Number.isInteger(rightRaw)) throw this.runtimeError(`Right side of modulo comparison must resolve to an integer. Got: ${rightRaw}`, lineNumber);
+                 if (!Number.isInteger(literal) || literal === 0) throw this.runtimeError(`Modulo literal must be a non-zero integer. Got: ${literal}`, lineNumber);
 
-             leftVal = varValue % literal;
-             rightVal = rightRaw;
-         } else { // standard condition
-             leftVal = resolve(condition.left);
-             rightVal = resolve(condition.right);
+                 leftVal = varValue % literal;
+                 rightVal = rightRaw;
+             } else { // standard condition
+                 // left/right are number or uppercase variable reference $VARNAME
+                 leftVal = resolve(condition.left);
+                 rightVal = resolve(condition.right);
 
-             // Ensure both sides resolved to numbers for comparison
-             if (typeof leftVal !== 'number' || typeof rightVal !== 'number') {
-                  throw this.runtimeError(`Cannot compare non-numeric values in condition: ${leftVal} vs ${rightVal}`);
+                 // Ensure both sides resolved to numbers for comparison
+                 if (typeof leftVal !== 'number' || typeof rightVal !== 'number') {
+                      throw this.runtimeError(`Cannot compare non-numeric values in condition: ${leftVal} (type ${typeof leftVal}) vs ${rightVal} (type ${typeof rightVal})`, lineNumber);
+                 }
              }
-         }
 
-         switch (condition.operator) {
-             case '==': return leftVal === rightVal;
-             case '!=': return leftVal !== rightVal;
-             case '>': return leftVal > rightVal;
-             case '<': return leftVal < rightVal;
-             case '>=': return leftVal >= rightVal;
-             case '<=': return leftVal <= rightVal;
-             default: throw this.runtimeError(`Unknown operator in condition: ${condition.operator}`);
+             switch (condition.operator) {
+                 case '==': return leftVal === rightVal;
+                 case '!=': return leftVal !== rightVal;
+                 case '>': return leftVal > rightVal;
+                 case '<': return leftVal < rightVal;
+                 case '>=': return leftVal >= rightVal;
+                 case '<=': return leftVal <= rightVal;
+                 default: throw this.runtimeError(`Unknown operator in condition: ${condition.operator}`, lineNumber);
+             }
+         } catch (e) {
+             // Re-throw errors caught during resolution or comparison, ensuring line number
+             if (e.isRuntimeError) {
+                 throw e; // Already has line number
+             } else {
+                 throw this.runtimeError(`Error evaluating condition: ${e.message}`, lineNumber);
+             }
          }
      }
 
      // Helper to create runtime errors with line numbers
      runtimeError(message, lineNumber) {
-         // Ensure lineNumber is attached if available
-         const lineInfo = lineNumber ? ` (Line ${lineNumber})` : '';
+         // Ensure lineNumber is attached if available and valid
+         const lineInfo = (typeof lineNumber === 'number' && lineNumber > 0) ? ` (Line ${lineNumber})` : '';
          const error = new Error(`Runtime Error${lineInfo}: ${message}`);
          error.lineNumber = lineNumber;
          error.isRuntimeError = true; // Mark as runtime error
