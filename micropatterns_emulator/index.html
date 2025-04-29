@@ -139,13 +139,33 @@ FILL_RECT X=10 Y=180 WIDTH=30 HEIGHT=$bar_height
         <canvas id="displayCanvas" width="200" height="200"></canvas>
 
         <div class="controls-group">
-            <h3>Environment Variables</h3>
-            <label>Hour (0-23): <input type="number" id="envHour" value="10" min="0" max="23"></label>
-            <label>Minute (0-59): <input type="number" id="envMinute" value="30" min="0" max="59"></label>
-            <label>Second (0-59): <input type="number" id="envSecond" value="45" min="0" max="59"></label>
-            <label>Counter: <input type="number" id="envCounter" value="0" min="0"></label>
-            <button id="incrementCounterButton">Increment Counter</button>
-            <p style="font-size: 0.8em;">Width: 200, Height: 200</p>
+            <h3>Environment</h3>
+            <!-- Hour Row -->
+            <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 5px;">
+                <label for="envHour" style="min-width: 60px; font-weight: bold;">Hour:</label>
+                <span id="realTimeHourSpan" style="font-family: monospace; background-color: #eee; padding: 2px 4px; border-radius: 3px; min-width: 25px; text-align: right;">--</span>
+                <input type="number" id="envHour" placeholder="Ovr" title="Override Hour (0-23)" min="0" max="23" style="width: 45px;">
+            </div>
+            <!-- Minute Row -->
+            <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 5px;">
+                <label for="envMinute" style="min-width: 60px; font-weight: bold;">Minute:</label>
+                <span id="realTimeMinuteSpan" style="font-family: monospace; background-color: #eee; padding: 2px 4px; border-radius: 3px; min-width: 25px; text-align: right;">--</span>
+                <input type="number" id="envMinute" placeholder="Ovr" title="Override Minute (0-59)" min="0" max="59" style="width: 45px;">
+            </div>
+            <!-- Second Row -->
+            <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 5px;">
+                <label for="envSecond" style="min-width: 60px; font-weight: bold;">Second:</label>
+                <span id="realTimeSecondSpan" style="font-family: monospace; background-color: #eee; padding: 2px 4px; border-radius: 3px; min-width: 25px; text-align: right;">--</span>
+                <input type="number" id="envSecond" placeholder="Ovr" title="Override Second (0-59)" min="0" max="59" style="width: 45px;">
+            </div>
+            <!-- Counter Row -->
+            <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 5px;">
+                 <label for="envCounter" style="min-width: 60px; font-weight: bold;">Counter:</label>
+                 <input type="number" id="envCounter" value="0" min="0" style="width: 60px;">
+                 <button id="incrementCounterButton" title="Increment Counter" style="padding: 2px 8px;">+</button>
+            </div>
+            <!-- Static Info -->
+            <p style="font-size: 0.8em; margin-top: 10px; margin-bottom: 0; color: #555;">Display: 200x200</p>
         </div>
 
         <div class="controls-group">

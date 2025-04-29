@@ -7,6 +7,11 @@ document.addEventListener('DOMContentLoaded', () => {
     const errorLog = document.getElementById('errorLog');
     const definedPatternsDiv = document.getElementById('definedPatterns');
     const definedIconsDiv = document.getElementById('definedIcons');
+    // Individual real-time display spans
+    const realTimeHourSpan = document.getElementById('realTimeHourSpan');
+    const realTimeMinuteSpan = document.getElementById('realTimeMinuteSpan');
+    const realTimeSecondSpan = document.getElementById('realTimeSecondSpan');
+
 
     const env = {
         HOUR: document.getElementById('envHour'),
@@ -147,12 +152,47 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     // --- End Autocompletion Logic ---
 
+    // --- Real-Time Display ---
+    function updateRealTimeDisplay() {
+        const now = new Date();
+        const hours = String(now.getHours()).padStart(2, '0');
+        const minutes = String(now.getMinutes()).padStart(2, '0');
+        const seconds = String(now.getSeconds()).padStart(2, '0');
+
+        // Update individual spans if they exist
+        if (realTimeHourSpan) realTimeHourSpan.textContent = hours;
+        if (realTimeMinuteSpan) realTimeMinuteSpan.textContent = minutes;
+        if (realTimeSecondSpan) realTimeSecondSpan.textContent = seconds;
+    }
+
+    // Update time display immediately and then every second
+    updateRealTimeDisplay();
+    setInterval(updateRealTimeDisplay, 1000);
+    // --- End Real-Time Display ---
+
 
     function getEnvironmentVariables() {
+        const now = new Date();
+        const currentHour = now.getHours();
+        const currentMinute = now.getMinutes();
+        const currentSecond = now.getSeconds();
+
+        // Use override value if input is not empty, otherwise use real-time
+        const hourOverride = env.HOUR.value.trim();
+        const minuteOverride = env.MINUTE.value.trim();
+        const secondOverride = env.SECOND.value.trim();
+
+        const hour = hourOverride !== '' ? (parseInt(hourOverride, 10) || 0) : currentHour;
+        const minute = minuteOverride !== '' ? (parseInt(minuteOverride, 10) || 0) : currentMinute;
+        const second = secondOverride !== '' ? (parseInt(secondOverride, 10) || 0) : currentSecond;
+
+        // Clamp values to valid ranges just in case
+        const clamp = (val, min, max) => Math.max(min, Math.min(max, val));
+
         return {
-            HOUR: parseInt(env.HOUR.value, 10) || 0,
-            MINUTE: parseInt(env.MINUTE.value, 10) || 0,
-            SECOND: parseInt(env.SECOND.value, 10) || 0,
+            HOUR: clamp(hour, 0, 23),
+            MINUTE: clamp(minute, 0, 59),
+            SECOND: clamp(second, 0, 59),
             COUNTER: parseInt(env.COUNTER.value, 10) || 0,
             WIDTH: env.WIDTH,
             HEIGHT: env.HEIGHT,
