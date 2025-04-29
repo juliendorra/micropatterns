@@ -310,12 +310,23 @@ class MicroPatternsParser {
                 const name = nameRaw.toUpperCase(); // Use uppercase for storage/lookup key
                 const width = this._validateInteger(dp.WIDTH, 'WIDTH', 1, 20);
                 const height = this._validateInteger(dp.HEIGHT, 'HEIGHT', 1, 20);
-                const dataStr = this._validateString(dp.DATA, 'DATA'); // Get unquoted data string
+                let dataStr = this._validateString(dp.DATA, 'DATA'); // Get unquoted data string
+                const expectedLength = width * height;
 
-                if (dataStr.length !== width * height) {
-                    throw new ParseError(`DATA length (${dataStr.length}) does not match WIDTH*HEIGHT (${width * height}) for "${nameRaw}"`, command.line);
+                if (dataStr.length !== expectedLength) {
+                    const mismatchType = dataStr.length < expectedLength ? 'short' : 'long';
+                    const actionTaken = mismatchType === 'short' ? 'padded with 0s' : 'truncated';
+                    console.warn(`Parser Warning (Line ${command.line}): DATA length (${dataStr.length}) for ${command.subType} "${nameRaw}" does not match WIDTH*HEIGHT (${expectedLength}). Data will be ${actionTaken}.`);
+
+                    if (mismatchType === 'short') {
+                        dataStr = dataStr.padEnd(expectedLength, '0'); // Pad with '0' (white)
+                    } else { // long
+                        dataStr = dataStr.substring(0, expectedLength); // Truncate
+                    }
                 }
+
                 if (!/^[01]+$/.test(dataStr)) {
+                     // Still error if data contains invalid characters after potential padding/truncation
                      throw new ParseError(`DATA string must contain only '0' or '1' for "${nameRaw}"`, command.line);
                 }
 
@@ -326,7 +337,7 @@ class MicroPatternsParser {
                     originalName: nameRaw, // Original case for display
                     width,
                     height,
-                    data: dataStr.split('').map(Number)
+                    data: dataStr.split('').map(Number) // Use the potentially adjusted dataStr
                 };
 
                 if (command.subType === 'PATTERN') {
