@@ -10,6 +10,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const realTimeHourSpan = document.getElementById('realTimeHourSpan');
     const realTimeMinuteSpan = document.getElementById('realTimeMinuteSpan');
     const realTimeSecondSpan = document.getElementById('realTimeSecondSpan');
+    const lineWrapToggle = document.getElementById('lineWrapToggle'); // Get the checkbox
 
 
     const env = {
@@ -28,13 +29,25 @@ document.addEventListener('DOMContentLoaded', () => {
         theme: "neat", // Use a theme
         indentUnit: 4,
         tabSize: 4,
-        lineWrapping: true,
+        lineWrapping: true, // Start with line wrapping enabled
         extraKeys: { "Tab": "autocomplete" },
         // Use the custom hint function for MicroPatterns specific suggestions
         hintOptions: { hint: micropatternsHint }
     });
 
     console.log("CodeMirror editor initialized:", codeMirrorEditor); // Check if editor object exists
+
+    // --- Line Wrap Toggle Logic ---
+    if (lineWrapToggle && codeMirrorEditor) {
+        // Set initial state from checkbox (should be checked/true)
+        codeMirrorEditor.setOption('lineWrapping', lineWrapToggle.checked);
+
+        // Add listener to update editor when checkbox changes
+        lineWrapToggle.addEventListener('change', () => {
+            codeMirrorEditor.setOption('lineWrapping', lineWrapToggle.checked);
+        });
+    }
+    // --- End Line Wrap Toggle Logic ---
 
     // --- Autocompletion Logic ---
 

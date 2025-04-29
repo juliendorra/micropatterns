@@ -75,10 +75,17 @@
         /* Style CodeMirror editor */
         .CodeMirror {
             border: 1px solid #ccc;
-            height: 400px;
             /* Match original textarea height */
+            height: 60vh;
+            /* Explicitly set width like original textarea */
+            width: 60vw;
             font-family: monospace;
             font-size: 12px;
+            /* Ensure wrapping breaks anywhere needed, including mid-word */
+            /* Legacy */
+            word-wrap: break-word;
+            /* Standard */
+            overflow-wrap: break-word;
         }
 
         /* Basic Syntax Highlighting Styles (complementing the theme) */
@@ -149,7 +156,8 @@
         #assetPreviews canvas.drop-target-active {
             outline: 2px dashed blue;
             outline-offset: -2px;
-            background-color: #e0e0ff; /* Light blue background */
+            background-color: #e0e0ff;
+            /* Light blue background */
         }
     </style>
 </head>
@@ -157,6 +165,10 @@
 <body>
     <div class="column">
         <h2>MicroPatterns Script</h2>
+        <div style="margin-bottom: 5px; font-size: 0.9em;">
+            <input type="checkbox" id="lineWrapToggle" checked>
+            <label for="lineWrapToggle">Wrap Lines</label>
+        </div>
         <textarea id="scriptInput" spellcheck="false">
 # Welcome to MicroPatterns!
 # Display is 200x200
