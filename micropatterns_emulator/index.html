@@ -39,7 +39,7 @@
         }
 
         label {
-            display: block;
+            /* display: block; Removed to allow inline alignment */
             margin-bottom: 5px;
         }
 
@@ -165,9 +165,10 @@
 <body>
     <div class="column">
         <h2>MicroPatterns Script</h2>
-        <div style="margin-bottom: 5px; font-size: 0.9em;">
-            <input type="checkbox" id="lineWrapToggle" checked>
-            <label for="lineWrapToggle">Wrap Lines</label>
+        <!-- Container for the toggle and label -->
+        <div style="display: flex; align-items: center; gap: 5px; margin-bottom: 5px; font-size: 0.9em;">
+            <input type="checkbox" id="lineWrapToggle" checked style="margin: 0;"> <!-- Remove default margin -->
+            <label for="lineWrapToggle" style="margin: 0;">Wrap Lines</label> <!-- Remove default margin -->
         </div>
         <textarea id="scriptInput" spellcheck="false">
 # Welcome to MicroPatterns!
