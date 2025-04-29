@@ -182,6 +182,7 @@ DEFINE PATTERN NAME="smile" WIDTH=8 HEIGHT=8 DATA="01111110100000011010010110000
 VAR center_x
 VAR center_y
 VAR bar_height
+VAR secondplusone
 VAR rotation
 VAR size
 
@@ -198,11 +199,15 @@ LET center_y = $HEIGHT / 2
 
 # Use declared variables
 TRANSLATE DX=$center_x DY=$center_y
+
 # Expressions are only supported in assignements
-LET rotation = 350 * 59 / $SECOND
+LET secondplusone = 1 + $SECOND
+LET rotation = 350 * 59 / $secondplusone
 ROTATE DEGREES=$rotation
-LET size = $COUNTER % 20
+
+LET size = 1 + $COUNTER % 20
 SCALE FACTOR=$size
+
 # Center the 8x8 pattern using DRAW
 DRAW NAME="smile" X=-4 Y=-4
 
@@ -211,6 +216,7 @@ COLOR NAME=BLACK
 LET bar_height = $COUNTER % 50 + 10
 # Use declared variable
 FILL_RECT X=10 Y=180 WIDTH=30 HEIGHT=$bar_height 
+                    
         </textarea>
         <button id="runButton">Run Script</button>
         <div id="errorLog"></div>
