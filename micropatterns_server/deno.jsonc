@@ -1,0 +1,17 @@
+{
+  "tasks": {
+    "dev": "deno run --watch --allow-net --allow-read --allow-write --allow-env main.ts  & deno task mock-s3",
+    "start": "deno run --allow-net --allow-read --allow-env main.ts",
+    "mock-s3": "deno run --allow-net --allow-read --allow-write ./dev/mock-s3-server.ts"
+  },
+
+  "imports": {
+    "dotenv": "https://deno.land/x/dotenv@v3.2.2/load.ts",
+    "s3_lite_client": "https://deno.land/x/s3_lite_client@0.6.2/mod.ts",
+    "std/": "https://deno.land/std@0.218.2/"
+  },
+  
+  "compilerOptions": {
+    "lib": ["deno.window", "dom"]
+  }
+}

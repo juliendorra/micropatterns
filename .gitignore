@@ -1,1 +1,15 @@
 .vscode/settings.json
+micropatterns_server/.env
+
+# Ignore everything in the local-s3-storage directory
+micropatterns_server/local-s3-storage/*
+
+# Don't ignore the scripts directory itself (but its contents will still be ignored)
+!micropatterns_server/local-s3-storage/scripts/
+# Ignore all files within the scripts directory
+micropatterns_server/local-s3-storage/scripts/*
+# But specifically allow this one file
+!micropatterns_server/local-s3-storage/scripts/welcome-script.json
+
+# Allow this specific file in the root of local-s3-storage
+!micropatterns_server/local-s3-storage/scripts.json

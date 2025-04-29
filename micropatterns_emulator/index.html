@@ -267,6 +267,30 @@ FILL_RECT X=10 Y=180 WIDTH=30 HEIGHT=$bar_height
                 <p style="color: #777; font-style: italic;">No patterns defined or script not run yet.</p>
             </div>
         </div>
+
+        <!-- Script Management Section -->
+        <div class="controls-group">
+            <h3>Script Management</h3>
+            <div style="display: flex; flex-direction: column; gap: 8px;">
+                <div>
+                    <label for="scriptList" style="margin-right: 5px;">Load Script:</label>
+                    <select id="scriptList" style="min-width: 150px;">
+                        <option value="">-- Select Script --</option>
+                        <!-- Options will be populated by JS -->
+                    </select>
+                    <button id="loadScriptButton" style="margin-left: 5px;">Load</button>
+                </div>
+                <div>
+                    <label for="scriptName" style="margin-right: 5px;">Script Name:</label>
+                    <input type="text" id="scriptName" placeholder="Enter script name..." style="min-width: 150px;">
+                    <button id="saveScriptButton" style="margin-left: 5px;">Save</button>
+                    <button id="newScriptButton" style="margin-left: 5px;">New</button>
+                </div>
+                <p id="scriptMgmtStatus" style="font-size: 0.8em; margin: 5px 0 0 0; min-height: 1.2em;"></p> <!-- Status messages -->
+            </div>
+        </div>
+        <!-- End Script Management Section -->
+
     </div>
 
     <!-- CodeMirror JS -->

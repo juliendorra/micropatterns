@@ -12,6 +12,20 @@ document.addEventListener('DOMContentLoaded', () => {
     const realTimeSecondSpan = document.getElementById('realTimeSecondSpan');
     const lineWrapToggle = document.getElementById('lineWrapToggle'); // Get the checkbox
 
+    // Script Management UI
+    const scriptListSelect = document.getElementById('scriptList');
+    const loadScriptButton = document.getElementById('loadScriptButton');
+    const scriptNameInput = document.getElementById('scriptName');
+    const saveScriptButton = document.getElementById('saveScriptButton');
+    const newScriptButton = document.getElementById('newScriptButton');
+    const scriptMgmtStatus = document.getElementById('scriptMgmtStatus');
+
+    // --- Configuration ---
+    // Assume server runs on localhost:8000 during development
+    // TODO: Make this configurable or detect environment
+    const API_BASE_URL = 'http://localhost:8000';
+    // --- End Configuration ---
+
 
     const env = {
         HOUR: document.getElementById('envHour'),
@@ -591,6 +605,168 @@ document.addEventListener('DOMContentLoaded', () => {
     // --- End Asset Preview ---
 
 
+    // --- End Asset Preview ---
+
+    // --- Script Management Logic ---
+
+    function setStatusMessage(message, isError = false) {
+        if (scriptMgmtStatus) {
+            scriptMgmtStatus.textContent = message;
+            scriptMgmtStatus.style.color = isError ? 'red' : 'green';
+            // Clear message after a delay
+            setTimeout(() => {
+                if (scriptMgmtStatus.textContent === message) { // Avoid clearing newer messages
+                    scriptMgmtStatus.textContent = '';
+                }
+            }, isError ? 5000 : 3000);
+        }
+        if (isError) {
+            console.error("Script Mgmt Error:", message);
+        } else {
+            console.log("Script Mgmt Status:", message);
+        }
+    }
+
+    async function fetchScriptList() {
+        console.log("Fetching script list...");
+        setStatusMessage("Loading script list...");
+        try {
+            const response = await fetch(`${API_BASE_URL}/api/scripts`);
+            if (!response.ok) {
+                throw new Error(`Failed to fetch script list: ${response.status} ${response.statusText}`);
+            }
+            const scripts = await response.json();
+
+            // Clear existing options (except the default)
+            scriptListSelect.options.length = 1;
+
+            // Populate dropdown
+            scripts.forEach(script => {
+                const option = document.createElement('option');
+                option.value = script.id;
+                option.textContent = script.name;
+                scriptListSelect.appendChild(option);
+            });
+            setStatusMessage("Script list loaded.", false);
+            console.log("Script list loaded:", scripts);
+
+        } catch (error) {
+            setStatusMessage(`Error loading script list: ${error.message}`, true);
+        }
+    }
+
+    async function loadScript(scriptId) {
+        if (!scriptId) {
+            setStatusMessage("Please select a script to load.", true);
+            return;
+        }
+        console.log(`Loading script: ${scriptId}`);
+        setStatusMessage(`Loading script '${scriptId}'...`);
+        try {
+            const response = await fetch(`${API_BASE_URL}/api/scripts/${scriptId}`);
+            if (!response.ok) {
+                 if (response.status === 404) {
+                     throw new Error(`Script '${scriptId}' not found.`);
+                 } else {
+                    throw new Error(`Failed to load script: ${response.status} ${response.statusText}`);
+                 }
+            }
+            const scriptData = await response.json();
+
+            // Update UI
+            scriptNameInput.value = scriptData.name || '';
+            codeMirrorEditor.setValue(scriptData.content || '');
+            setStatusMessage(`Script '${scriptData.name}' loaded successfully.`, false);
+            console.log("Script loaded:", scriptData);
+
+            // Optionally run the loaded script immediately
+            runScript();
+
+        } catch (error) {
+            setStatusMessage(`Error loading script: ${error.message}`, true);
+        }
+    }
+
+    async function saveScript() {
+        const scriptName = scriptNameInput.value.trim();
+        const scriptContent = codeMirrorEditor.getValue();
+
+        if (!scriptName) {
+            setStatusMessage("Please enter a name for the script before saving.", true);
+            return;
+        }
+
+        // Generate a simple ID from the name (replace with more robust generation if needed)
+        const scriptId = scriptName.toLowerCase()
+                                 .replace(/\s+/g, '-') // Replace spaces with hyphens
+                                 .replace(/[^a-z0-9-]/g, '') // Remove invalid characters
+                                 .substring(0, 50); // Limit length
+
+        if (!scriptId) {
+             setStatusMessage("Invalid script name, cannot generate ID.", true);
+             return;
+        }
+
+        console.log(`Saving script: ID=${scriptId}, Name=${scriptName}`);
+        setStatusMessage(`Saving script '${scriptName}'...`);
+
+        try {
+            const response = await fetch(`${API_BASE_URL}/api/scripts/${scriptId}`, {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    name: scriptName,
+                    content: scriptContent,
+                }),
+            });
+
+            if (!response.ok) {
+                 const errorData = await response.json().catch(() => ({ error: 'Unknown error saving script' }));
+                 throw new Error(`Failed to save script: ${response.status} ${response.statusText} - ${errorData.error || ''}`);
+            }
+
+            const result = await response.json();
+            setStatusMessage(`Script '${result.script.name}' saved successfully!`, false);
+            console.log("Script saved:", result);
+
+            // Refresh the script list to include the new/updated script
+            await fetchScriptList();
+            // Select the saved script in the dropdown
+            scriptListSelect.value = scriptId;
+
+
+        } catch (error) {
+            setStatusMessage(`Error saving script: ${error.message}`, true);
+        }
+    }
+
+    function newScript() {
+        scriptNameInput.value = '';
+        codeMirrorEditor.setValue(`# New MicroPatterns Script\n# Display is ${env.WIDTH}x${env.HEIGHT}\n\nCOLOR NAME=BLACK\nFILL NAME=SOLID\nFILL_RECT X=0 Y=0 WIDTH=$WIDTH HEIGHT=$HEIGHT\n\n`);
+        scriptListSelect.value = ''; // Deselect any loaded script
+        setStatusMessage("Cleared editor for new script.", false);
+        runScript(); // Run the blank script template
+    }
+
+    // Add Event Listeners for Script Management
+    if (loadScriptButton && scriptListSelect) {
+        loadScriptButton.addEventListener('click', () => {
+            loadScript(scriptListSelect.value);
+        });
+    }
+    if (saveScriptButton && scriptNameInput) {
+        saveScriptButton.addEventListener('click', saveScript);
+    }
+    if (newScriptButton) {
+        newScriptButton.addEventListener('click', newScript);
+    }
+
+    // --- End Script Management Logic ---
+
+
     // Run once on load
     runScript();
+    fetchScriptList(); // Fetch scripts when the page loads
 });
