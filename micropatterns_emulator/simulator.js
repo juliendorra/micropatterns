@@ -6,10 +6,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const canvas = document.getElementById('displayCanvas');
     const ctx = canvas.getContext('2d');
     const errorLog = document.getElementById('errorLog');
-    // Single div for all defined patterns
-    const definedPatternsDiv = document.getElementById('definedPatterns');
     const assetPreviewsContainer = document.getElementById('assetPreviews');
-    // Individual real-time display spans
     const realTimeHourSpan = document.getElementById('realTimeHourSpan');
     const realTimeMinuteSpan = document.getElementById('realTimeMinuteSpan');
     const realTimeSecondSpan = document.getElementById('realTimeSecondSpan');
@@ -216,17 +213,9 @@ document.addEventListener('DOMContentLoaded', () => {
         ctx.fillRect(0, 0, canvas.width, canvas.height);
     }
 
-    // Updated to handle single assets.assets dictionary and display in #definedPatterns
-    function updateDefinedAssetsUI(assets) {
-        const patternNames = Object.keys(assets.assets || {});
-        // Display all defined items under the "Patterns" label
-        definedPatternsDiv.textContent = `Patterns: ${patternNames.length > 0 ? patternNames.join(', ') : 'None'}`;
-    }
-
     function runScript() {
         errorLog.textContent = ''; // Clear previous errors
         clearDisplay();
-        updateDefinedAssetsUI({ assets: {} }); // Clear assets UI initially
 
         const scriptText = codeMirrorEditor.getValue(); // Get text from CodeMirror
         const environment = getEnvironmentVariables();
@@ -248,12 +237,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 hasErrors = true;
                 // Still update UI and render previews even with parse errors,
                 // as some assets might have been defined before the error.
-                updateDefinedAssetsUI(parseResult.assets);
                 renderAssetPreviews(parseResult.assets);
                 return;
             }
             // Update UI only if parsing was successful enough to get assets
-            updateDefinedAssetsUI(parseResult.assets);
             // Render interactive previews
             renderAssetPreviews(parseResult.assets);
         } catch (e) {
