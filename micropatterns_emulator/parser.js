@@ -15,7 +15,8 @@ class MicroPatternsParser {
     reset() {
         this.errors = [];
         this.lineNumber = 0;
-        this.assets = { patterns: {}, icons: {} };
+        // Unified asset storage - all defined items are stored here
+        this.assets = { assets: {} };
         this.variables = new Set(); // Keep track of declared VARs (stores uppercase names)
         this.commandStack = []; // For handling nested REPEAT/IF blocks
     }
@@ -78,7 +79,7 @@ class MicroPatternsParser {
 
         return {
             commands: topLevelCommands,
-            assets: this.assets,
+            assets: this.assets, // Contains assets.assets
             variables: this.variables, // Set of uppercase variable names
             errors: this.errors
         };
@@ -157,7 +158,7 @@ class MicroPatternsParser {
         if (command.type !== 'NOOP') {
              return command;
         } else {
-             return null; // Don't return NOOP commands (like DEFINE) to be added to command lists
+             return null; // Don't return NOOP commands (like DEFINE PATTERN) to be added to command lists
         }
     }
 
@@ -279,10 +280,11 @@ class MicroPatternsParser {
     // Validates command syntax, parses arguments/expressions, checks types, stores assets/variables.
     // Modifies the command object in place (e.g., adds parsed params, expression tokens, sets type to NOOP).
     _validateAndProcessCommand(command) {
+        // Commands that need special argument/syntax handling
         const specialSyntaxCommands = ['DEFINE', 'VAR', 'LET', 'REPEAT', 'IF'];
         let p = {}; // Default empty params for standard commands
 
-        // Parse arguments only for standard commands
+        // Parse arguments only for standard commands (not DEFINE, VAR, LET, REPEAT, IF)
         if (!specialSyntaxCommands.includes(command.type)) {
             try {
                 command.params = this._parseArguments(command.rawArgsString);
@@ -296,13 +298,17 @@ class MicroPatternsParser {
 
         switch (command.type) {
             case 'DEFINE':
-                const defineMatch = command.rawArgsString.match(/^(PATTERN|ICON)\s+(.*)/i);
+                // Only allow DEFINE PATTERN
+                const defineMatch = command.rawArgsString.match(/^PATTERN\s+(.*)/i);
                  if (!defineMatch) {
-                     throw new ParseError(`DEFINE must be followed by PATTERN or ICON NAME=...`, command.line);
+                     // Check if they tried DEFINE ICON and give specific error
+                     if (/^ICON\s+/i.test(command.rawArgsString)) {
+                         throw new ParseError(`DEFINE ICON is no longer supported. Use DEFINE PATTERN for all assets.`, command.line);
+                     }
+                     throw new ParseError(`DEFINE must be followed by PATTERN NAME=...`, command.line);
                  }
-                 command.subType = defineMatch[1].toUpperCase();
-                 const defineArgsString = defineMatch[2].trim();
-                 // Parse the specific args for DEFINE
+                 const defineArgsString = defineMatch[1].trim();
+                 // Parse the specific args for DEFINE PATTERN
                  const dp = this._parseArguments(defineArgsString);
 
                 this._requireParams(dp, ['NAME', 'WIDTH', 'HEIGHT', 'DATA']);
@@ -316,7 +322,7 @@ class MicroPatternsParser {
                 if (dataStr.length !== expectedLength) {
                     const mismatchType = dataStr.length < expectedLength ? 'short' : 'long';
                     const actionTaken = mismatchType === 'short' ? 'padded with 0s' : 'truncated';
-                    console.warn(`Parser Warning (Line ${command.line}): DATA length (${dataStr.length}) for ${command.subType} "${nameRaw}" does not match WIDTH*HEIGHT (${expectedLength}). Data will be ${actionTaken}.`);
+                    console.warn(`Parser Warning (Line ${command.line}): DATA length (${dataStr.length}) for PATTERN "${nameRaw}" does not match WIDTH*HEIGHT (${expectedLength}). Data will be ${actionTaken}.`);
 
                     if (mismatchType === 'short') {
                         dataStr = dataStr.padEnd(expectedLength, '0'); // Pad with '0' (white)
@@ -327,10 +333,10 @@ class MicroPatternsParser {
 
                 if (!/^[01]+$/.test(dataStr)) {
                      // Still error if data contains invalid characters after potential padding/truncation
-                     throw new ParseError(`DATA string must contain only '0' or '1' for "${nameRaw}"`, command.line);
+                     throw new ParseError(`DATA string must contain only '0' or '1' for pattern "${nameRaw}"`, command.line);
                 }
 
-                // Store asset data using uppercase name as key
+                // Store asset data using uppercase name as key in the unified storage
                 // Also store originalName for display purposes
                 const assetData = {
                     name: name, // Uppercase key for lookup
@@ -340,17 +346,12 @@ class MicroPatternsParser {
                     data: dataStr.split('').map(Number) // Use the potentially adjusted dataStr
                 };
 
-                if (command.subType === 'PATTERN') {
-                    if (Object.keys(this.assets.patterns).length >= 8) throw new ParseError(`Maximum number of patterns (8) reached.`, command.line);
-                    if (this.assets.patterns[name]) throw new ParseError(`Pattern "${nameRaw}" (or equivalent case) already defined.`, command.line);
-                    this.assets.patterns[name] = assetData;
-                } else { // ICON
-                     if (Object.keys(this.assets.icons).length >= 16) throw new ParseError(`Maximum number of icons (16) reached.`, command.line);
-                     if (this.assets.icons[name]) throw new ParseError(`Icon "${nameRaw}" (or equivalent case) already defined.`, command.line);
-                    this.assets.icons[name] = assetData;
-                }
+                // Unified asset storage and limit (e.g., 16 total)
+                if (Object.keys(this.assets.assets).length >= 16) throw new ParseError(`Maximum number of defined patterns (16) reached.`, command.line);
+                if (this.assets.assets[name]) throw new ParseError(`Pattern "${nameRaw}" (or equivalent case) already defined.`, command.line);
+                this.assets.assets[name] = assetData;
+
                 command.type = 'NOOP'; // Definition handled at parse time
-                delete command.subType;
                 break;
 
             case 'VAR':
@@ -402,16 +403,16 @@ class MicroPatternsParser {
                 p.NAME = colorName; // Normalize to uppercase keyword
                 break;
 
-            case 'PATTERN':
+            case 'FILL': // Replaces old PATTERN command
                  this._requireParams(p, ['NAME']);
-                 const patternNameValue = p.NAME; // Can be "SOLID" or "pattern_name" (quoted string or keyword)
-                 if (typeof patternNameValue === 'string' && patternNameValue.toUpperCase() === 'SOLID') {
+                 const fillNameValue = p.NAME; // Can be "SOLID" or "pattern_name" (quoted string or keyword)
+                 if (typeof fillNameValue === 'string' && fillNameValue.toUpperCase() === 'SOLID') {
                      p.NAME = 'SOLID'; // Normalize keyword
                  } else {
                      // Must be a quoted string literal for a defined pattern
-                     const unquotedName = this._validateString(patternNameValue, 'NAME'); // Returns unquoted string
+                     const unquotedName = this._validateString(fillNameValue, 'NAME'); // Returns unquoted string
                      p.NAME = unquotedName.toUpperCase(); // Store unquoted, uppercase name for runtime lookup
-                     // Runtime will check if this uppercase name exists in assets.patterns
+                     // Runtime will check if this uppercase name exists in assets.assets
                  }
                  break;
 
@@ -422,12 +423,12 @@ class MicroPatternsParser {
             case 'FILL_RECT': this._requireParams(p, ['X', 'Y', 'WIDTH', 'HEIGHT']); this._validateAllParamsAreValues(p); break;
             case 'CIRCLE': this._requireParams(p, ['X', 'Y', 'RADIUS']); this._validateAllParamsAreValues(p); break;
             case 'FILL_CIRCLE': this._requireParams(p, ['X', 'Y', 'RADIUS']); this._validateAllParamsAreValues(p); break;
-            case 'ICON':
+            case 'DRAW': // Replaces old ICON command
                 this._requireParams(p, ['NAME', 'X', 'Y']);
-                const iconNameRaw = this._validateString(p.NAME, 'NAME'); // Ensure NAME is quoted string, get unquoted
-                p.NAME = iconNameRaw.toUpperCase(); // Store unquoted, uppercase name for runtime lookup
+                const patternNameRaw = this._validateString(p.NAME, 'NAME'); // Ensure NAME is quoted string, get unquoted
+                p.NAME = patternNameRaw.toUpperCase(); // Store unquoted, uppercase name for runtime lookup
                 this._validateAllParamsAreValues(p, ['NAME']); // Validate X, Y are values
-                // Runtime will check if this uppercase name exists in assets.icons
+                // Runtime will check if this uppercase name exists in assets.assets
                 break;
 
             // --- Transform Commands (Standard Args) ---
@@ -472,7 +473,13 @@ class MicroPatternsParser {
                 break;
 
             // ENDREPEAT, ENDIF, ELSE handled earlier in _processCommand
-            case 'NOOP': break; // Already processed (e.g., DEFINE sets type to NOOP)
+            case 'NOOP': break; // Already processed (e.g., DEFINE PATTERN sets type to NOOP)
+
+            // --- Deprecated/Removed Commands ---
+            case 'PATTERN': // The old state command is now FILL
+                throw new ParseError(`Invalid command: PATTERN. Use 'FILL NAME="pattern_name"' or 'FILL NAME=SOLID' to set the fill pattern.`, command.line);
+            case 'ICON': // The old drawing command is now DRAW
+                throw new ParseError(`Invalid command: ICON. Use 'DRAW NAME="pattern_name" X=x Y=y' to draw a defined pattern.`, command.line);
 
             default:
                 // If it wasn't a special command and didn't match a standard one

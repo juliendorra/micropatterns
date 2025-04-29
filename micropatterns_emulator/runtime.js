@@ -1,7 +1,7 @@
 class MicroPatternsRuntime {
     constructor(ctx, assets, environment, errorCallback) {
         this.ctx = ctx;
-        this.assets = assets; // { patterns: {UPPER_NAME: data}, icons: {UPPER_NAME: data} }
+        this.assets = assets; // { assets: {UPPER_NAME: data} } - Unified storage
         this.environment = environment; // { HOUR, MINUTE, SECOND, COUNTER, WIDTH, HEIGHT }
         this.errorCallback = errorCallback || console.error;
         this.drawing = new MicroPatternsDrawing(ctx); // Drawing primitives instance
@@ -14,7 +14,7 @@ class MicroPatternsRuntime {
         this.variables = {}; // { $UPPER_VAR_NAME: value }
         this.state = {
             color: 'black', // 'black' or 'white'
-            pattern: null, // null (solid) or pattern object from assets
+            fillAsset: null, // null (solid) or asset object from assets.assets
             translateX: 0,
             translateY: 0,
             rotation: 0, // degrees 0-359
@@ -87,10 +87,11 @@ class MicroPatternsRuntime {
 
          // Helper to resolve all parameters in a command using the central resolver
          // Parameter values can be numbers or variable references ($VARNAME - uppercase)
-         // Skips resolving specific keys like NAME for COLOR/PATTERN.
+         // Skips resolving specific keys like NAME for COLOR/FILL/DRAW.
          const resolveParams = (params, commandType, lineNumber) => {
              const resolved = {};
-             const skipResolveKeys = (commandType === 'COLOR' || commandType === 'PATTERN' || commandType === 'ICON') ? ['NAME'] : [];
+             // Skip resolving NAME for commands that use it as an identifier/keyword
+             const skipResolveKeys = (commandType === 'COLOR' || commandType === 'FILL' || commandType === 'DRAW') ? ['NAME'] : [];
 
              for (const key in params) {
                  if (skipResolveKeys.includes(key)) {
@@ -108,9 +109,9 @@ class MicroPatternsRuntime {
         try {
             // Resolve parameters ONLY if the command has them and is not VAR/LET/IF/REPEAT
             // These special commands handle their own value resolution/parsing logic
-            // COLOR, PATTERN, ICON are now handled by resolveParams skipping NAME
+            // COLOR, FILL, DRAW are now handled by resolveParams skipping NAME
             let p = {};
-            const standardParamCommands = ['PIXEL', 'LINE', 'RECT', 'FILL_RECT', 'CIRCLE', 'FILL_CIRCLE', 'ICON', 'TRANSLATE', 'ROTATE', 'SCALE', 'COLOR', 'PATTERN', 'RESET_TRANSFORMS']; // Added COLOR, PATTERN, ICON here
+            const standardParamCommands = ['PIXEL', 'LINE', 'RECT', 'FILL_RECT', 'CIRCLE', 'FILL_CIRCLE', 'DRAW', 'TRANSLATE', 'ROTATE', 'SCALE', 'COLOR', 'FILL', 'RESET_TRANSFORMS']; // Added COLOR, FILL, DRAW here
             if (command.params && standardParamCommands.includes(command.type)) {
                  // Pass command type and line number for context and error reporting
                  p = resolveParams(command.params, command.type, command.line);
@@ -118,7 +119,7 @@ class MicroPatternsRuntime {
 
 
             switch (command.type) {
-                case 'NOOP': // For commands handled at parse time like DEFINE
+                case 'NOOP': // For commands handled at parse time like DEFINE PATTERN
                     break;
                  case 'VAR':
                      // Declaration handled by parser, initialize variable here
@@ -141,17 +142,19 @@ class MicroPatternsRuntime {
                      this.state.color = p.NAME.toLowerCase(); // Store as lowercase 'black'/'white' for canvas
                      break;
 
-                 case 'PATTERN':
+                 case 'FILL': // Replaces old PATTERN state command
                      // p.NAME was passed directly by resolveParams, it's 'SOLID' or an uppercase pattern name
                      if (p.NAME === 'SOLID') {
-                         this.state.pattern = null;
+                         this.state.fillAsset = null;
                      } else {
                          const patternNameUpper = p.NAME; // Already uppercase from parser
-                         if (!this.assets.patterns[patternNameUpper]) {
+                         // Look up in the unified assets.assets store
+                         const assetData = this.assets.assets[patternNameUpper];
+                         if (!assetData) {
                              // Use command.line for error reporting
-                             throw this.runtimeError(`Pattern "${patternNameUpper}" not defined (check definition).`, command.line);
+                             throw this.runtimeError(`Pattern "${patternNameUpper}" not defined (check DEFINE PATTERN).`, command.line);
                          }
-                         this.state.pattern = this.assets.patterns[patternNameUpper];
+                         this.state.fillAsset = assetData;
                      }
                      break;
 
@@ -191,24 +194,27 @@ class MicroPatternsRuntime {
                     this.drawing.drawRect(p.X, p.Y, p.WIDTH, p.HEIGHT, this.state);
                     break;
                 case 'FILL_RECT':
+                    // Uses state.fillAsset internally via getFillAssetPixel
                     this.drawing.fillRect(p.X, p.Y, p.WIDTH, p.HEIGHT, this.state);
                     break;
                 case 'CIRCLE':
                     this.drawing.drawCircle(p.X, p.Y, p.RADIUS, this.state);
                     break;
                 case 'FILL_CIRCLE':
+                     // Uses state.fillAsset internally via getFillAssetPixel
                     this.drawing.fillCircle(p.X, p.Y, p.RADIUS, this.state);
                     break;
-                 case 'ICON':
+                 case 'DRAW': // Replaces old ICON drawing command
                      // p.NAME was passed directly by resolveParams (unquoted, uppercased identifier)
-                     const iconNameUpper = p.NAME;
-                     const iconData = this.assets.icons[iconNameUpper];
-                     if (!iconData) {
+                     const patternNameUpper = p.NAME;
+                     // Look up in the unified assets.assets store
+                     const assetData = this.assets.assets[patternNameUpper];
+                     if (!assetData) {
                          // Use command.line for error reporting
-                         throw this.runtimeError(`Icon "${iconNameUpper}" not defined (check definition).`, command.line);
+                         throw this.runtimeError(`Pattern "${patternNameUpper}" not defined (check DEFINE PATTERN).`, command.line);
                      }
                      // p.X, p.Y are resolved numbers
-                     this.drawing.drawIcon(p.X, p.Y, iconData, this.state);
+                     this.drawing.drawAsset(p.X, p.Y, assetData, this.state); // Use renamed drawing function
                      break;
 
                 // --- Control Flow ---

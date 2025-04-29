@@ -6,8 +6,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const canvas = document.getElementById('displayCanvas');
     const ctx = canvas.getContext('2d');
     const errorLog = document.getElementById('errorLog');
+    // Single div for all defined patterns
     const definedPatternsDiv = document.getElementById('definedPatterns');
-    const definedIconsDiv = document.getElementById('definedIcons');
     const assetPreviewsContainer = document.getElementById('assetPreviews');
     // Individual real-time display spans
     const realTimeHourSpan = document.getElementById('realTimeHourSpan');
@@ -32,8 +32,6 @@ document.addEventListener('DOMContentLoaded', () => {
         indentUnit: 4,
         tabSize: 4,
         lineWrapping: true,
-        // Change key binding to just "Alt". Note: This might have side effects or conflicts.
-        // A combination like "Alt-Q" might be more reliable if issues arise.
         extraKeys: { "Tab": "autocomplete" },
         // Use the custom hint function for MicroPatterns specific suggestions
         hintOptions: { hint: micropatternsHint }
@@ -43,9 +41,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // --- Autocompletion Logic ---
 
+    // Updated keywords for DEFINE PATTERN, FILL, DRAW
     const micropatternsKeywords = [
         // Commands
-        "DEFINE", "PATTERN", "ICON", "VAR", "LET", "COLOR", "RESET_TRANSFORMS",
+        "DEFINE", "PATTERN", "VAR", "LET", "COLOR", "FILL", "DRAW", "RESET_TRANSFORMS",
         "TRANSLATE", "ROTATE", "SCALE", "PIXEL", "LINE", "RECT", "FILL_RECT",
         "CIRCLE", "FILL_CIRCLE", "REPEAT", "TIMES", "IF", "THEN", "ELSE",
         "ENDIF", "ENDREPEAT",
@@ -103,7 +102,12 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         // Suggest Parameters after a command word (simple check)
         else if (token.type === 'keyword' && !micropatternsKeywords.includes(token.string.toUpperCase() + "=")) {
-            suggestions = micropatternsKeywords.filter(k => k.includes("=")); // Suggest parameters
+             // Special case: after DEFINE, suggest PATTERN
+             if (token.string.toUpperCase() === 'DEFINE') {
+                 suggestions = ['PATTERN'];
+             } else {
+                 suggestions = micropatternsKeywords.filter(k => k.includes("=")); // Suggest parameters
+             }
         }
         // Suggest Variables and specific values if expecting a value
         else if (isPossiblyValue || isAfterEquals) {
@@ -212,17 +216,17 @@ document.addEventListener('DOMContentLoaded', () => {
         ctx.fillRect(0, 0, canvas.width, canvas.height);
     }
 
+    // Updated to handle single assets.assets dictionary and display in #definedPatterns
     function updateDefinedAssetsUI(assets) {
-        const patternNames = Object.keys(assets.patterns);
-        const iconNames = Object.keys(assets.icons);
+        const patternNames = Object.keys(assets.assets || {});
+        // Display all defined items under the "Patterns" label
         definedPatternsDiv.textContent = `Patterns: ${patternNames.length > 0 ? patternNames.join(', ') : 'None'}`;
-        definedIconsDiv.textContent = `Icons: ${iconNames.length > 0 ? iconNames.join(', ') : 'None'}`;
     }
 
     function runScript() {
         errorLog.textContent = ''; // Clear previous errors
         clearDisplay();
-        updateDefinedAssetsUI({ patterns: {}, icons: {} }); // Clear assets UI initially
+        updateDefinedAssetsUI({ assets: {} }); // Clear assets UI initially
 
         const scriptText = codeMirrorEditor.getValue(); // Get text from CodeMirror
         const environment = getEnvironmentVariables();
@@ -242,6 +246,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 // Stop execution if parsing failed critically
                 // Allow continuing if only minor parse errors occurred? For now, stop.
                 hasErrors = true;
+                // Still update UI and render previews even with parse errors,
+                // as some assets might have been defined before the error.
+                updateDefinedAssetsUI(parseResult.assets);
+                renderAssetPreviews(parseResult.assets);
                 return;
             }
             // Update UI only if parsing was successful enough to get assets
@@ -260,7 +268,7 @@ document.addEventListener('DOMContentLoaded', () => {
         // --- Runtime Phase ---
         const runtime = new MicroPatternsRuntime(
             ctx,
-            parseResult.assets,
+            parseResult.assets, // Pass the whole assets object { assets: {...} }
             environment,
             (runtimeErrorMessage) => {
                 // Runtime errors should already be formatted with line numbers by runtimeError helper
@@ -305,29 +313,31 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const PREVIEW_SCALE = 8; // How many screen pixels per asset pixel
 
+    // Updated to handle single assets.assets dictionary
     function renderAssetPreviews(assets) {
         assetPreviewsContainer.innerHTML = ''; // Clear previous previews
 
-        const patterns = Object.values(assets.patterns || {});
-        const icons = Object.values(assets.icons || {});
+        const allAssets = Object.values(assets.assets || {});
 
-        if (patterns.length === 0 && icons.length === 0) {
-            assetPreviewsContainer.innerHTML = '<p style="color: #777; font-style: italic;">No assets defined in the current script.</p>';
+        if (allAssets.length === 0) {
+            assetPreviewsContainer.innerHTML = '<p style="color: #777; font-style: italic;">No patterns defined in the current script.</p>';
             return;
         }
 
-        patterns.forEach(asset => renderSingleAssetPreview(asset, 'PATTERN'));
-        icons.forEach(asset => renderSingleAssetPreview(asset, 'ICON'));
+        // Render all items defined via DEFINE PATTERN
+        allAssets.forEach(asset => renderSingleAssetPreview(asset));
     }
 
-    function renderSingleAssetPreview(asset, assetType) {
+    // Updated: assetType is no longer needed as a parameter, always 'PATTERN' conceptually
+    function renderSingleAssetPreview(asset) {
         const container = document.createElement('div');
         container.className = 'asset-preview-item';
 
         const label = document.createElement('label');
         // Use the original case name if stored, otherwise use the uppercase key
         const displayName = asset.originalName || asset.name;
-        label.textContent = `${assetType}: ${displayName} (${asset.width}x${asset.height})`;
+        // Label just shows PATTERN now
+        label.textContent = `PATTERN: ${displayName} (${asset.width}x${asset.height})`;
         container.appendChild(label);
 
         const canvas = document.createElement('canvas');
@@ -343,10 +353,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // Store asset info for click handler
         canvas.dataset.assetName = asset.name; // Use uppercase name for lookup
-        canvas.dataset.assetType = assetType;
+        // Store asset type as PATTERN since that's how it was defined
+        canvas.dataset.assetType = 'PATTERN';
 
         canvas.addEventListener('click', (event) => {
-            handlePreviewClick(event, canvas, asset, assetType);
+            handlePreviewClick(event, canvas, asset); // Pass only asset now
         });
 
         container.appendChild(canvas);
@@ -388,7 +399,8 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    function handlePreviewClick(event, canvas, asset, assetType) {
+    // Updated: assetType is implicitly 'PATTERN' from dataset
+    function handlePreviewClick(event, canvas, asset) {
         const rect = canvas.getBoundingClientRect();
         const clickX = event.clientX - rect.left;
         const clickY = event.clientY - rect.top;
@@ -406,19 +418,22 @@ document.addEventListener('DOMContentLoaded', () => {
             drawAssetOnCanvas(ctx, asset, PREVIEW_SCALE);
 
             // Update the DATA string in the CodeMirror editor
-            updateCodeMirrorAssetData(assetType, asset.name, asset.data);
+            // Pass assetType from dataset ('PATTERN')
+            updateCodeMirrorAssetData(canvas.dataset.assetType, asset.name, asset.data);
         }
     }
 
+    // Updated: assetType parameter is used, regex looks for DEFINE PATTERN
     function updateCodeMirrorAssetData(assetType, assetNameUpper, newPixelData) {
         const editor = codeMirrorEditor; // Assuming codeMirrorEditor is accessible
+        // Updated regex to find DEFINE PATTERN (assetType should always be 'PATTERN' here)
         const defineRegex = new RegExp(`^\\s*DEFINE\\s+${assetType}\\s+NAME\\s*=\\s*"([^"]+)"`, "i");
         const dataRegex = /DATA\s*=\s*"([01]*)"/i;
 
         let targetLine = -1;
         let lineContent = "";
 
-        // Find the line number for the correct DEFINE statement (case-insensitive name check)
+        // Find the line number for the correct DEFINE PATTERN statement (case-insensitive name check)
         for (let i = 0; i < editor.lineCount(); i++) {
             const currentLine = editor.getLine(i);
             const match = currentLine.match(defineRegex);

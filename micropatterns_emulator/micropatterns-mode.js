@@ -1,4 +1,4 @@
-// CodeMirror mode for MicroPatterns DSL v1.0
+// CodeMirror mode for MicroPatterns DSL v1.0 (Unified Asset Update)
 
 (function(mod) {
   if (typeof exports == "object" && typeof module == "object") // CommonJS
@@ -13,7 +13,8 @@
 CodeMirror.defineMode("micropatterns", function() {
 
   // Case-insensitive keywords
-  const keywords = /^(?:DEFINE|PATTERN|ICON|VAR|LET|COLOR|RESET_TRANSFORMS|TRANSLATE|ROTATE|SCALE|PIXEL|LINE|RECT|FILL_RECT|CIRCLE|FILL_CIRCLE|REPEAT|TIMES|IF|THEN|ELSE|ENDIF|ENDREPEAT|BLACK|WHITE|SOLID)\b/i;
+  // Updated: DEFINE, PATTERN (as part of DEFINE), FILL, DRAW. Removed ICON.
+  const keywords = /^(?:DEFINE|PATTERN|VAR|LET|COLOR|FILL|DRAW|RESET_TRANSFORMS|TRANSLATE|ROTATE|SCALE|PIXEL|LINE|RECT|FILL_RECT|CIRCLE|FILL_CIRCLE|REPEAT|TIMES|IF|THEN|ELSE|ENDIF|ENDREPEAT|BLACK|WHITE|SOLID)\b/i;
   // Case-insensitive parameter names followed by =
   const properties = /^(?:NAME|WIDTH|HEIGHT|DATA|X|Y|X1|Y1|X2|Y2|DX|DY|DEGREES|FACTOR|RADIUS|COUNT)\s*=/i;
   // Case-insensitive environment variables
@@ -34,6 +35,7 @@ CodeMirror.defineMode("micropatterns", function() {
     if (stream.eatSpace()) return null;
 
     // Try keywords
+    // Note: "PATTERN" is matched here, but contextually it's usually after DEFINE
     if (stream.match(keywords)) return "keyword";
 
     // Try parameter names (properties)

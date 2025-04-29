@@ -71,34 +71,73 @@
         .controls-group h3 {
             margin-top: 0;
         }
+
         /* Style CodeMirror editor */
         .CodeMirror {
             border: 1px solid #ccc;
-            height: 400px; /* Match original textarea height */
+            height: 400px;
+            /* Match original textarea height */
             font-family: monospace;
             font-size: 12px;
         }
+
         /* Basic Syntax Highlighting Styles (complementing the theme) */
-        .cm-keyword { color: #708; } /* Magenta */
-        .cm-variable-2 { color: #05a; } /* Blue for env vars */
-        .cm-variable-3 { color: #085; } /* Teal for user vars */
-        .cm-number { color: #164; } /* Dark blue/green */
-        .cm-string { color: #a11; } /* Red */
-        .cm-comment { color: #a80; } /* Orange/brown */
-        .cm-operator { color: #c0c; } /* Purple */
-        .cm-property { color: #30a; } /* Dark blue for param names */
+        .cm-keyword {
+            color: #708;
+        }
+
+        /* Magenta */
+        .cm-variable-2 {
+            color: #05a;
+        }
+
+        /* Blue for env vars */
+        .cm-variable-3 {
+            color: #085;
+        }
+
+        /* Teal for user vars */
+        .cm-number {
+            color: #164;
+        }
+
+        /* Dark blue/green */
+        .cm-string {
+            color: #a11;
+        }
+
+        /* Red */
+        .cm-comment {
+            color: #a80;
+        }
+
+        /* Orange/brown */
+        .cm-operator {
+            color: #c0c;
+        }
+
+        /* Purple */
+        .cm-property {
+            color: #30a;
+        }
+
+        /* Dark blue for param names */
 
         /* Asset Preview Styles */
         #assetPreviews canvas {
             border: 1px solid #ccc;
-            image-rendering: pixelated; /* Keep pixels sharp */
+            image-rendering: pixelated;
+            /* Keep pixels sharp */
             cursor: pointer;
-            background-color: white; /* Ensure background for transparent pixels */
+            background-color: white;
+            /* Ensure background for transparent pixels */
             margin-top: 5px;
         }
+
         #assetPreviews .asset-preview-item {
             margin-bottom: 10px;
         }
+
         #assetPreviews .asset-preview-item label {
             font-weight: bold;
             font-size: 0.9em;
@@ -115,32 +154,37 @@
 # Welcome to MicroPatterns!
 # Display is 200x200
 
-DEFINE PATTERN NAME="checker" WIDTH=4 HEIGHT=4 DATA="1010010110100101"
-DEFINE ICON NAME="smile" WIDTH=8 HEIGHT=8 DATA="0111111010000001101001011000000110100101100110011000000101111110"
+# Define patterns using DEFINE PATTERN
+DEFINE PATTERN NAME="checker" WIDTH=4 HEIGHT=4 DATA="0000000010100100"
+DEFINE PATTERN NAME="smile" WIDTH=8 HEIGHT=8 DATA="0111111010000001101001011000000110100101100110011000000101111110"
 
 # Declare variables used later
 VAR center_x
 VAR center_y
 VAR bar_height
 VAR rotation
+VAR size
 
 COLOR NAME=BLACK
-# Use defined pattern name in quotes
-PATTERN NAME="checker" 
+# Use defined pattern name with FILL
+FILL NAME="checker"
 FILL_RECT X=0 Y=0 WIDTH=$WIDTH HEIGHT=$HEIGHT
 
 COLOR NAME=WHITE
-PATTERN NAME=SOLID
+# Reset to solid fill
+FILL NAME=SOLID
 LET center_x = $WIDTH / 2
 LET center_y = $HEIGHT / 2
 
 # Use declared variables
 TRANSLATE DX=$center_x DY=$center_y
 # Expressions are only supported in assignements
-LET rotation = $SECOND * 6 
+LET rotation = 350 * 59 / $SECOND
 ROTATE DEGREES=$rotation
-# Center the 8x8 icon
-ICON NAME="smile" X=-4 Y=-4 
+LET size = $COUNTER % 20
+SCALE FACTOR=$size
+# Center the 8x8 pattern using DRAW
+DRAW NAME="smile" X=-4 Y=-4
 
 RESET_TRANSFORMS
 COLOR NAME=BLACK
@@ -178,26 +222,27 @@ FILL_RECT X=10 Y=180 WIDTH=30 HEIGHT=$bar_height
             </div>
             <!-- Counter Row -->
             <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 5px;">
-                 <label for="envCounter" style="min-width: 60px; font-weight: bold;">Counter:</label>
-                 <input type="number" id="envCounter" value="0" min="0" style="width: 60px;">
-                 <button id="resetCounterButton" title="Reset Counter" style="padding: 2px 8px;">↺</button>
-                 <button id="incrementCounterButton" title="Increment Counter" style="padding: 2px 8px;">+</button>
+                <label for="envCounter" style="min-width: 60px; font-weight: bold;">Counter:</label>
+                <input type="number" id="envCounter" value="0" min="0" style="width: 60px;">
+                <button id="resetCounterButton" title="Reset Counter" style="padding: 2px 8px;">↺</button>
+                <button id="incrementCounterButton" title="Increment Counter" style="padding: 2px 8px;">+</button>
             </div>
             <!-- Static Info -->
             <p style="font-size: 0.8em; margin-top: 10px; margin-bottom: 0; color: #555;">Display: 200x200</p>
         </div>
 
         <div class="controls-group">
-            <h3>Assets Defined</h3>
+            <h3>Patterns Defined</h3>
+            <!-- Single div for all defined patterns -->
             <div id="definedPatterns">Patterns: None</div>
-            <div id="definedIcons">Icons: None</div>
+            <!-- Removed definedIcons div -->
         </div>
 
         <div class="controls-group">
-            <h3>Asset Previews (Click to Edit)</h3>
+            <h3>Pattern Previews (Click to Edit)</h3>
             <div id="assetPreviews" style="display: flex; flex-direction: column; gap: 15px;">
                 <!-- Previews will be generated here -->
-                <p style="color: #777; font-style: italic;">No assets defined or script not run yet.</p>
+                <p style="color: #777; font-style: italic;">No patterns defined or script not run yet.</p>
             </div>
         </div>
     </div>

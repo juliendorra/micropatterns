@@ -18,7 +18,7 @@ class MicroPatternsDrawing {
     // --- Transformation ---
 
     // Apply current state transformations (Scale -> Rotate -> Translate)
-    // Returns transformed { x, y }
+    // Returns transformed { x, y } which represents the top-left of the potentially scaled pixel/element.
     transformPoint(x, y, state) {
         let curX = x;
         let curY = y;
@@ -26,14 +26,17 @@ class MicroPatternsDrawing {
         // 1. Scale (relative to origin 0,0 before translation)
         // Scaling affects coordinates AND radius/size values passed to drawing functions
         // We apply scale here only to the base coordinates. Size parameters are scaled separately if needed.
+        // For pixel-based drawing, this calculates the top-left of the scaled block.
         curX = Math.trunc(curX * state.scale);
         curY = Math.trunc(curY * state.scale);
 
         // 2. Rotate (around origin 0,0 before translation)
         if (state.rotation !== 0) {
             const angle = state.rotation;
-            const sinA = this.sinTable[angle];
-            const cosA = this.cosTable[angle];
+            // Ensure angle is within 0-359 for table lookup
+            const normalizedAngle = (angle % 360 + 360) % 360;
+            const sinA = this.sinTable[normalizedAngle];
+            const cosA = this.cosTable[normalizedAngle];
             const rotatedX = Math.trunc((curX * cosA - curY * sinA) / 256);
             const rotatedY = Math.trunc((curX * sinA + curY * cosA) / 256);
             curX = rotatedX;
@@ -49,45 +52,75 @@ class MicroPatternsDrawing {
 
     // --- Drawing Primitives ---
 
-    // Internal function to set a single pixel on the canvas respecting clipping
-    setPixel(x, y, color) {
-        // Clip to canvas bounds
-        if (x >= 0 && x < this.display_width && y >= 0 && y < this.display_height) {
+    // Internal function to set a single logical pixel on the canvas,
+    // drawing a scale x scale block respecting clipping.
+    // Accepts the calculated top-left screen coordinates (x, y) and the drawing state.
+    setPixel(x, y, color, state) {
+        const scale = state.scale;
+        // Calculate the integer floor for the top-left corner on the canvas
+        const startX = Math.floor(x);
+        const startY = Math.floor(y);
+
+        // Check if the *entire* scaled block is outside the canvas bounds
+        if (startX >= this.display_width || startY >= this.display_height ||
+            startX + scale <= 0 || startY + scale <= 0) {
+            return; // Block is completely off-screen
+        }
+
+        // Clip the drawing rectangle to the canvas bounds
+        const clipX = Math.max(0, startX);
+        const clipY = Math.max(0, startY);
+        const clipMaxX = Math.min(this.display_width, startX + scale);
+        const clipMaxY = Math.min(this.display_height, startY + scale);
+        const clipW = clipMaxX - clipX;
+        const clipH = clipMaxY - clipY;
+
+        // Only draw if the clipped dimensions are valid
+        if (clipW > 0 && clipH > 0) {
             this.ctx.fillStyle = color;
-            this.ctx.fillRect(Math.floor(x), Math.floor(y), 1, 1); // Use floor for canvas coords
+            this.ctx.fillRect(clipX, clipY, clipW, clipH);
         }
     }
 
-     // Internal function to get pattern pixel color (black/white)
-     getPatternPixel(screenX, screenY, pattern, stateColor) {
-         if (!pattern) {
-             return stateColor; // Solid fill
+     // Internal function to get fill asset pixel color (returns 'white' or state.color)
+     // Renamed from getPatternPixel
+     getFillAssetPixel(screenX, screenY, fillAsset, stateColor) {
+         if (!fillAsset) {
+             return stateColor; // Solid fill with the current state color
          }
-         const patternX = Math.floor(screenX) % pattern.width;
-         const patternY = Math.floor(screenY) % pattern.height;
-         // Handle negative modulo results if necessary (though screen coords should be positive)
-         const px = (patternX < 0) ? patternX + pattern.width : patternX;
-         const py = (patternY < 0) ? patternY + pattern.height : patternY;
+         // Use Math.floor for consistency with canvas coordinates
+         const assetX = Math.floor(screenX) % fillAsset.width;
+         const assetY = Math.floor(screenY) % fillAsset.height;
+         // Handle negative modulo results
+         const px = (assetX < 0) ? assetX + fillAsset.width : assetX;
+         const py = (assetY < 0) ? assetY + fillAsset.height : assetY;
 
-         const index = py * pattern.width + px;
-         if (index < 0 || index >= pattern.data.length) {
-             console.warn(`Pattern index out of bounds: (${px}, ${py})`);
+         const index = py * fillAsset.width + px;
+         if (index < 0 || index >= fillAsset.data.length) {
+             console.warn(`Asset index out of bounds: (${px}, ${py}) for screen (${screenX}, ${screenY})`);
              return 'white'; // Default to white/transparent on error
          }
-         return pattern.data[index] === 1 ? stateColor : 'white'; // Use state color for '1'
+         // Return the state color only if the asset bit is 1, otherwise white
+         return fillAsset.data[index] === 1 ? stateColor : 'white';
      }
 
 
     drawPixel(x, y, state) {
+        // Transform the logical coordinate (x, y) to get the top-left of the block
         const p = this.transformPoint(x, y, state);
-        this.setPixel(p.x, p.y, state.color);
+        // Set the pixel using the state color and scale
+        this.setPixel(p.x, p.y, state.color, state);
     }
 
     // Bresenham's line algorithm (integer math)
+    // Draws a line of potentially scaled pixels.
     drawLine(x1, y1, x2, y2, state) {
+        // Transform the logical start and end points
         const p1 = this.transformPoint(x1, y1, state);
         const p2 = this.transformPoint(x2, y2, state);
 
+        // Use the transformed points for Bresenham's algorithm
+        // Note: Bresenham calculates the top-left corners of the blocks to draw.
         let sx = Math.trunc(p1.x);
         let sy = Math.trunc(p1.y);
         const ex = Math.trunc(p2.x);
@@ -99,102 +132,76 @@ class MicroPatternsDrawing {
         const stepY = sy < ey ? 1 : -1;
         let err = dx + dy;
 
+        // Adjust step size based on scale for Bresenham? No, Bresenham calculates
+        // the *centers* or *corners* of the pixels to light up. We draw blocks
+        // at these calculated positions. The transformPoint already handles scaling
+        // the endpoints.
+
         while (true) {
-            this.setPixel(sx, sy, state.color);
-            if (sx === ex && sy === ey) break;
+            // Draw a scaled block at the current Bresenham position (sx, sy)
+            this.setPixel(sx, sy, state.color, state);
+
+            if (sx === ex && sy === ey) break; // Reached end point
+
             const e2 = 2 * err;
-            if (e2 >= dy) { // >= favors horizontal steps
+            let movedX = false;
+            let movedY = false;
+
+            if (e2 >= dy) { // Favor horizontal step
+                if (sx === ex) break; // Prevent overshoot if already at target x
                 err += dy;
                 sx += stepX;
+                movedX = true;
             }
-            if (e2 <= dx) { // <= favors vertical steps
+            if (e2 <= dx) { // Favor vertical step
+                if (sy === ey) break; // Prevent overshoot if already at target y
                 err += dx;
                 sy += stepY;
+                movedY = true;
             }
+            // Safety break to prevent infinite loops in edge cases
+             if (!movedX && !movedY) break;
         }
     }
 
     drawRect(x, y, width, height, state) {
         // Rect dimensions are NOT scaled/rotated by transform, only the top-left corner is.
-        // Draw 4 lines respecting the current state color.
-        const p = this.transformPoint(x, y, state); // Top-left corner
+        // Draw 4 lines respecting the current state color and scale.
 
-        // Calculate other corners based on transformed top-left and original w/h
-        // This is tricky because rotation affects where the other corners land.
-        // A simpler approach for non-filled rects is to draw 4 lines between
-        // the transformed corners of the original rectangle.
-
+        // Transform the 4 corners of the logical rectangle
         const p1 = this.transformPoint(x, y, state); // Top-left
-        const p2 = this.transformPoint(x + width, y, state); // Top-right
-        const p3 = this.transformPoint(x + width, y + height, state); // Bottom-right
-        const p4 = this.transformPoint(x, y + height, state); // Bottom-left
+        const p2 = this.transformPoint(x + width -1, y, state); // Top-right (use width-1 for pixel coords)
+        const p3 = this.transformPoint(x + width -1, y + height -1, state); // Bottom-right
+        const p4 = this.transformPoint(x, y + height -1, state); // Bottom-left
 
-        this.drawLine(p1.x, p1.y, p2.x, p2.y, state); // Top
-        this.drawLine(p2.x, p2.y, p3.x, p3.y, state); // Right
-        this.drawLine(p3.x, p3.y, p4.x, p4.y, state); // Bottom
-        this.drawLine(p4.x, p4.y, p1.x, p1.y, state); // Left
+        // Draw lines between the transformed corners. drawLine handles scaling.
+        this.drawLine(x, y, x + width -1, y, state); // Top (use logical coords for drawLine)
+        this.drawLine(x + width -1, y, x + width -1, y + height -1, state); // Right
+        this.drawLine(x + width -1, y + height -1, x, y + height -1, state); // Bottom
+        this.drawLine(x, y + height -1, x, y, state); // Left
     }
 
     fillRect(x, y, width, height, state) {
-        // Filled rects are complex with rotation. We iterate through the screen pixels
-        // within the bounding box of the transformed rectangle and check if each
-        // screen pixel corresponds to a point inside the *original* rectangle
-        // before inverse transformation. Then apply pattern/color.
+        // Filled rects are complex with rotation and scaling combined with assets.
+        // Iterate through the *logical* pixels of the rectangle, transform each,
+        // determine the fill asset color, and draw the scaled block.
 
-        // 1. Find the bounding box of the transformed rectangle
-        const p1 = this.transformPoint(x, y, state);
-        const p2 = this.transformPoint(x + width, y, state);
-        const p3 = this.transformPoint(x + width, y + height, state);
-        const p4 = this.transformPoint(x, y + height, state);
+        for (let ly = 0; ly < height; ly++) {
+            for (let lx = 0; lx < width; lx++) {
+                // Logical coordinates within the rectangle
+                const logicalX = x + lx;
+                const logicalY = y + ly;
 
-        const minX = Math.floor(Math.min(p1.x, p2.x, p3.x, p4.x));
-        const minY = Math.floor(Math.min(p1.y, p2.y, p3.y, p4.y));
-        const maxX = Math.ceil(Math.max(p1.x, p2.x, p3.x, p4.x));
-        const maxY = Math.ceil(Math.max(p1.y, p2.y, p3.y, p4.y));
+                // Transform this logical point to screen space (top-left of block)
+                const p = this.transformPoint(logicalX, logicalY, state);
 
-        // 2. Iterate through pixels in the bounding box
-        for (let screenY = minY; screenY < maxY; screenY++) {
-            for (let screenX = minX; screenX < maxX; screenX++) {
-                // 3. Inverse transform the screen pixel back to the rectangle's local space
-                // This is complex. A simpler (but less accurate for rotated thin rects)
-                // approach for integer-only is difficult.
-                // Approximation: Check if the center of the screen pixel, when inverse
-                // transformed, falls within the original rect bounds [x, y] to [x+w, y+h].
+                // Determine the color based on the fill asset using the renamed function
+                // Use the transformed screen coordinate (p.x, p.y) for asset lookup
+                const effectiveColor = this.getFillAssetPixel(p.x, p.y, state.fillAsset, state.color);
 
-                // Let's use a simpler fill method for now: fill the bounding box and rely on clipping
-                // or later drawing to overwrite. This isn't accurate for rotated patterns.
-                // A true implementation would involve scanline filling or inverse transform checks.
-
-                // Simplified approach: Just fill the axis-aligned bounding box with pattern/color
-                // This is NOT correct for rotated rectangles but works for unrotated/scaled.
-                // TODO: Implement proper rotated rectangle filling if needed.
-
-                // For now, let's assume no rotation for fillRect pattern application
-                // and just fill the transformed axis-aligned area.
-                if (state.rotation === 0) {
-                     const startX = Math.floor(p1.x);
-                     const startY = Math.floor(p1.y);
-                     // Scaled width/height
-                     const scaledWidth = Math.abs(Math.floor(p2.x) - startX);
-                     const scaledHeight = Math.abs(Math.floor(p4.y) - startY);
-
-                     for (let iy = 0; iy < scaledHeight; iy++) {
-                         for (let ix = 0; ix < scaledWidth; ix++) {
-                             const currentScreenX = startX + ix;
-                             const currentScreenY = startY + iy;
-                             const color = this.getPatternPixel(currentScreenX, currentScreenY, state.pattern, state.color);
-                             if (color !== 'white') { // Don't draw white (background)
-                                 this.setPixel(currentScreenX, currentScreenY, color);
-                             }
-                         }
-                     }
-                     return; // Exit after simplified fill
-                } else {
-                     // Fallback for rotated: Draw solid color bounding box (inaccurate)
-                     // Or better: draw the 4 lines thicker? No, fill is needed.
-                     // We need inverse transform or scanline. Skip pattern for rotated rects for now.
-                     console.warn("Pattern fill for rotated RECT not fully implemented, drawing solid outline instead.");
-                     this.drawRect(x, y, width, height, state); // Draw outline as fallback
+                // Draw the scaled block if the color is not white
+                if (effectiveColor !== 'white') {
+                    this.setPixel(p.x, p.y, effectiveColor, state);
                 }
             }
         }
@@ -203,22 +210,28 @@ class MicroPatternsDrawing {
 
     // Midpoint circle algorithm (integer math) for outline
     drawCircle(cx, cy, radius, state) {
+        // Transform the logical center point
         const center = this.transformPoint(cx, cy, state);
-        const scaledRadius = Math.max(1, Math.trunc(radius * state.scale)); // Scale radius
+        // Scale the radius appropriately. Use Math.max to ensure radius >= 1.
+        // We draw blocks, so the radius effectively refers to the center of the blocks.
+        const scaledRadius = Math.max(1, Math.trunc(radius * state.scale));
 
         let x = scaledRadius;
         let y = 0;
-        let err = 1 - scaledRadius; // Start error term slightly differently
+        let err = 1 - scaledRadius;
 
+        // The algorithm calculates offsets (x, y) from the center.
+        // We need to draw scaled blocks at these offset positions.
         while (x >= y) {
-            this.setPixel(center.x + x, center.y + y, state.color);
-            this.setPixel(center.x + y, center.y + x, state.color);
-            this.setPixel(center.x - y, center.y + x, state.color);
-            this.setPixel(center.x - x, center.y + y, state.color);
-            this.setPixel(center.x - x, center.y - y, state.color);
-            this.setPixel(center.x - y, center.y - x, state.color);
-            this.setPixel(center.x + y, center.y - x, state.color);
-            this.setPixel(center.x + x, center.y - y, state.color);
+            // Draw 8 octants using scaled blocks
+            this.setPixel(center.x + x, center.y + y, state.color, state);
+            this.setPixel(center.x + y, center.y + x, state.color, state);
+            this.setPixel(center.x - y, center.y + x, state.color, state);
+            this.setPixel(center.x - x, center.y + y, state.color, state);
+            this.setPixel(center.x - x, center.y - y, state.color, state);
+            this.setPixel(center.x - y, center.y - x, state.color, state);
+            this.setPixel(center.x + y, center.y - x, state.color, state);
+            this.setPixel(center.x + x, center.y - y, state.color, state);
 
             y++;
             if (err <= 0) {
@@ -230,69 +243,62 @@ class MicroPatternsDrawing {
         }
     }
 
-    // Fill circle using scanlines within the circle's bounds
+    // Fill circle using scanlines within the circle's bounds, applying fill assets and scaling
     fillCircle(cx, cy, radius, state) {
+        // Transform the logical center point
         const center = this.transformPoint(cx, cy, state);
-        const scaledRadius = Math.max(1, Math.trunc(radius * state.scale));
+        // Scale the radius. Add 0.5 * scale to check against the edge of the scaled blocks.
+        const scaledRadius = Math.max(1, radius * state.scale);
         const rSquared = scaledRadius * scaledRadius;
 
+        // Calculate bounding box based on scaled radius and transformed center
         const minX = Math.floor(center.x - scaledRadius);
         const minY = Math.floor(center.y - scaledRadius);
         const maxX = Math.ceil(center.x + scaledRadius);
         const maxY = Math.ceil(center.y + scaledRadius);
 
-        for (let screenY = minY; screenY < maxY; screenY++) {
-            for (let screenX = minX; screenX < maxX; screenX++) {
-                // Check if the center of the pixel is inside the circle
-                const dx = (screenX + 0.5) - center.x;
-                const dy = (screenY + 0.5) - center.y;
+        // Iterate through screen pixels within the bounding box
+        for (let screenY = minY; screenY < maxY; screenY += state.scale) {
+            for (let screenX = minX; screenX < maxX; screenX += state.scale) {
+                // Check if the *center* of the potential scaled block is inside the circle
+                const blockCenterX = screenX + state.scale / 2;
+                const blockCenterY = screenY + state.scale / 2;
+                const dx = blockCenterX - center.x;
+                const dy = blockCenterY - center.y;
+
                 if (dx * dx + dy * dy <= rSquared) {
-                    const color = this.getPatternPixel(screenX, screenY, state.pattern, state.color);
-                     if (color !== 'white') {
-                         this.setPixel(screenX, screenY, color);
+                    // Get fill asset color for the top-left of the block using renamed function
+                    const effectiveColor = this.getFillAssetPixel(screenX, screenY, state.fillAsset, state.color);
+                     if (effectiveColor !== 'white') {
+                         // Draw the scaled block
+                         this.setPixel(screenX, screenY, effectiveColor, state);
                      }
                 }
             }
         }
     }
 
-    drawIcon(x, y, iconData, state) {
-        // Icon's top-left (x,y) is transformed first.
-        // Then, each pixel *within* the icon is transformed relative to that point.
+    // Renamed from drawIcon - draws a defined pattern directly
+    drawAsset(x, y, assetData, state) {
+        // Asset's logical top-left (x,y) is transformed first.
         const origin = this.transformPoint(x, y, state);
 
-        for (let iy = 0; iy < iconData.height; iy++) {
-            for (let ix = 0; ix < iconData.width; ix++) {
-                const index = iy * iconData.width + ix;
-                if (iconData.data[index] === 1) {
-                    // Transform the icon's local pixel (ix, iy) using the *same* state
-                    // but relative to (0,0) as if the icon's corner is the origin,
-                    // then add the transformed icon origin.
-                    // Note: Scale/Rotate are applied relative to the icon's local (0,0).
+        // Iterate through the asset's logical pixels
+        for (let iy = 0; iy < assetData.height; iy++) {
+            for (let ix = 0; ix < assetData.width; ix++) {
+                const index = iy * assetData.width + ix;
+                if (assetData.data[index] === 1) { // If asset pixel is 'on'
+                    // Calculate the logical position of this asset pixel relative to the asset's origin (x,y)
+                    const logicalPixelX = x + ix;
+                    const logicalPixelY = y + iy;
 
-                    let iconPixelX = ix;
-                    let iconPixelY = iy;
+                    // Transform this logical point to screen space (top-left of block)
+                    // Note: transformPoint applies scale, rotation, and translation based on the *state*
+                    // This means the entire asset is scaled/rotated/translated as a unit based on its origin (x,y)
+                    const p = this.transformPoint(logicalPixelX, logicalPixelY, state);
 
-                     // 1. Scale icon pixel relative to icon's (0,0)
-                     iconPixelX = Math.trunc(iconPixelX * state.scale);
-                     iconPixelY = Math.trunc(iconPixelY * state.scale);
-
-                     // 2. Rotate icon pixel relative to icon's (0,0)
-                     if (state.rotation !== 0) {
-                         const angle = state.rotation;
-                         const sinA = this.sinTable[angle];
-                         const cosA = this.cosTable[angle];
-                         const rotatedX = Math.trunc((iconPixelX * cosA - iconPixelY * sinA) / 256);
-                         const rotatedY = Math.trunc((iconPixelX * sinA + iconPixelY * cosA) / 256);
-                         iconPixelX = rotatedX;
-                         iconPixelY = rotatedY;
-                     }
-
-                     // 3. Translate to the final screen position by adding the transformed origin
-                     const finalX = origin.x + iconPixelX;
-                     const finalY = origin.y + iconPixelY;
-
-                    this.setPixel(finalX, finalY, state.color);
+                    // Draw the scaled block using the current state color
+                    this.setPixel(p.x, p.y, state.color, state);
                 }
             }
         }
