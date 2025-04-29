@@ -609,6 +609,16 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // --- Script Management Logic ---
 
+    function resetEnvironmentInputs() {
+        // Reset counter input to 0
+        if (env.COUNTER) env.COUNTER.value = 0;
+        // Clear override inputs
+        if (env.HOUR) env.HOUR.value = '';
+        if (env.MINUTE) env.MINUTE.value = '';
+        if (env.SECOND) env.SECOND.value = '';
+        console.log("Environment inputs (counter, overrides) reset.");
+    }
+
     function setStatusMessage(message, isError = false) {
         if (scriptMgmtStatus) {
             scriptMgmtStatus.textContent = message;
@@ -662,6 +672,10 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         console.log(`Loading script: ${scriptId}`);
         setStatusMessage(`Loading script '${scriptId}'...`);
+
+        // Reset counter and overrides BEFORE loading
+        resetEnvironmentInputs();
+
         try {
             const response = await fetch(`${API_BASE_URL}/api/scripts/${scriptId}`);
             if (!response.ok) {
@@ -736,6 +750,8 @@ document.addEventListener('DOMContentLoaded', () => {
             // Select the saved script in the dropdown
             scriptListSelect.value = scriptId;
 
+            // DO NOT re-run the script automatically after saving.
+            // Keep the current counter and overrides.
 
         } catch (error) {
             setStatusMessage(`Error saving script: ${error.message}`, true);
