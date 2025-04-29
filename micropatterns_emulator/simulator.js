@@ -349,7 +349,122 @@ document.addEventListener('DOMContentLoaded', () => {
 
         container.appendChild(canvas);
         assetPreviewsContainer.appendChild(container);
+
+        // --- START Drag and Drop Image Feature ---
+        // Add drag and drop listeners to the canvas
+        canvas.addEventListener('dragover', handleDragOver);
+        canvas.addEventListener('dragleave', handleDragLeave);
+        canvas.addEventListener('drop', (event) => handleDrop(event, canvas, asset));
+        // --- END Drag and Drop Image Feature ---
     }
+
+
+    // --- START Drag and Drop Image Feature ---
+
+    function handleDragOver(event) {
+        event.preventDefault(); // Necessary to allow dropping
+        event.stopPropagation();
+        // Add visual feedback class to the specific canvas being dragged over
+        if (event.target.tagName === 'CANVAS') {
+            event.target.classList.add('drop-target-active');
+        }
+        event.dataTransfer.dropEffect = 'copy'; // Show a copy icon
+    }
+
+    function handleDragLeave(event) {
+        event.preventDefault();
+        event.stopPropagation();
+        // Remove visual feedback class from the specific canvas
+        if (event.target.tagName === 'CANVAS') {
+            event.target.classList.remove('drop-target-active');
+        }
+    }
+
+    function handleDrop(event, targetCanvas, targetAsset) {
+        event.preventDefault();
+        event.stopPropagation();
+        targetCanvas.classList.remove('drop-target-active'); // Remove feedback class
+
+        console.log("Drop event on asset:", targetAsset.name);
+
+        const files = event.dataTransfer.files;
+        if (files.length !== 1) {
+            displayError("Please drop exactly one image file.", "Drop Error");
+            return;
+        }
+
+        const file = files[0];
+        if (!file.type.startsWith('image/')) {
+            displayError("Dropped file is not a recognized image type.", "Drop Error");
+            return;
+        }
+
+        const reader = new FileReader();
+        reader.onload = function(e) {
+            const img = new Image();
+            img.onload = function() {
+                console.log(`Image loaded: ${img.width}x${img.height}. Resizing to pattern: ${targetAsset.width}x${targetAsset.height}`);
+
+                // Create a temporary canvas to draw and resize the image
+                const tempCanvas = document.createElement('canvas');
+                tempCanvas.width = targetAsset.width;
+                tempCanvas.height = targetAsset.height;
+                const tempCtx = tempCanvas.getContext('2d');
+
+                // Draw the image scaled down onto the temporary canvas
+                // This performs the resize operation
+                tempCtx.drawImage(img, 0, 0, targetAsset.width, targetAsset.height);
+
+                // Get pixel data from the temporary (resized) canvas
+                const imageData = tempCtx.getImageData(0, 0, targetAsset.width, targetAsset.height);
+                const data = imageData.data; // RGBA array
+
+                const newPixelData = [];
+                for (let i = 0; i < data.length; i += 4) {
+                    const r = data[i];
+                    const g = data[i + 1];
+                    const b = data[i + 2];
+                    // Basic grayscale conversion (average)
+                    const gray = (r + g + b) / 3;
+                    // Apply 50% threshold (128)
+                    // If average brightness is >= 128, pixel is white (0)
+                    // If average brightness is < 128, pixel is black (1)
+                    newPixelData.push(gray < 128 ? 1 : 0);
+                }
+
+                // Check if the generated data length matches
+                if (newPixelData.length !== targetAsset.width * targetAsset.height) {
+                     console.error(`Pixel data length mismatch after processing image. Expected ${targetAsset.width * targetAsset.height}, got ${newPixelData.length}`);
+                     displayError(`Internal error processing image data for ${targetAsset.name}.`, "Drop Error");
+                     return;
+                }
+
+                // Update the in-memory asset data
+                targetAsset.data = newPixelData;
+
+                // Redraw the preview canvas immediately
+                const previewCtx = targetCanvas.getContext('2d');
+                drawAssetOnCanvas(previewCtx, targetAsset, PREVIEW_SCALE);
+
+                // Update the DATA string in the CodeMirror editor
+                updateCodeMirrorAssetData(targetCanvas.dataset.assetType, targetAsset.name, targetAsset.data);
+
+                console.log(`Pattern ${targetAsset.name} updated from dropped image.`);
+
+            };
+            img.onerror = function() {
+                displayError(`Error loading dropped image for ${targetAsset.name}.`, "Drop Error");
+            };
+            img.src = e.target.result; // Set image source to the data URL
+        };
+        reader.onerror = function() {
+            displayError(`Error reading dropped file for ${targetAsset.name}.`, "Drop Error");
+        };
+        reader.readAsDataURL(file); // Read the file as a data URL
+    }
+
+    // --- END Drag and Drop Image Feature ---
+
 
     function drawAssetOnCanvas(ctx, asset, scale) {
         const canvasWidth = asset.width * scale;

@@ -144,6 +144,13 @@
             margin-bottom: 2px;
             display: block;
         }
+
+        /* Drag and Drop Highlighting */
+        #assetPreviews canvas.drop-target-active {
+            outline: 2px dashed blue;
+            outline-offset: -2px;
+            background-color: #e0e0ff; /* Light blue background */
+        }
     </style>
 </head>
 
@@ -233,6 +240,9 @@ FILL_RECT X=10 Y=180 WIDTH=30 HEIGHT=$bar_height
 
         <div class="controls-group">
             <h3>Patterns</h3>
+            <p style="font-size: 0.8em; color: #555; margin-top: -5px; margin-bottom: 10px;">
+                Click pixels to edit. Drag & drop an image onto a preview to import (resized, B&W threshold).
+            </p>
             <div id="assetPreviews" style="display: flex; flex-direction: column; gap: 15px;">
                 <!-- Previews will be generated here -->
                 <p style="color: #777; font-style: italic;">No patterns defined or script not run yet.</p>
