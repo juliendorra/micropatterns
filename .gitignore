@@ -10,6 +10,7 @@ micropatterns_server/local-s3-storage/*
 micropatterns_server/local-s3-storage/scripts/*
 # But specifically allow this one file
 !micropatterns_server/local-s3-storage/scripts/welcome-script.json
+!micropatterns_server/local-s3-storage/scripts/art-deco.json
 
 # Allow this specific file in the root of local-s3-storage
 !micropatterns_server/local-s3-storage/scripts.json

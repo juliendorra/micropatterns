@@ -2,5 +2,9 @@
   {
     "id": "welcome-script",
     "name": "Welcome Script"
+  },
+  {
+    "id": "art-deco",
+    "name": "Art Deco"
   }
 ]
