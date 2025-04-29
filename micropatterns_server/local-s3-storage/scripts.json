@@ -1,10 +1,14 @@
 [
   {
-    "id": "welcome-script",
-    "name": "Welcome Script"
-  },
-  {
     "id": "art-deco",
     "name": "Art Deco"
+  },
+  {
+    "id": "savanna",
+    "name": "Savanna"
+  },
+  {
+    "id": "welcome-script",
+    "name": "Welcome Script"
   }
 ]
