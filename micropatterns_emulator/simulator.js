@@ -23,7 +23,8 @@ document.addEventListener('DOMContentLoaded', () => {
     // --- Configuration ---
     // Assume server runs on localhost:8000 during development
     // TODO: Make this configurable or detect environment
-    const API_BASE_URL = 'http://localhost:8000';
+    // const API_BASE_URL = 'http://localhost:8000';
+    const API_BASE_URL = 'http://https://micropatterns-api.deno.dev';
     // --- End Configuration ---
 
 
@@ -427,9 +428,9 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         const reader = new FileReader();
-        reader.onload = function(e) {
+        reader.onload = function (e) {
             const img = new Image();
-            img.onload = function() {
+            img.onload = function () {
                 console.log(`Image loaded: ${img.width}x${img.height}. Resizing to pattern: ${targetAsset.width}x${targetAsset.height}`);
 
                 // Create a temporary canvas to draw and resize the image
@@ -461,9 +462,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 // Check if the generated data length matches
                 if (newPixelData.length !== targetAsset.width * targetAsset.height) {
-                     console.error(`Pixel data length mismatch after processing image. Expected ${targetAsset.width * targetAsset.height}, got ${newPixelData.length}`);
-                     displayError(`Internal error processing image data for ${targetAsset.name}.`, "Drop Error");
-                     return;
+                    console.error(`Pixel data length mismatch after processing image. Expected ${targetAsset.width * targetAsset.height}, got ${newPixelData.length}`);
+                    displayError(`Internal error processing image data for ${targetAsset.name}.`, "Drop Error");
+                    return;
                 }
 
                 // Update the in-memory asset data
@@ -479,12 +480,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 console.log(`Pattern ${targetAsset.name} updated from dropped image.`);
 
             };
-            img.onerror = function() {
+            img.onerror = function () {
                 displayError(`Error loading dropped image for ${targetAsset.name}.`, "Drop Error");
             };
             img.src = e.target.result; // Set image source to the data URL
         };
-        reader.onerror = function() {
+        reader.onerror = function () {
             displayError(`Error reading dropped file for ${targetAsset.name}.`, "Drop Error");
         };
         reader.readAsDataURL(file); // Read the file as a data URL
@@ -679,11 +680,11 @@ document.addEventListener('DOMContentLoaded', () => {
         try {
             const response = await fetch(`${API_BASE_URL}/api/scripts/${scriptId}`);
             if (!response.ok) {
-                 if (response.status === 404) {
-                     throw new Error(`Script '${scriptId}' not found.`);
-                 } else {
+                if (response.status === 404) {
+                    throw new Error(`Script '${scriptId}' not found.`);
+                } else {
                     throw new Error(`Failed to load script: ${response.status} ${response.statusText}`);
-                 }
+                }
             }
             const scriptData = await response.json();
 
@@ -712,13 +713,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // Generate a simple ID from the name (replace with more robust generation if needed)
         const scriptId = scriptName.toLowerCase()
-                                 .replace(/\s+/g, '-') // Replace spaces with hyphens
-                                 .replace(/[^a-z0-9-]/g, '') // Remove invalid characters
-                                 .substring(0, 50); // Limit length
+            .replace(/\s+/g, '-') // Replace spaces with hyphens
+            .replace(/[^a-z0-9-]/g, '') // Remove invalid characters
+            .substring(0, 50); // Limit length
 
         if (!scriptId) {
-             setStatusMessage("Invalid script name, cannot generate ID.", true);
-             return;
+            setStatusMessage("Invalid script name, cannot generate ID.", true);
+            return;
         }
 
         console.log(`Saving script: ID=${scriptId}, Name=${scriptName}`);
@@ -737,8 +738,8 @@ document.addEventListener('DOMContentLoaded', () => {
             });
 
             if (!response.ok) {
-                 const errorData = await response.json().catch(() => ({ error: 'Unknown error saving script' }));
-                 throw new Error(`Failed to save script: ${response.status} ${response.statusText} - ${errorData.error || ''}`);
+                const errorData = await response.json().catch(() => ({ error: 'Unknown error saving script' }));
+                throw new Error(`Failed to save script: ${response.status} ${response.statusText} - ${errorData.error || ''}`);
             }
 
             const result = await response.json();
