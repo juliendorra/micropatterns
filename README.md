@@ -107,7 +107,7 @@ MicroPatterns is a mini-language designed for creating generative pixel art, pri
    ```
    *   Sets the current drawing color for subsequent primitives, fills, and drawn patterns. Default is `BLACK`. `NAME` value is case-insensitive.
 
-*   **Fill Pattern:** (Replaces old `PATTERN` command)
+*   **Fill Pattern:**
    ```micropatterns
    FILL NAME="pattern_name"
    FILL NAME=SOLID
@@ -188,7 +188,7 @@ MicroPatterns is a mini-language designed for creating generative pixel art, pri
    ```
    *   Draws a filled circle. Fill uses the current fill pattern (set by `FILL`, case-insensitive lookup) or `COLOR`. The radius `r` is multiplied by the current `SCALE` factor.
 
-*   **Draw Pattern:** (Replaces old `ICON` command)
+*   **Draw Pattern:**
    ```micropatterns
    DRAW NAME="pattern_name" X=x Y=y
    ```
