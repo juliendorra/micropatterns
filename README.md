@@ -241,41 +241,54 @@ VAR Angle
 VAR RADIUS
 
 # --- Calculations based on time ---
-LET angle = $MINUTE * 6  # Angle for minute hand (uses $MINUTE)
-LET radius = 10 + ($second % 10) * 2 # Radius pulsates slightly (uses $SECOND)
+# Angle for minute hand (uses $MINUTE)
+LET angle = $MINUTE * 6  
+# Radius pulsates slightly (uses $SECOND)
+LET radius = 10 + ($second % 10) * 2 
 
 # --- Draw filled background based on counter ---
 RESET_TRANSFORMS
 IF $COUNTER % 2 == 0 THEN
-   FILL NAME="checker" # Case-insensitive lookup
+   # Case-insensitive lookup  
+   FILL NAME="checker" 
 ELSE
-   FILL NAME="Stripes" # Case-insensitive lookup
+   # Case-insensitive lookup
+   FILL NAME="Stripes" 
 ENDIF
-FILL_RECT X=0 Y=0 WIDTH=$width HEIGHT=$HEIGHT # Fill whole screen (uses $WIDTH, $HEIGHT)
+# Fill whole screen (uses $WIDTH, $HEIGHT)
+FILL_RECT X=0 Y=0 WIDTH=$width HEIGHT=$HEIGHT 
 
 # --- Draw Hour Markers ---
 COLOR NAME=BLACK
 FILL NAME=SOLID # Use solid color for markers
 REPEAT COUNT=12 TIMES
    RESET_TRANSFORMS
-   TRANSLATE DX=100 DY=100 # Center origin (assuming 200x200 display)
-   ROTATE DEGREES=($index * 30) # Rotate per hour (uses $INDEX)
-   TRANSLATE DX=0 DY=-90 # Move out
-   FILL_RECT X=-2 Y=-5 WIDTH=4 HEIGHT=10 # Draw marker
+   # Center origin (assuming 200x200 display)
+   TRANSLATE DX=100 DY=100 
+   # Rotate per hour (uses $INDEX)
+   ROTATE DEGREES=($index * 30) 
+   # Move out
+   TRANSLATE DX=0 DY=-90 
+   # Draw marker
+   FILL_RECT X=-2 Y=-5 WIDTH=4 HEIGHT=10 
 ENDREPEAT
 
 # --- Draw pulsating circle ---
 RESET_TRANSFORMS
 TRANSLATE DX=100 DY=100
-COLOR NAME=WHITE # Draw on top of pattern
+# Draw on top of pattern
+COLOR NAME=WHITE
 FILL NAME=SOLID
-FILL_CIRCLE X=0 Y=0 RADIUS=$radius # Uses variable RADIUS (case-insensitive)
+# Uses variable RADIUS (case-insensitive)
+FILL_CIRCLE X=0 Y=0 RADIUS=$radius 
 
 # --- Draw Minute Hand (using DRAW with a defined pattern) ---
 RESET_TRANSFORMS
 TRANSLATE DX=100 DY=100
-ROTATE DEGREES=$Angle # Uses variable Angle (case-insensitive)
-# SCALE FACTOR=2 # Example: Make pattern larger
+# Uses variable Angle (case-insensitive)
+ROTATE DEGREES=$Angle 
+# Example: Make pattern larger
+# SCALE FACTOR=2 
 COLOR NAME=BLACK
 DRAW NAME="arrow" X=-2 Y=-30 # Position pattern (case-insensitive lookup)
 
@@ -285,7 +298,9 @@ RESET_TRANSFORMS
 COLOR NAME=WHITE
 VAR x_pos
 VAR y_pos
-LET x_pos = $counter % $WIDTH # Uses $COUNTER, $WIDTH
-LET y_pos = ($COUNTER / $width) % $HEIGHT # Integer division wraps y (uses $COUNTER, $WIDTH, $HEIGHT)
+# Uses $COUNTER, $WIDTH
+LET x_pos = $counter % $WIDTH 
+# Integer division wraps y (uses $COUNTER, $WIDTH, $HEIGHT)
+LET y_pos = ($COUNTER / $width) % $HEIGHT 
 PIXEL X=$x_pos Y=$y_pos # Uses variables x_pos, y_pos
 ```
