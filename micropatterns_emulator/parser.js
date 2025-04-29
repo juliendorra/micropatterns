@@ -320,7 +320,14 @@ class MicroPatternsParser {
                 }
 
                 // Store asset data using uppercase name as key
-                const assetData = { name: name, width, height, data: dataStr.split('').map(Number) };
+                // Also store originalName for display purposes
+                const assetData = {
+                    name: name, // Uppercase key for lookup
+                    originalName: nameRaw, // Original case for display
+                    width,
+                    height,
+                    data: dataStr.split('').map(Number)
+                };
 
                 if (command.subType === 'PATTERN') {
                     if (Object.keys(this.assets.patterns).length >= 8) throw new ParseError(`Maximum number of patterns (8) reached.`, command.line);

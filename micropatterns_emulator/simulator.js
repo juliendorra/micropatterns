@@ -8,6 +8,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const errorLog = document.getElementById('errorLog');
     const definedPatternsDiv = document.getElementById('definedPatterns');
     const definedIconsDiv = document.getElementById('definedIcons');
+    const assetPreviewsContainer = document.getElementById('assetPreviews');
     // Individual real-time display spans
     const realTimeHourSpan = document.getElementById('realTimeHourSpan');
     const realTimeMinuteSpan = document.getElementById('realTimeMinuteSpan');
@@ -245,6 +246,8 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             // Update UI only if parsing was successful enough to get assets
             updateDefinedAssetsUI(parseResult.assets);
+            // Render interactive previews
+            renderAssetPreviews(parseResult.assets);
         } catch (e) {
             // Catch unexpected errors during the parse() call itself
             displayError(`Unexpected Parser Crash: ${e.message}`, "Fatal Parse");
@@ -297,6 +300,166 @@ document.addEventListener('DOMContentLoaded', () => {
         env.COUNTER.value = 0; // Reset counter to zero
         // Don't run script after resetting as per requirements
     });
+
+    // --- Asset Preview Rendering and Editing ---
+
+    const PREVIEW_SCALE = 8; // How many screen pixels per asset pixel
+
+    function renderAssetPreviews(assets) {
+        assetPreviewsContainer.innerHTML = ''; // Clear previous previews
+
+        const patterns = Object.values(assets.patterns || {});
+        const icons = Object.values(assets.icons || {});
+
+        if (patterns.length === 0 && icons.length === 0) {
+            assetPreviewsContainer.innerHTML = '<p style="color: #777; font-style: italic;">No assets defined in the current script.</p>';
+            return;
+        }
+
+        patterns.forEach(asset => renderSingleAssetPreview(asset, 'PATTERN'));
+        icons.forEach(asset => renderSingleAssetPreview(asset, 'ICON'));
+    }
+
+    function renderSingleAssetPreview(asset, assetType) {
+        const container = document.createElement('div');
+        container.className = 'asset-preview-item';
+
+        const label = document.createElement('label');
+        // Use the original case name if stored, otherwise use the uppercase key
+        const displayName = asset.originalName || asset.name;
+        label.textContent = `${assetType}: ${displayName} (${asset.width}x${asset.height})`;
+        container.appendChild(label);
+
+        const canvas = document.createElement('canvas');
+        const canvasWidth = asset.width * PREVIEW_SCALE;
+        const canvasHeight = asset.height * PREVIEW_SCALE;
+        canvas.width = canvasWidth;
+        canvas.height = canvasHeight;
+        canvas.style.width = `${canvasWidth}px`;
+        canvas.style.height = `${canvasHeight}px`;
+
+        const ctx = canvas.getContext('2d');
+        drawAssetOnCanvas(ctx, asset, PREVIEW_SCALE);
+
+        // Store asset info for click handler
+        canvas.dataset.assetName = asset.name; // Use uppercase name for lookup
+        canvas.dataset.assetType = assetType;
+
+        canvas.addEventListener('click', (event) => {
+            handlePreviewClick(event, canvas, asset, assetType);
+        });
+
+        container.appendChild(canvas);
+        assetPreviewsContainer.appendChild(container);
+    }
+
+    function drawAssetOnCanvas(ctx, asset, scale) {
+        const canvasWidth = asset.width * scale;
+        const canvasHeight = asset.height * scale;
+        ctx.clearRect(0, 0, canvasWidth, canvasHeight);
+        ctx.fillStyle = 'white'; // Background for '0' pixels
+        ctx.fillRect(0, 0, canvasWidth, canvasHeight);
+
+        // Draw pixels
+        for (let y = 0; y < asset.height; y++) {
+            for (let x = 0; x < asset.width; x++) {
+                const index = y * asset.width + x;
+                if (asset.data[index] === 1) {
+                    ctx.fillStyle = 'black';
+                    ctx.fillRect(x * scale, y * scale, scale, scale);
+                }
+            }
+        }
+
+        // Draw grid lines
+        ctx.strokeStyle = '#ddd'; // Light gray grid
+        ctx.lineWidth = 1;
+        for (let x = 0; x <= asset.width; x++) {
+            ctx.beginPath();
+            ctx.moveTo(x * scale, 0);
+            ctx.lineTo(x * scale, canvasHeight);
+            ctx.stroke();
+        }
+        for (let y = 0; y <= asset.height; y++) {
+            ctx.beginPath();
+            ctx.moveTo(0, y * scale);
+            ctx.lineTo(canvasWidth, y * scale);
+            ctx.stroke();
+        }
+    }
+
+    function handlePreviewClick(event, canvas, asset, assetType) {
+        const rect = canvas.getBoundingClientRect();
+        const clickX = event.clientX - rect.left;
+        const clickY = event.clientY - rect.top;
+
+        const assetX = Math.floor(clickX / PREVIEW_SCALE);
+        const assetY = Math.floor(clickY / PREVIEW_SCALE);
+
+        if (assetX >= 0 && assetX < asset.width && assetY >= 0 && assetY < asset.height) {
+            const index = assetY * asset.width + assetX;
+            // Toggle the pixel value in the in-memory asset object
+            asset.data[index] = 1 - asset.data[index]; // Toggle 0 to 1 or 1 to 0
+
+            // Redraw this specific canvas immediately
+            const ctx = canvas.getContext('2d');
+            drawAssetOnCanvas(ctx, asset, PREVIEW_SCALE);
+
+            // Update the DATA string in the CodeMirror editor
+            updateCodeMirrorAssetData(assetType, asset.name, asset.data);
+        }
+    }
+
+    function updateCodeMirrorAssetData(assetType, assetNameUpper, newPixelData) {
+        const editor = codeMirrorEditor; // Assuming codeMirrorEditor is accessible
+        const defineRegex = new RegExp(`^\\s*DEFINE\\s+${assetType}\\s+NAME\\s*=\\s*"([^"]+)"`, "i");
+        const dataRegex = /DATA\s*=\s*"([01]*)"/i;
+
+        let targetLine = -1;
+        let lineContent = "";
+
+        // Find the line number for the correct DEFINE statement (case-insensitive name check)
+        for (let i = 0; i < editor.lineCount(); i++) {
+            const currentLine = editor.getLine(i);
+            const match = currentLine.match(defineRegex);
+            if (match && match[1].toUpperCase() === assetNameUpper) {
+                targetLine = i;
+                lineContent = currentLine;
+                break;
+            }
+        }
+
+        if (targetLine === -1) {
+            console.error(`Could not find DEFINE ${assetType} NAME="${assetNameUpper}" line in editor.`);
+            displayError(`Internal Error: Could not find DEFINE line for ${assetType} ${assetNameUpper} to update data.`, "Preview Edit");
+            return;
+        }
+
+        // Find the DATA="..." part within that line
+        const dataMatch = lineContent.match(dataRegex);
+        if (!dataMatch) {
+            console.error(`Could not find DATA="..." for ${assetType} ${assetNameUpper} on line ${targetLine + 1}.`);
+            displayError(`Internal Error: Could not find DATA attribute for ${assetType} ${assetNameUpper} on line ${targetLine + 1}.`, "Preview Edit");
+            return;
+        }
+
+        const newDataString = newPixelData.join('');
+        const oldDataString = dataMatch[1];
+        const dataStartIndex = lineContent.indexOf(dataMatch[0]) + dataMatch[0].indexOf('"') + 1; // Start after DATA="
+        const dataEndIndex = dataStartIndex + oldDataString.length; // End before closing "
+
+        const fromPos = CodeMirror.Pos(targetLine, dataStartIndex);
+        const toPos = CodeMirror.Pos(targetLine, dataEndIndex);
+
+        // Replace the data content in the editor
+        editor.replaceRange(newDataString, fromPos, toPos, "+previewEdit"); // Use origin to avoid triggering unwanted events
+
+        console.log(`Updated ${assetType} ${assetNameUpper} DATA on line ${targetLine + 1}`);
+    }
+
+
+    // --- End Asset Preview ---
+
 
     // Run once on load
     runScript();

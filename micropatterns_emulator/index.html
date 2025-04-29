@@ -87,6 +87,24 @@
         .cm-comment { color: #a80; } /* Orange/brown */
         .cm-operator { color: #c0c; } /* Purple */
         .cm-property { color: #30a; } /* Dark blue for param names */
+
+        /* Asset Preview Styles */
+        #assetPreviews canvas {
+            border: 1px solid #ccc;
+            image-rendering: pixelated; /* Keep pixels sharp */
+            cursor: pointer;
+            background-color: white; /* Ensure background for transparent pixels */
+            margin-top: 5px;
+        }
+        #assetPreviews .asset-preview-item {
+            margin-bottom: 10px;
+        }
+        #assetPreviews .asset-preview-item label {
+            font-weight: bold;
+            font-size: 0.9em;
+            margin-bottom: 2px;
+            display: block;
+        }
     </style>
 </head>
 
@@ -173,6 +191,14 @@ FILL_RECT X=10 Y=180 WIDTH=30 HEIGHT=$bar_height
             <h3>Assets Defined</h3>
             <div id="definedPatterns">Patterns: None</div>
             <div id="definedIcons">Icons: None</div>
+        </div>
+
+        <div class="controls-group">
+            <h3>Asset Previews (Click to Edit)</h3>
+            <div id="assetPreviews" style="display: flex; flex-direction: column; gap: 15px;">
+                <!-- Previews will be generated here -->
+                <p style="color: #777; font-style: italic;">No assets defined or script not run yet.</p>
+            </div>
         </div>
     </div>
 
