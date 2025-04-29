@@ -2,6 +2,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const scriptInputTextArea = document.getElementById('scriptInput');
     const runButton = document.getElementById('runButton');
     const incrementCounterButton = document.getElementById('incrementCounterButton');
+    const resetCounterButton = document.getElementById('resetCounterButton');
     const canvas = document.getElementById('displayCanvas');
     const ctx = canvas.getContext('2d');
     const errorLog = document.getElementById('errorLog');
@@ -226,6 +227,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const environment = getEnvironmentVariables();
         const parser = new MicroPatternsParser();
         let parseResult;
+        let hasErrors = false;
 
         // --- Parsing Phase ---
         try {
@@ -238,6 +240,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 });
                 // Stop execution if parsing failed critically
                 // Allow continuing if only minor parse errors occurred? For now, stop.
+                hasErrors = true;
                 return;
             }
             // Update UI only if parsing was successful enough to get assets
@@ -246,6 +249,7 @@ document.addEventListener('DOMContentLoaded', () => {
             // Catch unexpected errors during the parse() call itself
             displayError(`Unexpected Parser Crash: ${e.message}`, "Fatal Parse");
             console.error(e);
+            hasErrors = true;
             return;
         }
 
@@ -258,6 +262,7 @@ document.addEventListener('DOMContentLoaded', () => {
             (runtimeErrorMessage) => {
                 // Runtime errors should already be formatted with line numbers by runtimeError helper
                 displayError(runtimeErrorMessage, "Runtime");
+                hasErrors = true;
             }
         );
 
@@ -272,6 +277,12 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!e.isRuntimeError) { // Display if not already handled by callback
                 displayError(`Unexpected Runtime Crash: ${e.message}`, "Fatal Runtime");
             }
+            hasErrors = true;
+        }
+
+        // Auto-increment counter if no errors occurred
+        if (!hasErrors) {
+            env.COUNTER.value = parseInt(env.COUNTER.value, 10) + 1;
         }
     }
 
@@ -280,6 +291,11 @@ document.addEventListener('DOMContentLoaded', () => {
     incrementCounterButton.addEventListener('click', () => {
         env.COUNTER.value = parseInt(env.COUNTER.value, 10) + 1;
         runScript(); // Re-run script after incrementing
+    });
+
+    resetCounterButton.addEventListener('click', () => {
+        env.COUNTER.value = 0; // Reset counter to zero
+        // Don't run script after resetting as per requirements
     });
 
     // Run once on load
