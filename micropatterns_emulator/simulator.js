@@ -24,7 +24,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // Assume server runs on localhost:8000 during development
     // TODO: Make this configurable or detect environment
     // const API_BASE_URL = 'http://localhost:8000';
-    const API_BASE_URL = 'https://micropatterns-api.deno.dev;
+    const API_BASE_URL = "https://micropatterns-api.deno.dev";
     // --- End Configuration ---
 
 
