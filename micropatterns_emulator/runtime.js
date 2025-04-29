@@ -15,10 +15,8 @@ class MicroPatternsRuntime {
         this.state = {
             color: 'black', // 'black' or 'white'
             fillAsset: null, // null (solid) or asset object from assets.assets
-            translateX: 0,
-            translateY: 0,
-            rotation: 0, // degrees 0-359
-            scale: 1, // integer >= 1
+            transformations: [], // Stores sequence of {type: 'translate'/'rotate', ...}
+            scale: 1, // Stores the *last* set absolute scale factor
         };
          // Clear display with white background at the start of execution
          this.ctx.fillStyle = 'white';
@@ -159,28 +157,30 @@ class MicroPatternsRuntime {
                      break;
 
                 case 'RESET_TRANSFORMS':
-                    this.state.translateX = 0;
-                    this.state.translateY = 0;
-                    this.state.rotation = 0;
-                    this.state.scale = 1;
+                    this.state.transformations = []; // Clear sequence
+                    this.state.scale = 1; // Reset scale factor
                     break;
 
                 case 'TRANSLATE':
                     // p.DX, p.DY are resolved numbers
-                    this.state.translateX += p.DX;
-                    this.state.translateY += p.DY;
+                    // Add to the transformation sequence
+                    this.state.transformations.push({ type: 'translate', dx: p.DX, dy: p.DY });
                     break;
 
                 case 'ROTATE':
                     // p.DEGREES is resolved number
                     let degrees = p.DEGREES % 360;
                     if (degrees < 0) degrees += 360;
-                    this.state.rotation = degrees;
+                    // Add to the transformation sequence
+                    this.state.transformations.push({ type: 'rotate', degrees: degrees });
                     break;
 
                 case 'SCALE':
                     // p.FACTOR is resolved number >= 1
+                    // Set the absolute scale factor, replacing the previous one
                     this.state.scale = p.FACTOR;
+                    // Note: SCALE does not add to the transformations array itself,
+                    // its effect is applied first in transformPoint based on the final state.scale.
                     break;
 
                 // --- Drawing Commands (use resolved parameters p) ---
