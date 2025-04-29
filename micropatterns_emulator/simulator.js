@@ -102,12 +102,12 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         // Suggest Parameters after a command word (simple check)
         else if (token.type === 'keyword' && !micropatternsKeywords.includes(token.string.toUpperCase() + "=")) {
-             // Special case: after DEFINE, suggest PATTERN
-             if (token.string.toUpperCase() === 'DEFINE') {
-                 suggestions = ['PATTERN'];
-             } else {
-                 suggestions = micropatternsKeywords.filter(k => k.includes("=")); // Suggest parameters
-             }
+            // Special case: after DEFINE, suggest PATTERN
+            if (token.string.toUpperCase() === 'DEFINE') {
+                suggestions = ['PATTERN'];
+            } else {
+                suggestions = micropatternsKeywords.filter(k => k.includes("=")); // Suggest parameters
+            }
         }
         // Suggest Variables and specific values if expecting a value
         else if (isPossiblyValue || isAfterEquals) {
@@ -337,7 +337,7 @@ document.addEventListener('DOMContentLoaded', () => {
         // Use the original case name if stored, otherwise use the uppercase key
         const displayName = asset.originalName || asset.name;
         // Label just shows PATTERN now
-        label.textContent = `PATTERN: ${displayName} (${asset.width}x${asset.height})`;
+        label.textContent = `${displayName} (${asset.width}x${asset.height})`;
         container.appendChild(label);
 
         const canvas = document.createElement('canvas');
