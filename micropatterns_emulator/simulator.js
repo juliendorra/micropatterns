@@ -23,8 +23,8 @@ document.addEventListener('DOMContentLoaded', () => {
     // --- Configuration ---
     // Assume server runs on localhost:8000 during development
     // TODO: Make this configurable or detect environment
-    let API_BASE_URL = 'http://localhost:8000';
-    // API_BASE_URL = "https://micropatterns-api.deno.dev";
+    // let API_BASE_URL = 'http://localhost:8000';
+    API_BASE_URL = "https://micropatterns-api.deno.dev";
     // --- End Configuration ---
 
     // --- Drag Drawing State ---
@@ -560,16 +560,16 @@ document.addEventListener('DOMContentLoaded', () => {
         ctx.moveTo(x * scale, (y + 1) * scale);
         ctx.lineTo((x + 1) * scale, (y + 1) * scale);
         ctx.stroke();
-         // Vertical line to the left (needed if x=0)
-         ctx.beginPath();
-         ctx.moveTo(x * scale, y * scale);
-         ctx.lineTo(x * scale, (y + 1) * scale);
-         ctx.stroke();
-         // Horizontal line above (needed if y=0)
-         ctx.beginPath();
-         ctx.moveTo(x * scale, y * scale);
-         ctx.lineTo((x + 1) * scale, y * scale);
-         ctx.stroke();
+        // Vertical line to the left (needed if x=0)
+        ctx.beginPath();
+        ctx.moveTo(x * scale, y * scale);
+        ctx.lineTo(x * scale, (y + 1) * scale);
+        ctx.stroke();
+        // Horizontal line above (needed if y=0)
+        ctx.beginPath();
+        ctx.moveTo(x * scale, y * scale);
+        ctx.lineTo((x + 1) * scale, y * scale);
+        ctx.stroke();
     }
 
 
@@ -623,8 +623,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 lastDrawnPixel = { x: assetX, y: assetY }; // Update last drawn position
             }
         } else {
-             // Moved out of bounds, treat as end of stroke for this pixel
-             lastDrawnPixel = { x: -1, y: -1 };
+            // Moved out of bounds, treat as end of stroke for this pixel
+            lastDrawnPixel = { x: -1, y: -1 };
         }
     }
 
