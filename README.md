@@ -51,7 +51,7 @@ MicroPatterns is a mini-language designed for creating generative pixel art, pri
 
 ### Syntax
 
-*   **Comments:** Start with `#` and continue to the end of the line.
+*   **Comments:** Start with `#` and continue to the end of the line. Comments must be on their own line, end of line comments are not valid.
 *   **Commands:** One command per line.
 *   **Parameters:** `NAME=value` format. Order generally doesn't matter unless specified. Values can be integer literals, string literals (in double quotes), variable references (`$variable_name` - case-insensitive), or environment variables (`$HOUR`, etc. - case-insensitive).
 
