@@ -355,41 +355,46 @@ class MicroPatternsParser {
                 break;
 
             case 'VAR':
-                 const varMatch = command.rawArgsString.match(/^([a-zA-Z_][a-zA-Z0-9_]*)$/);
+                 // Require '$' prefix for variable name
+                 const varMatch = command.rawArgsString.match(/^\$([a-zA-Z_][a-zA-Z0-9_]*)$/);
                  if (!varMatch) {
-                     throw new ParseError(`Invalid syntax for VAR. Expected 'VAR variable_name'.`, command.line);
+                     throw new ParseError(`Invalid syntax for VAR. Expected 'VAR $variable_name'.`, command.line);
                  }
-                 const varNameRaw = varMatch[1];
-                 const varName = varNameRaw.toUpperCase(); // Use uppercase for storage/lookup
+                 const varNameRaw = varMatch[1]; // Capture name *without* $
+                 const varName = varNameRaw.toUpperCase(); // Use uppercase bare name for storage/lookup
+                 const varRefRaw = `$${varNameRaw}`; // Original reference with $ for errors
+
                  if (this.variables.has(varName)) {
-                     throw new ParseError(`Variable "${varNameRaw}" (or equivalent case) already declared.`, command.line);
+                     throw new ParseError(`Variable "${varRefRaw}" (or equivalent case) already declared.`, command.line);
                  }
-                 if (this._isEnvVar(varName)) { // Check uppercase name against env vars
-                      throw new ParseError(`Cannot declare variable with the same name as an environment variable: ${varNameRaw}`, command.line);
+                 if (this._isEnvVar(varName)) { // Check uppercase bare name against env vars
+                      throw new ParseError(`Cannot declare variable with the same name as an environment variable: ${varRefRaw}`, command.line);
                  }
-                 this.variables.add(varName); // Add uppercase name to set
-                 command.varName = varName; // Store uppercase name for runtime initialization
+                 this.variables.add(varName); // Add uppercase bare name to set
+                 command.varName = varName; // Store uppercase bare name for runtime initialization
                  command.type = 'VAR'; // Keep type for runtime init
                  // No params needed, VAR is handled by its presence
                  break;
 
             case 'LET':
-                 const letMatch = command.rawArgsString.match(/^([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*(.*)$/);
+                 // Require '$' prefix for target variable name
+                 const letMatch = command.rawArgsString.match(/^\$([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*(.*)$/);
                  if (!letMatch) {
-                     throw new ParseError(`Invalid syntax for LET. Expected 'LET variable = expression'.`, command.line);
+                     throw new ParseError(`Invalid syntax for LET. Expected 'LET $variable = expression'.`, command.line);
                  }
-                 const targetVarRaw = letMatch[1];
-                 const targetVar = targetVarRaw.toUpperCase(); // Use uppercase for lookup/storage
+                 const targetVarRaw = letMatch[1]; // Capture name *without* $
+                 const targetVar = targetVarRaw.toUpperCase(); // Use uppercase bare name for lookup/storage
+                 const targetVarRefRaw = `$${targetVarRaw}`; // Original reference with $ for errors
                  const expressionString = letMatch[2].trim();
 
-                 if (!this.variables.has(targetVar)) { // Check if uppercase variable is declared
-                     throw new ParseError(`Cannot assign to undeclared variable: "${targetVarRaw}"`, command.line);
+                 if (!this.variables.has(targetVar)) { // Check if uppercase bare variable is declared
+                     throw new ParseError(`Cannot assign to undeclared variable: "${targetVarRefRaw}"`, command.line);
                  }
                  if (expressionString === '') {
                       throw new ParseError(`Missing expression for LET statement.`, command.line);
                  }
 
-                 command.targetVar = targetVar; // Store uppercase target variable name
+                 command.targetVar = targetVar; // Store uppercase bare target variable name
                  command.expression = this._parseExpression(expressionString); // Parse the expression string into tokens
                  command.type = 'LET'; // Keep type for runtime
                  break;

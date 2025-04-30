@@ -7,7 +7,7 @@ For the full MicroPatterns language specification and project details, please se
 ## Using the Emulator (`index.html`)
 
 1.  **Open `index.html`:** Launch the file in a modern web browser.
-2.  **Write Script:** Edit the MicroPatterns code in the text area on the left. A sample script is provided using the latest syntax (`DEFINE PATTERN`, `FILL`, `DRAW`).
+2.  **Write Script:** Edit the MicroPatterns code in the text area on the left. A sample script is provided using the latest syntax (`DEFINE PATTERN`, `VAR $var`, `LET $var = ...`, `FILL`, `DRAW`).
 3.  **Set Environment:** Adjust the `$HOUR`, `$MINUTE`, `$SECOND`, and `$COUNTER` values in the "Environment Variables" section. The display `$WIDTH` and `$HEIGHT` are fixed at 200x200 for this emulator.
 4.  **Run Script:** Click the "Run Script" button. The script will be parsed and executed, drawing the result on the canvas display.
 5.  **Increment Counter:** Click "Increment Counter" to increase the `$COUNTER` by one and automatically re-run the script, showing how the output changes over time (or iterations).

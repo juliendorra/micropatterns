@@ -69,23 +69,24 @@ MicroPatterns is a mini-language designed for creating generative pixel art, pri
 
 *   **Declaration:**
    ```micropatterns
-   VAR variable_name
+   VAR $variable_name
    ```
-   *   Declares a variable. Initial value is 0. Variable names are **case-insensitive**. Cannot conflict with environment variable names (case-insensitively).
+   *   Declares a variable, requiring the `$` prefix. Initial value is 0. Variable names (after the `$`) are **case-insensitive**. Cannot conflict with environment variable names (case-insensitively).
+   *   Example: `VAR $offset`
 
 *   **Assignment:**
    ```micropatterns
-   LET variable_name = expression
+   LET $variable_name = expression
    ```
-   *   Assigns the result of an expression to a *previously declared* variable (case-insensitive lookup).
+   *   Assigns the result of an expression to a *previously declared* variable, requiring the `$` prefix for the target variable (case-insensitive lookup of the name after `$`).
    *   **Expressions:** Limited to integer math: `value [+-*/%] value ...`
        *   `value` can be an integer literal, `$variable` (case-insensitive), or an environment variable (`$HOUR`, etc. - case-insensitive).
        *   Operations are performed with standard precedence (`*`, `/`, `%` before `+`, `-`) and left-to-right associativity for equal precedence.
        *   Parentheses are **NOT** supported.
        *   Division `/` is integer division (truncates towards zero).
        *   Modulo `%` gives the remainder. Division/Modulo by zero is a runtime error.
-   *   Example: `LET angle = $minute * 6` (uses `$MINUTE`)
-   *   Example: `LET offset = $counter % 20 + 10` (uses `$COUNTER`)
+   *   Example: `LET $angle = $minute * 6` (uses `$MINUTE`)
+   *   Example: `LET $offset = $counter % 20 + 10` (uses `$COUNTER`)
 
 ### Pattern Definition
 
@@ -245,15 +246,15 @@ DEFINE PATTERN NAME="Checker" WIDTH=4 HEIGHT=4 DATA="1010010110100101"
 DEFINE PATTERN NAME="stripes" WIDTH=4 HEIGHT=4 DATA="1111000011110000"
 DEFINE PATTERN NAME="Arrow" WIDTH=5 HEIGHT=8 DATA="00100011100010001111100100001000010000100"
 
-# Variables (names are case-insensitive)
-VAR Angle
-VAR RADIUS
+# Variables (names are case-insensitive after $)
+VAR $Angle
+VAR $RADIUS
 
 # --- Calculations based on time ---
 # Angle for minute hand (uses $MINUTE)
-LET angle = $MINUTE * 6  
+LET $angle = $MINUTE * 6
 # Radius pulsates slightly (uses $SECOND)
-LET radius = 10 + ($second % 10) * 2 
+LET $radius = 10 + ($second % 10) * 2
 
 # --- Draw filled background based on counter ---
 RESET_TRANSFORMS
@@ -306,21 +307,21 @@ DRAW NAME="arrow" X=-2 Y=-30 # Position pattern (case-insensitive lookup)
 # (Simple example: draw pixels based on counter)
 RESET_TRANSFORMS
 COLOR NAME=WHITE
-VAR x_pos
-VAR y_pos
+VAR $x_pos
+VAR $y_pos
 # Uses $COUNTER, $WIDTH
-LET x_pos = $counter % $WIDTH 
+LET $x_pos = $counter % $WIDTH
 # Integer division wraps y (uses $COUNTER, $WIDTH, $HEIGHT)
-LET y_pos = ($COUNTER / $width) % $HEIGHT 
+LET $y_pos = ($COUNTER / $width) % $HEIGHT
 PIXEL X=$x_pos Y=$y_pos # Uses variables x_pos, y_pos
 
 # --- Draw a diagonal line using FILL_PIXEL ---
 # This line will only appear where the background 'checker' or 'stripes' pattern allows
 COLOR NAME=WHITE # Draw white pixels on top of the patterned background
 FILL NAME=SOLID # Temporarily set fill to SOLID so pattern check uses COLOR
-VAR diag_pos
+VAR $diag_pos
 REPEAT COUNT=50 TIMES
-    LET diag_pos = $INDEX * 2 + 50
+    LET $diag_pos = $INDEX * 2 + 50
     # Use FILL_PIXEL: only draws if the background pattern at (diag_pos, diag_pos) is '1'
     FILL_PIXEL X=$diag_pos Y=$diag_pos
 ENDREPEAT
