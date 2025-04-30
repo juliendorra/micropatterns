@@ -23,10 +23,15 @@ document.addEventListener('DOMContentLoaded', () => {
     // --- Configuration ---
     // Assume server runs on localhost:8000 during development
     // TODO: Make this configurable or detect environment
-    // const API_BASE_URL = 'http://localhost:8000';
-    const API_BASE_URL = "https://micropatterns-api.deno.dev";
+    let API_BASE_URL = 'http://localhost:8000';
+    // API_BASE_URL = "https://micropatterns-api.deno.dev";
     // --- End Configuration ---
 
+    // --- Drag Drawing State ---
+    let isDrawing = false;
+    let drawColor = 0; // 0 for white, 1 for black
+    let lastDrawnPixel = { x: -1, y: -1 };
+    // --- End Drag Drawing State ---
 
     const env = {
         HOUR: document.getElementById('envHour'),
@@ -369,11 +374,17 @@ document.addEventListener('DOMContentLoaded', () => {
         // Store asset info for click handler
         canvas.dataset.assetName = asset.name; // Use uppercase name for lookup
         // Store asset type as PATTERN since that's how it was defined
-        canvas.dataset.assetType = 'PATTERN';
+        canvas.dataset.assetName = asset.name; // Use uppercase name for lookup
+        canvas.dataset.assetType = 'PATTERN'; // Store asset type
 
-        canvas.addEventListener('click', (event) => {
-            handlePreviewClick(event, canvas, asset); // Pass only asset now
-        });
+        // --- Add Drag Drawing Event Listeners ---
+        canvas.addEventListener('mousedown', (event) => handleMouseDown(event, canvas, asset));
+        canvas.addEventListener('mousemove', (event) => handleMouseMove(event, canvas, asset));
+        canvas.addEventListener('mouseup', (event) => handleMouseUpOrLeave(canvas, asset));
+        canvas.addEventListener('mouseleave', (event) => handleMouseUpOrLeave(canvas, asset));
+        // Prevent drag selection of the canvas itself
+        canvas.addEventListener('dragstart', (event) => event.preventDefault());
+
 
         container.appendChild(canvas);
         assetPreviewsContainer.appendChild(container);
@@ -529,8 +540,41 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    // Updated: assetType is implicitly 'PATTERN' from dataset
-    function handlePreviewClick(event, canvas, asset) {
+
+    // --- Drag Drawing Handlers ---
+
+    // Helper to draw a single pixel on the preview canvas
+    function drawSinglePixelOnPreview(ctx, x, y, colorValue, scale) {
+        ctx.fillStyle = colorValue === 1 ? 'black' : 'white';
+        ctx.fillRect(x * scale, y * scale, scale, scale);
+        // Redraw grid line potentially covered by the pixel fill
+        ctx.strokeStyle = '#ddd';
+        ctx.lineWidth = 1;
+        // Vertical line to the right
+        ctx.beginPath();
+        ctx.moveTo((x + 1) * scale, y * scale);
+        ctx.lineTo((x + 1) * scale, (y + 1) * scale);
+        ctx.stroke();
+        // Horizontal line below
+        ctx.beginPath();
+        ctx.moveTo(x * scale, (y + 1) * scale);
+        ctx.lineTo((x + 1) * scale, (y + 1) * scale);
+        ctx.stroke();
+         // Vertical line to the left (needed if x=0)
+         ctx.beginPath();
+         ctx.moveTo(x * scale, y * scale);
+         ctx.lineTo(x * scale, (y + 1) * scale);
+         ctx.stroke();
+         // Horizontal line above (needed if y=0)
+         ctx.beginPath();
+         ctx.moveTo(x * scale, y * scale);
+         ctx.lineTo((x + 1) * scale, y * scale);
+         ctx.stroke();
+    }
+
+
+    function handleMouseDown(event, canvas, asset) {
+        isDrawing = true;
         const rect = canvas.getBoundingClientRect();
         const clickX = event.clientX - rect.left;
         const clickY = event.clientY - rect.top;
@@ -540,18 +584,62 @@ document.addEventListener('DOMContentLoaded', () => {
 
         if (assetX >= 0 && assetX < asset.width && assetY >= 0 && assetY < asset.height) {
             const index = assetY * asset.width + assetX;
-            // Toggle the pixel value in the in-memory asset object
-            asset.data[index] = 1 - asset.data[index]; // Toggle 0 to 1 or 1 to 0
+            // Toggle the pixel value
+            asset.data[index] = 1 - asset.data[index];
+            drawColor = asset.data[index]; // Store the new color (0 or 1)
+            lastDrawnPixel = { x: assetX, y: assetY };
 
-            // Redraw this specific canvas immediately
+            // Redraw just the clicked pixel on the canvas
             const ctx = canvas.getContext('2d');
-            drawAssetOnCanvas(ctx, asset, PREVIEW_SCALE);
+            drawSinglePixelOnPreview(ctx, assetX, assetY, drawColor, PREVIEW_SCALE);
+        } else {
+            // Clicked outside bounds, don't start drawing
+            isDrawing = false;
+        }
+    }
 
-            // Update the DATA string in the CodeMirror editor
-            // Pass assetType from dataset ('PATTERN')
+    function handleMouseMove(event, canvas, asset) {
+        if (!isDrawing) return;
+
+        const rect = canvas.getBoundingClientRect();
+        const moveX = event.clientX - rect.left;
+        const moveY = event.clientY - rect.top;
+
+        const assetX = Math.floor(moveX / PREVIEW_SCALE);
+        const assetY = Math.floor(moveY / PREVIEW_SCALE);
+
+        // Check bounds and if it's a new pixel
+        if (assetX >= 0 && assetX < asset.width && assetY >= 0 && assetY < asset.height) {
+            if (assetX !== lastDrawnPixel.x || assetY !== lastDrawnPixel.y) {
+                const index = assetY * asset.width + assetX;
+                // Only draw if the pixel isn't already the target color
+                if (asset.data[index] !== drawColor) {
+                    asset.data[index] = drawColor; // Set pixel to the stored draw color
+
+                    // Redraw just this pixel on the canvas
+                    const ctx = canvas.getContext('2d');
+                    drawSinglePixelOnPreview(ctx, assetX, assetY, drawColor, PREVIEW_SCALE);
+                }
+                lastDrawnPixel = { x: assetX, y: assetY }; // Update last drawn position
+            }
+        } else {
+             // Moved out of bounds, treat as end of stroke for this pixel
+             lastDrawnPixel = { x: -1, y: -1 };
+        }
+    }
+
+    function handleMouseUpOrLeave(canvas, asset) {
+        if (isDrawing) {
+            isDrawing = false;
+            lastDrawnPixel = { x: -1, y: -1 }; // Reset last drawn pixel
+
+            // Update the CodeMirror editor with the final data AFTER the drag is complete
             updateCodeMirrorAssetData(canvas.dataset.assetType, asset.name, asset.data);
         }
     }
+
+    // --- End Drag Drawing Handlers ---
+
 
     // Updated: assetType parameter is used, regex looks for DEFINE PATTERN
     function updateCodeMirrorAssetData(assetType, assetNameUpper, newPixelData) {
