@@ -355,12 +355,14 @@ class MicroPatternsParser {
                 break;
 
             case 'VAR':
-                 // Require '$' prefix for variable name
-                 const varMatch = command.rawArgsString.match(/^\$([a-zA-Z_][a-zA-Z0-9_]*)$/);
+                 // Syntax: VAR $varName [= expression]
+                 const varMatch = command.rawArgsString.match(/^\$([a-zA-Z_][a-zA-Z0-9_]*)\s*(=)?\s*(.*)?$/);
                  if (!varMatch) {
-                     throw new ParseError(`Invalid syntax for VAR. Expected 'VAR $variable_name'.`, command.line);
+                     throw new ParseError(`Invalid syntax for VAR. Expected 'VAR $variable_name [= expression]'.`, command.line);
                  }
                  const varNameRaw = varMatch[1]; // Capture name *without* $
+                 const hasAssignment = varMatch[2] === '=';
+                 const expressionString = (varMatch[3] || '').trim();
                  const varName = varNameRaw.toUpperCase(); // Use uppercase bare name for storage/lookup
                  const varRefRaw = `$${varNameRaw}`; // Original reference with $ for errors
 
@@ -370,10 +372,26 @@ class MicroPatternsParser {
                  if (this._isEnvVar(varName)) { // Check uppercase bare name against env vars
                       throw new ParseError(`Cannot declare variable with the same name as an environment variable: ${varRefRaw}`, command.line);
                  }
+
+                 // Add variable to declared set *before* parsing expression (allows self-reference if needed, though maybe bad practice)
                  this.variables.add(varName); // Add uppercase bare name to set
                  command.varName = varName; // Store uppercase bare name for runtime initialization
+
+                 if (hasAssignment) {
+                     if (expressionString === '') {
+                         throw new ParseError(`Missing expression after '=' for VAR declaration.`, command.line);
+                     }
+                     // Parse the expression string into tokens
+                     command.initialExpression = this._parseExpression(expressionString);
+                 } else {
+                     if (expressionString !== '') {
+                         // Case like "VAR $foo 123" - invalid
+                         throw new ParseError(`Invalid syntax for VAR. Found unexpected content after variable name. Use '=' for initialization.`, command.line);
+                     }
+                     // No assignment, will default to 0 at runtime
+                     command.initialExpression = null;
+                 }
                  command.type = 'VAR'; // Keep type for runtime init
-                 // No params needed, VAR is handled by its presence
                  break;
 
             case 'LET':
@@ -385,17 +403,17 @@ class MicroPatternsParser {
                  const targetVarRaw = letMatch[1]; // Capture name *without* $
                  const targetVar = targetVarRaw.toUpperCase(); // Use uppercase bare name for lookup/storage
                  const targetVarRefRaw = `$${targetVarRaw}`; // Original reference with $ for errors
-                 const expressionString = letMatch[2].trim();
+                 const letExpressionString = letMatch[2].trim(); // Renamed variable
 
                  if (!this.variables.has(targetVar)) { // Check if uppercase bare variable is declared
                      throw new ParseError(`Cannot assign to undeclared variable: "${targetVarRefRaw}"`, command.line);
                  }
-                 if (expressionString === '') {
+                 if (letExpressionString === '') {
                       throw new ParseError(`Missing expression for LET statement.`, command.line);
                  }
 
                  command.targetVar = targetVar; // Store uppercase bare target variable name
-                 command.expression = this._parseExpression(expressionString); // Parse the expression string into tokens
+                 command.expression = this._parseExpression(letExpressionString); // Use renamed variable
                  command.type = 'LET'; // Keep type for runtime
                  break;
 

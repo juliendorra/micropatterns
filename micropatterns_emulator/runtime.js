@@ -121,10 +121,19 @@ class MicroPatternsRuntime {
                 case 'NOOP': // For commands handled at parse time like DEFINE PATTERN
                     break;
                  case 'VAR':
-                     // Declaration handled by parser, initialize variable here
+                     // Declaration handled by parser. Initialize variable here.
                      // command.varName is already uppercase from parser (e.g., "MYVAR")
-                     // Store variable reference with '$' prefix and uppercase name
-                     this.variables['$' + command.varName] = 0;
+                     const varRef = '$' + command.varName; // e.g., $MYVAR
+
+                     if (command.initialExpression) {
+                         // Evaluate the initial expression using current environment
+                         // Pass command line number for evaluation errors
+                         const initialValue = this.evaluateExpression(command.initialExpression, currentEnv, command.line);
+                         this.variables[varRef] = initialValue;
+                     } else {
+                         // No initial expression provided, default to 0
+                         this.variables[varRef] = 0;
+                     }
                      break;
 
                  case 'LET':
