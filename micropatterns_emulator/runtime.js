@@ -109,7 +109,8 @@ class MicroPatternsRuntime {
             // These special commands handle their own value resolution/parsing logic
             // COLOR, FILL, DRAW are now handled by resolveParams skipping NAME
             let p = {};
-            const standardParamCommands = ['PIXEL', 'LINE', 'RECT', 'FILL_RECT', 'CIRCLE', 'FILL_CIRCLE', 'DRAW', 'TRANSLATE', 'ROTATE', 'SCALE', 'COLOR', 'FILL', 'RESET_TRANSFORMS']; // Added COLOR, FILL, DRAW here
+            // Added FILL_PIXEL to standard commands
+            const standardParamCommands = ['PIXEL', 'LINE', 'RECT', 'FILL_RECT', 'CIRCLE', 'FILL_CIRCLE', 'DRAW', 'TRANSLATE', 'ROTATE', 'SCALE', 'COLOR', 'FILL', 'RESET_TRANSFORMS', 'FILL_PIXEL'];
             if (command.params && standardParamCommands.includes(command.type)) {
                  // Pass command type and line number for context and error reporting
                  p = resolveParams(command.params, command.type, command.line);
@@ -186,6 +187,10 @@ class MicroPatternsRuntime {
                 // --- Drawing Commands (use resolved parameters p) ---
                 case 'PIXEL':
                     this.drawing.drawPixel(p.X, p.Y, this.state);
+                    break;
+                case 'FILL_PIXEL': // New command
+                    // Uses state.fillAsset internally via _getFillAssetPixelColor
+                    this.drawing.drawFilledPixel(p.X, p.Y, this.state);
                     break;
                 case 'LINE':
                     this.drawing.drawLine(p.X1, p.Y1, p.X2, p.Y2, this.state);

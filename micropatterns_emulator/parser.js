@@ -418,6 +418,7 @@ class MicroPatternsParser {
 
             // --- Drawing Commands (Standard Args) ---
             case 'PIXEL': this._requireParams(p, ['X', 'Y']); this._validateAllParamsAreValues(p); break;
+            case 'FILL_PIXEL': this._requireParams(p, ['X', 'Y']); this._validateAllParamsAreValues(p); break; // Added FILL_PIXEL
             case 'LINE': this._requireParams(p, ['X1', 'Y1', 'X2', 'Y2']); this._validateAllParamsAreValues(p); break;
             case 'RECT': this._requireParams(p, ['X', 'Y', 'WIDTH', 'HEIGHT']); this._validateAllParamsAreValues(p); break;
             case 'FILL_RECT': this._requireParams(p, ['X', 'Y', 'WIDTH', 'HEIGHT']); this._validateAllParamsAreValues(p); break;

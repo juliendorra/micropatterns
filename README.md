@@ -19,10 +19,11 @@ MicroPatterns allows you to define simple rules and use environment variables (t
 *   **Patterns:** Define reusable `PATTERN` bitmaps within the script using `DEFINE PATTERN`. These patterns can then be used for filling areas (`FILL`) or drawing directly (`DRAW`).
 *   **Transformations:** `TRANSLATE`, `ROTATE`, `SCALE` commands modify subsequent drawing.
 *   **Control Flow:** Basic `REPEAT` loops and `IF/ELSE/ENDIF` conditionals.
+*   **Pattern-Based Drawing:** Draw individual pixels conditionally based on the current fill pattern using `FILL_PIXEL`.
 
 ---
 
-## MicroPatterns DSL Specification v1.1 (Unified Pattern Usage)
+## MicroPatterns DSL Specification v1.2 (Added FILL_PIXEL)
 
 ### Overview
 
@@ -46,7 +47,7 @@ MicroPatterns is a mini-language designed for creating generative pixel art, pri
    *   String literal *content* (e.g., the `"pattern_name"` itself inside quotes) remains case-sensitive if the underlying system requires it, but the *identifier* lookup is case-insensitive.
 5.  **Named Parameters:** All commands taking arguments require named parameters (e.g., `PIXEL X=10 Y=20`).
 6.  **E-ink Focus:** Assumes a monochrome (Black/White) display. Pattern fills are a key feature.
-7.  **Patterns:** Patterns are defined within the script using `DEFINE PATTERN` and can be used for filling (`FILL`) or direct drawing (`DRAW`).
+7.  **Patterns:** Patterns are defined within the script using `DEFINE PATTERN` and can be used for filling (`FILL`), direct drawing (`DRAW`), or conditional pixel drawing (`FILL_PIXEL`).
 
 ### Syntax
 
@@ -197,6 +198,14 @@ MicroPatterns is a mini-language designed for creating generative pixel art, pri
    *   The pattern's pixels are then individually transformed relative to this origin using the current `ROTATE` and `SCALE` state.
    *   Draws using the current `COLOR` for '1' pixels in the pattern data.
 
+*   **Filled Pixel (Conditional):**
+    ```micropatterns
+    FILL_PIXEL X=x Y=y
+    ```
+    *   Draws a single pixel at the transformed `(x,y)`, but *only* if the current fill pattern allows it at that screen location.
+    *   Uses the current fill pattern (set by `FILL`, tiled, case-insensitive lookup) or `COLOR` (if `FILL NAME=SOLID`).
+    *   The pattern is checked at the resulting *screen* coordinate after transformation. If the pattern bit at that tiled location is '1' (or if fill is `SOLID`), the pixel is drawn using the current `COLOR`. Otherwise, nothing is drawn.
+
 ### Control Flow
 
 *   **Repeat Loop:**
@@ -260,7 +269,8 @@ FILL_RECT X=0 Y=0 WIDTH=$width HEIGHT=$HEIGHT
 
 # --- Draw Hour Markers ---
 COLOR NAME=BLACK
-FILL NAME=SOLID # Use solid color for markers
+# Use solid color for markers
+FILL NAME=SOLID 
 REPEAT COUNT=12 TIMES
    RESET_TRANSFORMS
    # Center origin (assuming 200x200 display)
@@ -303,4 +313,15 @@ LET x_pos = $counter % $WIDTH
 # Integer division wraps y (uses $COUNTER, $WIDTH, $HEIGHT)
 LET y_pos = ($COUNTER / $width) % $HEIGHT 
 PIXEL X=$x_pos Y=$y_pos # Uses variables x_pos, y_pos
+
+# --- Draw a diagonal line using FILL_PIXEL ---
+# This line will only appear where the background 'checker' or 'stripes' pattern allows
+COLOR NAME=WHITE # Draw white pixels on top of the patterned background
+FILL NAME=SOLID # Temporarily set fill to SOLID so pattern check uses COLOR
+VAR diag_pos
+REPEAT COUNT=50 TIMES
+    LET diag_pos = $INDEX * 2 + 50
+    # Use FILL_PIXEL: only draws if the background pattern at (diag_pos, diag_pos) is '1'
+    FILL_PIXEL X=$diag_pos Y=$diag_pos
+ENDREPEAT
 ```

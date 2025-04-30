@@ -13,8 +13,8 @@
 CodeMirror.defineMode("micropatterns", function() {
 
   // Case-insensitive keywords
-  // Updated: DEFINE, PATTERN (as part of DEFINE), FILL, DRAW. Removed ICON.
-  const keywords = /^(?:DEFINE|PATTERN|VAR|LET|COLOR|FILL|DRAW|RESET_TRANSFORMS|TRANSLATE|ROTATE|SCALE|PIXEL|LINE|RECT|FILL_RECT|CIRCLE|FILL_CIRCLE|REPEAT|TIMES|IF|THEN|ELSE|ENDIF|ENDREPEAT|BLACK|WHITE|SOLID)\b/i;
+  // Updated: DEFINE, PATTERN (as part of DEFINE), FILL, DRAW. Removed ICON. Added FILL_PIXEL.
+  const keywords = /^(?:DEFINE|PATTERN|VAR|LET|COLOR|FILL|DRAW|RESET_TRANSFORMS|TRANSLATE|ROTATE|SCALE|PIXEL|FILL_PIXEL|LINE|RECT|FILL_RECT|CIRCLE|FILL_CIRCLE|REPEAT|TIMES|IF|THEN|ELSE|ENDIF|ENDREPEAT|BLACK|WHITE|SOLID)\b/i;
   // Case-insensitive parameter names followed by =
   const properties = /^(?:NAME|WIDTH|HEIGHT|DATA|X|Y|X1|Y1|X2|Y2|DX|DY|DEGREES|FACTOR|RADIUS|COUNT)\s*=/i;
   // Case-insensitive environment variables

@@ -216,6 +216,16 @@ COLOR NAME=BLACK
 LET bar_height = $COUNTER % 50 + 10
 # Use declared variable
 FILL_RECT X=10 Y=180 WIDTH=30 HEIGHT=$bar_height 
+
+# Draw a line using FILL_PIXEL
+# It will only draw where the background 'checker' pattern is 1
+COLOR NAME=WHITE
+FILL NAME=SOLID # Set fill to SOLID so pattern check uses COLOR
+VAR diag_pos
+REPEAT COUNT=100 TIMES
+    LET diag_pos = $INDEX + 50
+    FILL_PIXEL X=$diag_pos Y=$diag_pos
+ENDREPEAT
                     
         </textarea>
         <button id="runButton">Run Script</button>

@@ -161,32 +161,36 @@ class MicroPatternsDrawing {
     }
 
     // Note: fillRect is defined below. The duplicate getFillAssetPixel function definition is removed.
-    // getFillAssetPixel is now correctly defined within the fillRect function's scope.
+    // Removed extra closing brace here that was causing SyntaxError
+
+    // Helper function to get the correct pixel color for fills, considering fill asset and tiling.
+    // screenX, screenY are the top-left canvas coordinates of the pixel/block being considered.
+    // fillAsset is the pattern object (or null for solid).
+    // stateColor is the current drawing color ('black' or 'white').
+    // Returns the effective color ('black', 'white') or 'white' if the pattern pixel is off.
+    _getFillAssetPixelColor(screenX, screenY, fillAsset, stateColor) {
+        if (!fillAsset) {
+            return stateColor; // Solid fill with the current state color
+        }
+        // Use Math.floor for consistency with canvas coordinates
+        // Tiling logic: Use modulo on screen coordinates
+        const assetX = Math.floor(screenX) % fillAsset.width;
+        const assetY = Math.floor(screenY) % fillAsset.height;
+        // Handle negative modulo results
+        const px = (assetX < 0) ? assetX + fillAsset.width : assetX;
+        const py = (assetY < 0) ? assetY + fillAsset.height : assetY;
+
+        const index = py * fillAsset.width + px;
+        if (index < 0 || index >= fillAsset.data.length) {
+            console.warn(`Fill asset index out of bounds: (${px}, ${py}) for screen (${screenX}, ${screenY})`);
+            return 'white'; // Default to white/transparent on error
+        }
+        // Return the state color only if the asset bit is 1, otherwise white
+        return fillAsset.data[index] === 1 ? stateColor : 'white';
+    }
+
 
     fillRect(x, y, width, height, state) {
-        // Helper function to get the correct pixel color considering fill asset and tiling
-        // Defined inside fillRect to access state easily if needed, or can be moved out
-        const getFillAssetPixel = (screenX, screenY, fillAsset, stateColor) => {
-            if (!fillAsset) {
-                return stateColor; // Solid fill with the current state color
-            }
-            // Use Math.floor for consistency with canvas coordinates
-            // Tiling logic: Use modulo on screen coordinates
-            const assetX = Math.floor(screenX) % fillAsset.width;
-            const assetY = Math.floor(screenY) % fillAsset.height;
-            // Handle negative modulo results
-            const px = (assetX < 0) ? assetX + fillAsset.width : assetX;
-            const py = (assetY < 0) ? assetY + fillAsset.height : assetY;
-
-            const index = py * fillAsset.width + px;
-            if (index < 0 || index >= fillAsset.data.length) {
-                console.warn(`Asset index out of bounds: (${px}, ${py}) for screen (${screenX}, ${screenY})`);
-                return 'white'; // Default to white/transparent on error
-            }
-            // Return the state color only if the asset bit is 1, otherwise white
-            return fillAsset.data[index] === 1 ? stateColor : 'white';
-        };
-
         // Filled rects are complex with rotation and scaling combined with assets.
         // Iterate through the *logical* pixels of the rectangle, transform each,
         // determine the fill asset color, and draw the scaled block.
@@ -200,9 +204,9 @@ class MicroPatternsDrawing {
                 // Transform this logical point to screen space (top-left of block)
                 const p = this.transformPoint(logicalX, logicalY, state);
 
-                // Determine the color based on the fill asset using the helper function
+                // Determine the color based on the fill asset using the class helper function
                 // Use the transformed screen coordinate (p.x, p.y) for asset lookup
-                const effectiveColor = getFillAssetPixel(p.x, p.y, state.fillAsset, state.color);
+                const effectiveColor = this._getFillAssetPixelColor(p.x, p.y, state.fillAsset, state.color);
 
                 // Draw the scaled block if the color is not white
                 if (effectiveColor !== 'white') {
@@ -266,29 +270,6 @@ class MicroPatternsDrawing {
 
     // Fill circle using scanlines within the circle's bounds, applying fill assets and scaling
     fillCircle(cx, cy, radius, state) {
-        // Helper function to get the correct pixel color considering fill asset and tiling
-        // Defined locally within fillCircle
-        const getFillAssetPixel = (screenX, screenY, fillAsset, stateColor) => {
-            if (!fillAsset) {
-                return stateColor; // Solid fill with the current state color
-            }
-            // Use Math.floor for consistency with canvas coordinates
-            // Tiling logic: Use modulo on screen coordinates
-            const assetX = Math.floor(screenX) % fillAsset.width;
-            const assetY = Math.floor(screenY) % fillAsset.height;
-            // Handle negative modulo results
-            const px = (assetX < 0) ? assetX + fillAsset.width : assetX;
-            const py = (assetY < 0) ? assetY + fillAsset.height : assetY;
-
-            const index = py * fillAsset.width + px;
-            if (index < 0 || index >= fillAsset.data.length) {
-                console.warn(`Asset index out of bounds: (${px}, ${py}) for screen (${screenX}, ${screenY})`);
-                return 'white'; // Default to white/transparent on error
-            }
-            // Return the state color only if the asset bit is 1, otherwise white
-            return fillAsset.data[index] === 1 ? stateColor : 'white';
-        };
-
         // Transform the logical center point to screen coordinates
         const center = this.transformPoint(cx, cy, state);
         // Scale the logical radius by the final absolute scale factor.
@@ -317,8 +298,8 @@ class MicroPatternsDrawing {
                 const dy = blockCenterY - center.y;
 
                 if (dx * dx + dy * dy <= rSquared) {
-                    // Get fill asset color for the top-left of the block using the local helper
-                    const effectiveColor = getFillAssetPixel(screenX, screenY, state.fillAsset, state.color);
+                    // Get fill asset color for the top-left of the block using the class helper
+                    const effectiveColor = this._getFillAssetPixelColor(screenX, screenY, state.fillAsset, state.color);
                      if (effectiveColor !== 'white') {
                          // Draw the scaled block
                          this.setPixel(screenX, screenY, effectiveColor, state);
@@ -327,6 +308,21 @@ class MicroPatternsDrawing {
              } // End inner for (screenX)
          } // End outer for (screenY)
      } // End fillCircle method
+
+    // Draws a single logical pixel, conditionally based on the current fill pattern.
+    drawFilledPixel(x, y, state) {
+        // Transform the logical coordinate (x, y) to get the top-left of the block
+        const p = this.transformPoint(x, y, state);
+
+        // Determine the effective color based on the fill asset at the screen coordinate (p.x, p.y)
+        const effectiveColor = this._getFillAssetPixelColor(p.x, p.y, state.fillAsset, state.color);
+
+        // Draw the scaled block only if the effective color is not white
+        // (i.e., solid fill, or pattern pixel is '1')
+        if (effectiveColor !== 'white') {
+            this.setPixel(p.x, p.y, effectiveColor, state);
+        }
+    }
 
     // Renamed from drawIcon - draws a defined pattern directly
     drawAsset(x, y, assetData, state) {
