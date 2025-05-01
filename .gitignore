@@ -12,6 +12,14 @@ micropatterns_server/local-s3-storage/scripts/*
 !micropatterns_server/local-s3-storage/scripts/welcome-script.json
 !micropatterns_server/local-s3-storage/scripts/art-deco.json
 !micropatterns_server/local-s3-storage/scripts/savanna.json
+!micropatterns_server/local-s3-storage/scripts/organic-shapes.json
 
 # Allow this specific file in the root of local-s3-storage
 !micropatterns_server/local-s3-storage/scripts.json
+
+M5Paper_MicroPatterns/.pio
+M5Paper_MicroPatterns/.gitignore
+M5Paper_MicroPatterns/.vscode/.browse.c_cpp.db*
+M5Paper_MicroPatterns/.vscode/c_cpp_properties.json
+M5Paper_MicroPatterns/.vscode/launch.json
+M5Paper_MicroPatterns/.vscode/ipch
