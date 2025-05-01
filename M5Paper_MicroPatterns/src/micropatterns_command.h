@@ -27,6 +27,9 @@ enum CommandType {
     CMD_FILL_CIRCLE,
     CMD_REPEAT, // Not implemented in this basic version
     CMD_IF,     // Not implemented in this basic version
+    CMD_ELSE,   // Not implemented
+    CMD_ENDIF,  // Not implemented
+    CMD_ENDREPEAT,
     CMD_NOOP    // For commands handled entirely at parse time (like DEFINE)
 };
 
@@ -53,12 +56,19 @@ struct MicroPatternsCommand {
     int definePatternHeight = 0;
     String definePatternData;
 
-    String varName; // For VAR command (UPPERCASE, no '$')
-    // std::vector<ExpressionToken> initialExpression; // For VAR init (complex, skip for now)
+    // For VAR command
+    String varName; // UPPERCASE, no '$'
+    std::vector<ParamValue> initialExpressionTokens; // Stores tokenized expression (numbers, $VARS, operators as strings)
 
-    String letTargetVar; // For LET command (UPPERCASE, no '$')
-    // std::vector<ExpressionToken> letExpression; // For LET assignment (complex, skip for now)
-    // Removed: int letValue = 0; // Use params["VALUE"] instead
+    // For LET command
+    String letTargetVar; // UPPERCASE, no '$'
+    std::vector<ParamValue> letExpressionTokens; // Stores tokenized expression
+
+    // For REPEAT command
+    ParamValue count; // Stores the parsed COUNT value (int or variable)
+
+    // For block commands (REPEAT, IF)
+    std::vector<MicroPatternsCommand> nestedCommands; // Stores commands inside the block
 
     MicroPatternsCommand(CommandType t = CMD_UNKNOWN, int line = 0) : type(t), lineNumber(line) {}
 };

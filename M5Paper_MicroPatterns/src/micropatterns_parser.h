@@ -26,15 +26,20 @@ private:
     std::vector<String> _errors;
     std::vector<String> _declaredVariables; // Store declared var names (UPPERCASE, no '$')
     int _lineNumber;
+    std::vector<MicroPatternsCommand*> _commandStack; // Stack to manage nested blocks (REPEAT, IF)
 
     void reset();
     void addError(const String& message);
     bool processLine(const String& line);
     bool parseDefinePattern(const String& argsString);
-    bool parseVar(const String& argsString);
-    bool parseLet(const String& argsString);
+    // Updated signatures to use output parameters
+    bool parseVar(const String& argsString, String& outVarName, std::vector<ParamValue>& outTokens);
+    bool parseLet(const String& argsString, String& outTargetVarName, std::vector<ParamValue>& outTokens);
+    bool parseRepeat(const String& argsString, ParamValue& outCount);
     bool parseParams(const String& argsString, std::map<String, ParamValue>& params);
     ParamValue parseValue(const String& valueString);
+    // Parses an expression string into a vector of tokens (numbers, variables, operators)
+    bool parseExpression(const String& expressionString, std::vector<ParamValue>& tokens);
 };
 
 #endif // MICROPATTERNS_PARSER_H

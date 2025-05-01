@@ -8,6 +8,7 @@ MicroPatternsParser::MicroPatternsParser() {
 void MicroPatternsParser::reset() {
     _commands.clear();
     _assets.clear();
+    _commandStack.clear(); // Clear the stack on reset
     _errors.clear();
     _declaredVariables.clear();
     _lineNumber = 0;
@@ -63,6 +64,15 @@ bool MicroPatternsParser::parse(const String& scriptText) {
         end = scriptText.indexOf('\n', start);
     }
 
+    // After parsing all lines, check if any blocks are unclosed
+    if (!_commandStack.empty()) {
+        // Get the line number where the unclosed block started
+        int startLine = _commandStack.back()->lineNumber;
+        String blockType = (_commandStack.back()->type == CMD_REPEAT) ? "REPEAT" : "IF"; // Extend if IF is added
+        addError("Unclosed " + blockType + " block started on line " + String(startLine) + ". Expected END" + blockType + ".");
+    }
+
+
     return _errors.empty(); // Return true if no errors occurred
 }
 
@@ -83,54 +93,69 @@ bool MicroPatternsParser::processLine(const String& line) {
 
     MicroPatternsCommand cmd;
     cmd.lineNumber = _lineNumber;
+    bool isBlockStart = false; // Flag to indicate if this command starts a block
 
     // --- Handle specific commands ---
-    if (commandNameStr == "DEFINE") {
-        if (!parseDefinePattern(argsString)) return false;
-        cmd.type = CMD_NOOP; // Handled entirely here
-        // Don't add NOOP to command list
-        return true;
-    } else if (commandNameStr == "VAR") {
-         if (!parseVar(argsString)) return false;
-         // We need the VAR command at runtime to initialize
-         cmd.type = CMD_VAR;
-         // varName is set within parseVar and copied to the command added below
-         // For simplicity, we'll find the varName again here
-         int dollarPos = argsString.indexOf('$');
-         int equalsPos = argsString.indexOf('=');
-         int endPos = (equalsPos != -1) ? equalsPos : argsString.length();
-         if (dollarPos != -1) {
-             cmd.varName = argsString.substring(dollarPos + 1, endPos);
-             cmd.varName.trim();
-             cmd.varName.toUpperCase();
-         } else {
-             addError("Invalid VAR syntax: Missing '$variable_name'.");
-             return false;
-         }
-         // Simplified: No expression parsing for VAR init yet
-    } else if (commandNameStr == "LET") {
-        if (!parseLet(argsString)) return false;
-        cmd.type = CMD_LET;
-        // Extract target var and simplified value
-        int equalsPos = argsString.indexOf('=');
-        if (equalsPos != -1) {
-            String targetPart = argsString.substring(0, equalsPos);
-            String valuePart = argsString.substring(equalsPos + 1);
-            targetPart.trim();
-            valuePart.trim();
-            if (targetPart.startsWith("$")) {
-                cmd.letTargetVar = targetPart.substring(1);
-                cmd.letTargetVar.toUpperCase();
-                // Parse the value part and store it in the params map
-                cmd.params["VALUE"] = parseValue(valuePart);
-            } else {
-                 addError("Invalid LET syntax: Target variable must start with '$'.");
-                 return false;
-            }
-        } else {
-            addError("Invalid LET syntax: Missing '='.");
+    // Handle block ends first
+    if (commandNameStr == "ENDREPEAT") {
+        if (_commandStack.empty() || _commandStack.back()->type != CMD_REPEAT) {
+            addError("Unexpected ENDREPEAT without matching REPEAT.");
             return false;
         }
+        _commandStack.pop_back(); // Pop the completed REPEAT block from the stack
+        return true; // Don't add ENDREPEAT itself as a command object
+    }
+    // Add ENDIF handling here if implemented later...
+
+    // Handle regular commands and block starts
+    if (commandNameStr == "DEFINE") {
+        // Expect "PATTERN NAME=..." after DEFINE
+        String defineArgs = argsString;
+        defineArgs.trim();
+        String upperDefineArgs = defineArgs;
+        upperDefineArgs.toUpperCase();
+        if (!upperDefineArgs.startsWith("PATTERN ")) {
+             addError("DEFINE command must be followed by 'PATTERN'.");
+             return false;
+        }
+        // Extract arguments *after* "PATTERN "
+        String patternArgs = defineArgs.substring(8); // Length of "PATTERN "
+        patternArgs.trim();
+        if (!parseDefinePattern(patternArgs)) return false;
+        // DEFINE PATTERN is handled entirely at parse time, no command object needed.
+        return true;
+    } else if (commandNameStr == "VAR") {
+        String varName;
+        std::vector<ParamValue> tokens;
+        if (!parseVar(argsString, varName, tokens)) {
+            return false; // Error already added by parseVar
+        }
+        // Create command object *after* successful parsing
+        cmd.type = CMD_VAR;
+        cmd.varName = varName; // Store parsed name (UPPERCASE, no '$')
+        cmd.initialExpressionTokens = tokens; // Store parsed tokens
+        // Let the standard logic below add the command to the list
+    } else if (commandNameStr == "LET") {
+        String targetVar;
+        std::vector<ParamValue> tokens;
+        if (!parseLet(argsString, targetVar, tokens)) {
+            return false; // Error already added by parseLet
+        }
+        // Create command object *after* successful parsing
+        cmd.type = CMD_LET;
+        cmd.letTargetVar = targetVar; // Store parsed target name (UPPERCASE, no '$')
+        cmd.letExpressionTokens = tokens; // Store parsed tokens
+        // Let the standard logic below add the command to the list
+    } else if (commandNameStr == "REPEAT") {
+        ParamValue countVal;
+        if (!parseRepeat(argsString, countVal)) {
+             return false; // Error already added by parseRepeat
+        }
+        // Create command object *after* successful parsing
+        cmd.type = CMD_REPEAT;
+        cmd.count = countVal; // Store parsed count value
+        isBlockStart = true; // Mark this as a block-starting command
+        // Let the standard logic below add the command to the list
     } else if (commandNameStr == "COLOR") {
         cmd.type = CMD_COLOR;
     } else if (commandNameStr == "FILL") {
@@ -164,62 +189,129 @@ bool MicroPatternsParser::processLine(const String& line) {
         return false;
     }
 
-    // Parse parameters for commands that use them
-    if (cmd.type != CMD_RESET_TRANSFORMS && cmd.type != CMD_VAR && cmd.type != CMD_LET && cmd.type != CMD_NOOP) {
+    // Parse parameters for commands that use the generic KEY=VALUE format
+    // Skip for commands with special syntax handled above (DEFINE, VAR, LET, REPEAT)
+    // Also skip for commands with no parameters (RESET_TRANSFORMS)
+    if (cmd.type != CMD_DEFINE_PATTERN && cmd.type != CMD_VAR && cmd.type != CMD_LET &&
+        cmd.type != CMD_REPEAT && cmd.type != CMD_RESET_TRANSFORMS && cmd.type != CMD_NOOP)
+    {
         if (!parseParams(argsString, cmd.params)) {
             // Error already added in parseParams
             return false;
         }
     }
 
-    _commands.push_back(cmd);
+    // Add the command to the correct list (top-level or nested)
+    if (_commandStack.empty()) {
+        // Add to top-level list
+        _commands.push_back(cmd);
+        // If this command starts a block, push its pointer (from the main list) onto the stack
+        if (isBlockStart) {
+            _commandStack.push_back(&_commands.back());
+        }
+    } else {
+        // Add to the nested command list of the currently open block
+        MicroPatternsCommand* currentBlock = _commandStack.back();
+        currentBlock->nestedCommands.push_back(cmd);
+        // If this nested command also starts a block, push its pointer (from the nested list) onto the stack
+        if (isBlockStart) {
+            _commandStack.push_back(&currentBlock->nestedCommands.back());
+        }
+    }
+
     return true;
 }
 
-bool MicroPatternsParser::parseDefinePattern(const String& argsString) {
-    String remainingArgs = argsString;
-    remainingArgs.trim();
+// Parses REPEAT COUNT=value TIMES
+// Populates outCount with the parsed value (int or variable)
+bool MicroPatternsParser::parseRepeat(const String& argsString, ParamValue& outCount) {
+    String trimmedArgs = argsString;
+    trimmedArgs.trim();
+    String upperArgs = trimmedArgs; // Create copy for case-insensitive checks
+    upperArgs.toUpperCase();
 
-    // Create a copy for the case-insensitive check
-    String upperArgs = remainingArgs;
-    upperArgs.toUpperCase(); // Modify the copy
-
-    if (!upperArgs.startsWith("PATTERN ")) {
-        addError("DEFINE must be followed by PATTERN.");
+    // Check for COUNT= part
+    if (!upperArgs.startsWith("COUNT=")) {
+        addError("REPEAT requires COUNT= parameter.");
         return false;
     }
-    remainingArgs = remainingArgs.substring(8); // Length of "PATTERN "
-    remainingArgs.trim();
 
-    std::map<String, ParamValue> params;
-    if (!parseParams(remainingArgs, params)) {
-        return false; // Error already added
+    // Find the end of the COUNT value and the start of TIMES
+    int equalsPos = trimmedArgs.indexOf('='); // Should be 5 if startsWith is true
+    int timesPos = upperArgs.indexOf(" TIMES"); // Find " TIMES" case-insensitively
+
+    if (timesPos == -1) {
+        addError("REPEAT requires TIMES keyword after COUNT value.");
+        return false;
     }
 
-    // Validate required params
-    if (params.find("NAME") == params.end() || params["NAME"].type != ParamValue::TYPE_STRING) {
+    // Extract the value string between '=' and 'TIMES'
+    String countValueStr = trimmedArgs.substring(equalsPos + 1, timesPos);
+    countValueStr.trim();
+
+    if (countValueStr.length() == 0) {
+        addError("Missing value for REPEAT COUNT.");
+        return false;
+    }
+
+    // Check for extra characters after TIMES
+    String remaining = trimmedArgs.substring(timesPos + 6); // Length of " TIMES"
+    remaining.trim();
+    if (remaining.length() > 0) {
+        addError("Unexpected characters after TIMES in REPEAT command: '" + remaining + "'");
+        return false;
+    }
+
+    // Parse the count value (can be int or variable)
+    outCount = parseValue(countValueStr);
+
+    // Validate count type (must be int or variable)
+    if (outCount.type != ParamValue::TYPE_INT && outCount.type != ParamValue::TYPE_VARIABLE) {
+        addError("REPEAT COUNT value must be an integer or a variable ($var). Got: " + countValueStr);
+        return false;
+    }
+    // Further validation (e.g., non-negative) happens at runtime
+
+    return true;
+}
+
+// Parses the arguments for DEFINE PATTERN NAME=... WIDTH=... HEIGHT=... DATA=...
+bool MicroPatternsParser::parseDefinePattern(const String& argsString) {
+    // argsString contains everything after "DEFINE PATTERN "
+
+    // This map will store the parsed parameters for this specific command
+    std::map<String, ParamValue> patternParams;
+    // Pass the already trimmed argsString directly to parseParams
+    if (!parseParams(argsString, patternParams)) {
+        return false; // Error already added by parseParams
+    }
+
+    // Validate required params using the local patternParams map
+    if (patternParams.find("NAME") == patternParams.end() || patternParams["NAME"].type != ParamValue::TYPE_STRING) {
         addError("DEFINE PATTERN requires NAME=\"...\" parameter.");
         return false;
     }
-    if (params.find("WIDTH") == params.end() || params["WIDTH"].type != ParamValue::TYPE_INT) {
+    if (patternParams.find("WIDTH") == patternParams.end() || patternParams["WIDTH"].type != ParamValue::TYPE_INT) {
         addError("DEFINE PATTERN requires WIDTH=... parameter.");
         return false;
     }
-    if (params.find("HEIGHT") == params.end() || params["HEIGHT"].type != ParamValue::TYPE_INT) {
+    if (patternParams.find("HEIGHT") == patternParams.end() || patternParams["HEIGHT"].type != ParamValue::TYPE_INT) {
         addError("DEFINE PATTERN requires HEIGHT=... parameter.");
         return false;
     }
-    if (params.find("DATA") == params.end() || params["DATA"].type != ParamValue::TYPE_STRING) {
+    if (patternParams.find("DATA") == patternParams.end() || patternParams["DATA"].type != ParamValue::TYPE_STRING) {
         addError("DEFINE PATTERN requires DATA=\"...\" parameter.");
         return false;
     }
 
     MicroPatternsAsset asset;
-    asset.name = params["NAME"].stringValue; // Keep original case for potential display, use uppercase for key
-    asset.name.toUpperCase();
-    asset.width = params["WIDTH"].intValue;
-    asset.height = params["HEIGHT"].intValue;
-    String dataStr = params["DATA"].stringValue;
+    // Retrieve the unquoted string value parsed by parseParams/parseValue
+    String originalName = patternParams["NAME"].stringValue;
+    asset.name = originalName; // Store original case name for potential display
+    asset.name.toUpperCase(); // Use uppercase name as the key for the assets map
+    asset.width = patternParams["WIDTH"].intValue;
+    asset.height = patternParams["HEIGHT"].intValue;
+    String dataStr = patternParams["DATA"].stringValue; // Get unquoted data string
 
     if (asset.width <= 0 || asset.height <= 0) {
         addError("Pattern WIDTH and HEIGHT must be positive.");
@@ -245,7 +337,8 @@ bool MicroPatternsParser::parseDefinePattern(const String& argsString) {
     }
 
     if (_assets.count(asset.name)) {
-        addError("Pattern '" + params["NAME"].stringValue + "' already defined.");
+        // Use the original case name retrieved earlier for the error message
+        addError("Pattern '" + originalName + "' already defined.");
         return false;
     }
 
@@ -253,7 +346,10 @@ bool MicroPatternsParser::parseDefinePattern(const String& argsString) {
     return true;
 }
 
-bool MicroPatternsParser::parseVar(const String& argsString) {
+// Parses VAR $name [= expression]
+// Populates outVarName (UPPERCASE, no '$') and outTokens (parsed expression, empty if no init)
+bool MicroPatternsParser::parseVar(const String& argsString, String& outVarName, std::vector<ParamValue>& outTokens) {
+    outTokens.clear(); // Ensure output tokens are empty initially
     String trimmedArgs = argsString;
     trimmedArgs.trim();
 
@@ -262,53 +358,76 @@ bool MicroPatternsParser::parseVar(const String& argsString) {
         return false;
     }
 
-    // Simplified: No expression parsing yet. Just register the variable name.
+    // Determine where the variable name ends and if there's an expression
     int spacePos = trimmedArgs.indexOf(' ');
     int equalsPos = trimmedArgs.indexOf('=');
-    int endPos = trimmedArgs.length();
+    int nameEndPos = trimmedArgs.length();
+    String expressionPart = "";
 
-    if (equalsPos != -1 && (spacePos == -1 || equalsPos < spacePos)) {
-        endPos = equalsPos; // End name at '=' if present
+    if (equalsPos != -1) {
+        // Found '=', potential expression
+        nameEndPos = equalsPos; // Name ends before '='
+        expressionPart = trimmedArgs.substring(equalsPos + 1);
+        expressionPart.trim();
+        if (expressionPart.length() == 0) {
+            addError("Missing expression after '=' in VAR declaration.");
+            return false;
+        }
     } else if (spacePos != -1) {
-         addError("Invalid VAR syntax. Use 'VAR $name' or 'VAR $name = value'.");
-         return false; // Don't allow things like "VAR $x 10"
+        // Found space but no '=', invalid syntax like "VAR $x 10"
+        addError("Invalid VAR syntax. Use 'VAR $name' or 'VAR $name = expression'.");
+        return false;
     }
+    // If neither '=' nor space found, nameEndPos remains length(), expressionPart remains ""
 
+    // Extract and validate name
+    outVarName = trimmedArgs.substring(1, nameEndPos); // Extract name after '$'
+    outVarName.trim();
+    outVarName.toUpperCase();
 
-    String varName = trimmedArgs.substring(1, endPos);
-    varName.trim();
-    varName.toUpperCase();
-
-    if (varName.length() == 0) {
+    if (outVarName.length() == 0) {
         addError("Invalid variable name in VAR declaration.");
         return false;
     }
 
     // Check for re-declaration (case-insensitive)
     for(const String& existingVar : _declaredVariables) {
-        if (existingVar.equalsIgnoreCase(varName)) {
-            addError("Variable '$" + varName + "' already declared.");
+        if (existingVar.equalsIgnoreCase(outVarName)) {
+            addError("Variable '$" + outVarName + "' already declared.");
             return false;
         }
     }
 
     // Check against environment variables (case-insensitive)
-    String testName = "$" + varName;
+    String testName = "$" + outVarName;
     if (testName.equalsIgnoreCase("$HOUR") || testName.equalsIgnoreCase("$MINUTE") ||
         testName.equalsIgnoreCase("$SECOND") || testName.equalsIgnoreCase("$COUNTER") ||
         testName.equalsIgnoreCase("$WIDTH") || testName.equalsIgnoreCase("$HEIGHT") ||
         testName.equalsIgnoreCase("$INDEX")) {
-        addError("Cannot declare variable with the same name as an environment variable: $" + varName);
+        addError("Cannot declare variable with the same name as an environment variable: $" + outVarName);
         return false;
     }
 
+    // Parse expression if present
+    if (expressionPart.length() > 0) {
+        if (!parseExpression(expressionPart, outTokens)) {
+            // Error already added by parseExpression
+            return false;
+        }
+    }
+    // If no expression, outTokens remains empty.
 
-    _declaredVariables.push_back(varName);
-    // Note: Initial value parsing/handling would go here. Defaulting to 0 at runtime for now.
+    // Add variable to declared list *after* all checks pass
+    _declaredVariables.push_back(outVarName);
+
     return true;
 }
 
-bool MicroPatternsParser::parseLet(const String& argsString) {
+
+// Parses LET $name = expression
+// Populates outTargetVarName (UPPERCASE, no '$') and outTokens (parsed expression)
+bool MicroPatternsParser::parseLet(const String& argsString, String& outTargetVarName, std::vector<ParamValue>& outTokens) {
+     outTokens.clear(); // Ensure output tokens are empty initially
      String trimmedArgs = argsString;
      trimmedArgs.trim();
 
@@ -332,146 +451,146 @@ bool MicroPatternsParser::parseLet(const String& argsString) {
          return false;
      }
 
-     String targetVarName = targetVarStr.substring(1);
-     targetVarName.toUpperCase();
+     outTargetVarName = targetVarStr.substring(1);
+     outTargetVarName.toUpperCase();
 
      // Check if variable was declared
      bool declared = false;
      for(const String& existingVar : _declaredVariables) {
-         if (existingVar.equalsIgnoreCase(targetVarName)) {
+         if (existingVar.equalsIgnoreCase(outTargetVarName)) {
              declared = true;
              break;
          }
      }
      if (!declared) {
-         addError("Cannot assign to undeclared variable: $" + targetVarName);
+         addError("Cannot assign to undeclared variable: $" + outTargetVarName);
          return false;
      }
 
-     // Simplified: No expression parsing yet. Assume integer literal.
-     // Real implementation would parse expressionStr here.
-     return true;
-}
+    // Parse the expression and store tokens in the output parameter
+    if (!parseExpression(expressionStr, outTokens)) {
+        // Error already added by parseExpression
+        return false;
+    }
 
-
-// Parses "KEY=VALUE KEY2="VALUE 2" KEY3=$VAR" into the params map
-bool MicroPatternsParser::parseParams(const String& argsString, std::map<String, ParamValue>& params) {
-    int currentPos = 0;
-    String remainingArgs = argsString;
-    remainingArgs.trim();
-
-    while (currentPos < remainingArgs.length()) {
-        int equalsPos = remainingArgs.indexOf('=', currentPos);
-        if (equalsPos == -1) {
-            addError("Invalid parameter format near '" + remainingArgs.substring(currentPos) + "'. Expected KEY=VALUE.");
-            return false;
-        }
-
-        String key = remainingArgs.substring(currentPos, equalsPos);
-        key.trim();
-        key.toUpperCase(); // Parameter names are case-insensitive
-
-        if (key.length() == 0) {
-             addError("Empty parameter name found.");
-             return false;
-        }
-
-        int valueStart = equalsPos + 1;
-        while (valueStart < remainingArgs.length() && remainingArgs[valueStart] == ' ') {
-            valueStart++; // Skip spaces after '='
-        }
-
-        if (valueStart >= remainingArgs.length()) {
-            addError("Missing value for parameter " + key + ".");
-            return false;
-        }
-
-        String valueString;
-        int valueEnd;
-
-        if (remainingArgs[valueStart] == '"') {
-            // Quoted string value
-            valueStart++; // Skip opening quote
-            valueEnd = valueStart;
-            bool foundEndQuote = false;
-            while (valueEnd < remainingArgs.length()) {
-                if (remainingArgs[valueEnd] == '"') {
-                    // Basic handling: doesn't support escaped quotes within
-                    foundEndQuote = true;
-                    break;
-                }
-                valueEnd++;
-            }
-
-            if (!foundEndQuote) {
-                addError("Unterminated string literal for parameter " + key + ".");
-                return false;
-            }
-            valueString = remainingArgs.substring(valueStart, valueEnd);
-            params[key] = ParamValue(valueString, false); // Store as string
-            currentPos = valueEnd + 1; // Move past closing quote
-        } else {
-            // Unquoted value (number, variable, keyword)
-            valueEnd = valueStart;
-            while (valueEnd < remainingArgs.length()) {
-                // Value ends at the next space *unless* it's part of the next parameter key=
-                if (remainingArgs[valueEnd] == ' ') {
-                    // Look ahead to see if the next part looks like KEY=
-                    int nextEquals = remainingArgs.indexOf('=', valueEnd);
-                    int nextSpaceAfterVal = remainingArgs.indexOf(' ', valueEnd + 1); // Find space *after* current potential value end
-
-                    bool looksLikeNextParam = false;
-                    if(nextEquals != -1) {
-                        // Check if the equals sign appears before the next space (or if there's no next space)
-                        if(nextSpaceAfterVal == -1 || nextEquals < nextSpaceAfterVal) {
-                             // Check if the part before '=' is a valid key (simple check: no spaces)
-                             String potentialNextKey = remainingArgs.substring(valueEnd, nextEquals);
-                             potentialNextKey.trim();
-                             if(potentialNextKey.indexOf(' ') == -1 && potentialNextKey.length() > 0) {
-                                 looksLikeNextParam = true;
-                             }
-                        }
-                    }
-
-                    if (looksLikeNextParam) {
-                        break; // End current value here
-                    }
-                }
-                 valueEnd++;
-            }
-            valueString = remainingArgs.substring(valueStart, valueEnd);
-            valueString.trim(); // Trim the extracted value itself
-            if (valueString.length() == 0) {
-                 addError("Missing value for parameter " + key + ".");
-                 return false;
-            }
-            params[key] = parseValue(valueString);
-            currentPos = valueEnd; // Move past the parsed value
-        }
-
-        // Skip whitespace before next potential parameter
-        while (currentPos < remainingArgs.length() && remainingArgs[currentPos] == ' ') {
-            currentPos++;
-        }
+    // Check if expression is empty (should be caught by parseExpression, but double-check)
+    if (outTokens.empty()) {
+        addError("Internal parser error: LET expression parsed to empty token list.");
+        return false;
     }
 
     return true;
 }
 
-// Parses a single unquoted value string
+
+// Parses "KEY=VALUE KEY2="VALUE 2" KEY3=$VAR" into the params map
+bool MicroPatternsParser::parseParams(const String& argsString, std::map<String, ParamValue>& params) {
+    String remainingArgs = argsString;
+    remainingArgs.trim();
+    const char* ptr = remainingArgs.c_str(); // Use C-style pointer for easier manipulation
+
+    while (*ptr != '\0') {
+        // Skip leading whitespace
+        while (*ptr != '\0' && isspace(*ptr)) {
+            ptr++;
+        }
+        if (*ptr == '\0') break; // End of string
+
+        // Find KEY
+        const char* keyStart = ptr;
+        while (*ptr != '\0' && *ptr != '=' && !isspace(*ptr)) {
+            ptr++;
+        }
+        String key(keyStart, ptr - keyStart);
+        key.toUpperCase(); // Parameter names are case-insensitive
+
+        if (key.length() == 0) {
+            addError("Empty parameter name found near '" + String(keyStart) + "'.");
+            return false;
+        }
+
+        // Skip whitespace after key
+        while (*ptr != '\0' && isspace(*ptr)) {
+            ptr++;
+        }
+
+        // Expect '='
+        if (*ptr != '=') {
+            addError("Missing '=' after parameter name '" + key + "'.");
+            return false;
+        }
+        ptr++; // Skip '='
+
+        // Skip whitespace after '='
+        while (*ptr != '\0' && isspace(*ptr)) {
+            ptr++;
+        }
+
+        if (*ptr == '\0') {
+            addError("Missing value for parameter '" + key + "'.");
+            return false;
+        }
+
+        // Find VALUE
+        String valueString;
+        if (*ptr == '"') {
+            // Quoted string value
+            ptr++; // Skip opening quote
+            const char* valueStart = ptr;
+            while (*ptr != '\0' && *ptr != '"') {
+                // Basic handling: doesn't support escaped quotes within
+                ptr++;
+            }
+            if (*ptr != '"') {
+                addError("Unterminated string literal for parameter '" + key + "'.");
+                return false;
+            }
+            valueString = String(valueStart, ptr - valueStart);
+            params[key] = ParamValue(valueString, false); // Store unquoted string
+            ptr++; // Skip closing quote
+        } else {
+            // Unquoted value (number, variable, keyword)
+            const char* valueStart = ptr;
+            while (*ptr != '\0' && !isspace(*ptr)) {
+                // Value ends at the next space
+                ptr++;
+            }
+            valueString = String(valueStart, ptr - valueStart);
+            if (valueString.length() == 0) {
+                 addError("Missing value for parameter '" + key + "'.");
+                 return false;
+            }
+            params[key] = parseValue(valueString); // ParseValue determines type
+        }
+
+        // Parameter already exists? (Shouldn't happen with map if keys are unique)
+        // if (params.count(key)) { ... } // Map handles overwriting, but maybe add warning?
+
+        // Skip whitespace before next potential parameter
+        while (*ptr != '\0' && isspace(*ptr)) {
+            ptr++;
+        }
+    } // End while loop
+
+    return true;
+}
+
+// Parses a single value string (which might be quoted or unquoted)
 ParamValue MicroPatternsParser::parseValue(const String& valueString) {
+    // Check if it's intended as a quoted string (already unquoted by parseParams)
+    // This function now receives the *content* of the value.
+    // parseParams handles the quotes.
+
     if (valueString.startsWith("$")) {
-        // Variable reference (case-insensitive name stored internally)
-        // Basic validation
+        // Variable reference
         if (valueString.length() <= 1) {
              addError("Invalid variable format: '$' must be followed by a name.");
              return ParamValue(0); // Return dummy value on error
         }
-        // Store the variable name including '$', runtime will resolve
-        // Convert variable reference to uppercase for case-insensitive handling at runtime
-        String upperVarName = valueString; // Create a copy
-        upperVarName.toUpperCase();       // Modify the copy
-        return ParamValue(upperVarName, true); // Use the modified copy
+        // Store the variable name including '$', uppercase for runtime resolution
+        String upperVarName = valueString;
+        upperVarName.toUpperCase();
+        return ParamValue(upperVarName, true); // Mark as variable type
     }
 
     // Check if it's an integer
@@ -499,4 +618,143 @@ ParamValue MicroPatternsParser::parseValue(const String& valueString) {
     // Otherwise, treat as a string (e.g., keyword like BLACK, WHITE, SOLID)
     // Runtime will handle validation of keywords.
     return ParamValue(valueString, false);
+}
+
+// Parses an expression string like "10 + $VAR * 2" into tokens.
+// Operators (+, -, *, /, %) are stored as TYPE_STRING.
+// Numbers are TYPE_INT. Variables are TYPE_VARIABLE.
+bool MicroPatternsParser::parseExpression(const String& expressionString, std::vector<ParamValue>& tokens) {
+    tokens.clear();
+    String currentToken;
+    enum State { NONE, NUMBER, VARIABLE, OPERATOR } state = NONE;
+
+    for (int i = 0; i < expressionString.length(); ++i) {
+        char c = expressionString[i];
+
+        if (isspace(c)) {
+            if (currentToken.length() > 0) {
+                tokens.push_back(parseValue(currentToken)); // Parse the completed token
+                currentToken = "";
+                state = NONE;
+            }
+            continue; // Skip whitespace
+        }
+
+        switch (state) {
+            case NONE:
+                if (isdigit(c) || (c == '-' && (i + 1 < expressionString.length() && isdigit(expressionString[i+1])))) {
+                    state = NUMBER;
+                    currentToken += c;
+                } else if (c == '$') {
+                    state = VARIABLE;
+                    currentToken += c;
+                } else if (String("+-*/%").indexOf(c) != -1) {
+                    // Treat operator as its own token immediately
+                    tokens.push_back(ParamValue(String(c), false)); // Store operator as string
+                    state = NONE; // Reset state after operator
+                } else {
+                    addError("Invalid character in expression: '" + String(c) + "'");
+                    return false;
+                }
+                break;
+
+            case NUMBER:
+                if (isdigit(c)) {
+                    currentToken += c;
+                } else if (String("+-*/%").indexOf(c) != -1) {
+                    // End of number, start of operator
+                    tokens.push_back(parseValue(currentToken)); // Add number token
+                    tokens.push_back(ParamValue(String(c), false)); // Add operator token
+                    currentToken = "";
+                    state = NONE;
+                } else {
+                    addError("Invalid character after number in expression: '" + String(c) + "'");
+                    return false;
+                }
+                break;
+
+            case VARIABLE:
+                // Allow letters, numbers, underscore after '$'
+                if (isalnum(c) || c == '_') {
+                    currentToken += c;
+                } else if (String("+-*/%").indexOf(c) != -1) {
+                    // End of variable, start of operator
+                    tokens.push_back(parseValue(currentToken)); // Add variable token
+                    tokens.push_back(ParamValue(String(c), false)); // Add operator token
+                    currentToken = "";
+                    state = NONE;
+                } else {
+                    addError("Invalid character after variable name in expression: '" + String(c) + "'");
+                    return false;
+                }
+                break;
+
+            case OPERATOR: // Operators are handled immediately, so this state isn't really used
+                 addError("Internal parser error: Unexpected OPERATOR state.");
+                 return false;
+        }
+    }
+
+    // Add the last token if any
+    if (currentToken.length() > 0) {
+        tokens.push_back(parseValue(currentToken));
+    }
+
+    // Basic validation: Ensure alternating value/operator pattern (simplified check)
+    if (tokens.empty()) {
+        addError("Empty expression.");
+        return false;
+    }
+    bool expectValue = true;
+    for (const auto& token : tokens) {
+        bool isValue = (token.type == ParamValue::TYPE_INT || token.type == ParamValue::TYPE_VARIABLE);
+        bool isOperator = (token.type == ParamValue::TYPE_STRING && String("+-*/%").indexOf(token.stringValue) != -1);
+
+        if (expectValue && !isValue) {
+            addError("Syntax error in expression: Expected number or variable, found '" + token.stringValue + "'.");
+            return false;
+        }
+        if (!expectValue && !isOperator) {
+             addError("Syntax error in expression: Expected operator (+-*/%), found value.");
+             return false;
+        }
+        if (!isValue && !isOperator) {
+             addError("Syntax error in expression: Invalid token '" + token.stringValue + "'.");
+             return false;
+        }
+        expectValue = !expectValue; // Toggle expectation
+    }
+    if (expectValue) { // Must end with a value
+        addError("Syntax error in expression: Cannot end with an operator.");
+        return false;
+    }
+
+
+    // Validate that all variables used exist
+    for (const auto& token : tokens) {
+        if (token.type == ParamValue::TYPE_VARIABLE) {
+            String varNameUpper = token.stringValue; // Includes '$'
+            varNameUpper.toUpperCase();
+            String bareNameUpper = varNameUpper.substring(1);
+
+            bool declared = false;
+            for(const String& existingVar : _declaredVariables) {
+                if (existingVar.equalsIgnoreCase(bareNameUpper)) {
+                    declared = true;
+                    break;
+                }
+            }
+            bool isEnv = (varNameUpper == "$HOUR" || varNameUpper == "$MINUTE" || varNameUpper == "$SECOND" ||
+                          varNameUpper == "$COUNTER" || varNameUpper == "$WIDTH" || varNameUpper == "$HEIGHT" ||
+                          varNameUpper == "$INDEX");
+
+            if (!declared && !isEnv) {
+                addError("Undefined variable used in expression: " + token.stringValue);
+                return false;
+            }
+        }
+    }
+
+
+    return true;
 }

@@ -20,6 +20,9 @@ public:
     // Update environment variables (e.g., counter)
     void setCounter(int counter);
 
+    // Error reporting
+    void runtimeError(const String& message, int lineNumber);
+
 private:
     M5EPD_Canvas* _canvas;
     MicroPatternsDrawing _drawing;
@@ -35,16 +38,19 @@ private:
     void executeCommand(const MicroPatternsCommand& cmd);
 
     // Helper to resolve parameter values (literals or variables)
-    // Returns defaultValue if parameter not found or invalid type. Logs error internally.
-    int resolveIntParam(const String& paramName, const std::map<String, ParamValue>& params, int defaultValue);
-    String resolveStringParam(const String& paramName, const std::map<String, ParamValue>& params, const String& defaultValue);
-    String resolveAssetNameParam(const String& paramName, const std::map<String, ParamValue>& params); // Handles SOLID or pattern name
+    // Returns defaultValue if parameter not found or logs error if invalid type.
+    // Requires command line number for error reporting.
+    int resolveIntParam(const String& paramName, const std::map<String, ParamValue>& params, int defaultValue, int lineNumber);
+    // Returns defaultValue if parameter not found or logs error if invalid type
+    String resolveStringParam(const String& paramName, const std::map<String, ParamValue>& params, const String& defaultValue, int lineNumber);
+    // Handles SOLID or pattern name, returns "SOLID" if parameter not found
+    String resolveAssetNameParam(const String& paramName, const std::map<String, ParamValue>& params, int lineNumber);
 
-    // Variable/Expression evaluation (Simplified)
-    int resolveValue(const ParamValue& val); // Resolves int, string literal, or variable
-    // int evaluateExpression(const std::vector<ExpressionToken>& tokens); // Complex - skip for now
-
-    void runtimeError(const String& message, int lineNumber);
+    // Variable/Expression evaluation
+    // Resolves a single value (int literal or variable reference)
+    int resolveValue(const ParamValue& val, int lineNumber);
+    // Evaluates a sequence of tokens (numbers, variables, operators)
+    int evaluateExpression(const std::vector<ParamValue>& tokens, int lineNumber);
 };
 
 #endif // MICROPATTERNS_RUNTIME_H
