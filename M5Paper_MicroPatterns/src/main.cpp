@@ -3,82 +3,42 @@
 #include "micropatterns_parser.h"
 #include "micropatterns_runtime.h"
 #include "micropatterns_drawing.h" // Drawing depends on runtime state
+#include "global_setting.h"        // For GetTimeZone
 
 // --- Sample MicroPatterns Script ---
-// Savanna Example (Simplified for basic parser/runtime)
+// Updated Savanna Example with IF/ELSE and working REPEAT/LET
 const char *savanna_script = R"(
-# Savanna Example
+# Welcome to MicroPatterns!
+# Display is 200x200
 
-DEFINE PATTERN NAME="noise" WIDTH=8 HEIGHT=8 DATA="1011010101001101110100100011010110101011011100101100101001011100"
-DEFINE PATTERN NAME="grass" WIDTH=4 HEIGHT=4 DATA="0100101001000100"
+# Define patterns using DEFINE PATTERN
+DEFINE PATTERN NAME="star" WIDTH=20 HEIGHT=20 DATA="1111111111111111111111111111111111111111111111111111111111111111111111011111111111011111110111111111111101111001111111111111101110001111111111111000100010111111111111000000010001111111110000000000011111111010000000101111111111000000001111111111100000000111111111110000000000111111111100110001010111111111011110111101111111111111101111111111111111111111111111111111111111111111111111111111111111111111"
 
-VAR $ground_level
-VAR $sky_level
-VAR $sun_x
-VAR $sun_y
-VAR $tree_x
-VAR $tree_y
-VAR $tree_scale
 
-LET $ground_level = $HEIGHT / 3 * 2
-LET $sky_level = $HEIGHT / 3
+VAR $rotation
+LET $rotation=1
 
-# Sky (Solid White)
-COLOR NAME=WHITE
-FILL NAME=SOLID
-FILL_RECT X=0 Y=0 WIDTH=$WIDTH HEIGHT=$sky_level
-
-# Sun (Solid Black Circle)
+# Draw a line using FILL_PIXEL
+# It will only draw where the background 'checker' pattern is 1
 COLOR NAME=BLACK
-FILL NAME=SOLID
-# Simplified position
-LET $sun_x = $WIDTH / 4 
-# Simplified position
-LET $sun_y = $HEIGHT / 5 
-FILL_CIRCLE X=$sun_x Y=$sun_y RADIUS=20
+FILL NAME="star" 
 
-# Ground (Noise Pattern Fill)
-COLOR NAME=BLACK
-FILL NAME="noise"
-FILL_RECT X=0 Y=$sky_level WIDTH=$WIDTH HEIGHT=$ground_level
+VAR $diag_pos
 
-# Grass (Draw Pattern Repeatedly)
-# Grass color
-COLOR NAME=BLACK 
- # Re-use variable
-LET $tree_x = 0
-REPEAT COUNT=5 TIMES 
-    # Manual loop simulation: Draw grass pattern at various X positions
-    # Need LET implemented properly for this to vary X
-    # Would be ideal
-    LET $tree_x = $INDEX * 10 
-    # Draw at ground level
-    # DRAW NAME="grass" X=$tree_x Y=$ground_level
+REPEAT COUNT=50 TIMES
+    TRANSLATE DX=100 DY=100
+    LET $diag_pos = $INDEX
+    LET $rotation= $rotation+$second
+    ROTATE DEGREES=$rotation
+    REPEAT COUNT=10 TIMES
+       ROTATE DEGREES=$rotation
+       TRANSLATE DX=1 DY=1
+       FILL_PIXEL X=$diag_pos Y=$diag_pos
+    ENDREPEAT
+   
+     RESET_TRANSFORMS
 ENDREPEAT
-# Manual grass placement for now:
-DRAW NAME="grass" X=30 Y=$ground_level
-DRAW NAME="grass" X=80 Y=$ground_level
-DRAW NAME="grass" X=130 Y=$ground_level
-DRAW NAME="grass" X=180 Y=$ground_level
-DRAW NAME="grass" X=230 Y=$ground_level
-DRAW NAME="grass" X=280 Y=$ground_level
-DRAW NAME="grass" X=330 Y=$ground_level
-DRAW NAME="grass" X=380 Y=$ground_level
-DRAW NAME="grass" X=430 Y=$ground_level
-DRAW NAME="grass" X=480 Y=$ground_level
-
-# Tree (Placeholder - requires more complex drawing/transforms)
-# COLOR NAME=BLACK
-# FILL NAME=SOLID
-# LET $tree_x = $WIDTH / 2
-# LET $tree_y = $ground_level - 50 # Trunk base
-# LET $tree_scale = 2
-# TRANSLATE DX=$tree_x DY=$tree_y
-# SCALE FACTOR=$tree_scale
-# Trunk
-# FILL_RECT X=-5 Y=0 WIDTH=10 HEIGHT=50
-# Leaves (Circle)
-# FILL_CIRCLE X=0 Y=-75 RADIUS=30
+                    
 )";
 
 // Global objects
@@ -86,13 +46,14 @@ M5EPD_Canvas canvas(&M5.EPD);
 MicroPatternsParser parser;
 MicroPatternsRuntime *runtime = nullptr; // Initialize later after canvas setup
 int counter = 0;
+RTC_Time time_struct; // To store time from RTC
 
 void setup()
 {
     // Initialize M5Paper hardware
     SysInit_Start(); // This function handles M5.begin(), EPD init, etc.
 
-    log_i("MicroPatterns M5Paper Firmware");
+    log_i("MicroPatterns M5Paper  v1.1");
 
     // Create canvas AFTER M5.EPD.begin() inside SysInit_Start()
     // Use hardcoded dimensions 540x960 for M5Paper
@@ -101,18 +62,16 @@ void setup()
     {
         log_e("Failed to create canvas framebuffer!");
         while (1)
-            ; // Halt
+            delay(1000); // Halt
     }
     log_i("Canvas created: %d x %d", canvas.width(), canvas.height());
 
     // Parse the script
     log_i("Parsing script...");
-    parser.parse(savanna_script); // Parse the script text
-
-    const auto &errors = parser.getErrors();
-    if (!errors.empty())
-    {
+    if (!parser.parse(savanna_script))
+    { // Check return value
         log_e("Script parsing failed:");
+        const auto &errors = parser.getErrors();
         for (const String &err : errors)
         {
             // Error messages from parser already include line number info
@@ -120,18 +79,19 @@ void setup()
         }
         // Halt or indicate error on screen
         canvas.fillCanvas(0); // White
+        canvas.setTextSize(2);
         canvas.setTextDatum(TL_DATUM);
         canvas.setTextColor(15); // Black
         canvas.drawString("Script Parse Error!", 10, 10);
         canvas.pushCanvas(0, 0, UPDATE_MODE_GC16);
         while (1)
-            ; // Halt
+            delay(1000); // Halt
     }
     else
     {
         log_i("Script parsed successfully.");
         const auto &commands = parser.getCommands();
-        log_i("Found %d commands.", commands.size());
+        log_i("Found %d top-level commands.", commands.size());
         const auto &assets = parser.getAssets();
         log_i("Found %d assets.", assets.size());
         const auto &vars = parser.getDeclaredVariables();
@@ -139,16 +99,19 @@ void setup()
 
         // Initialize runtime AFTER canvas is created and script is parsed successfully
         runtime = new MicroPatternsRuntime(&canvas, parser.getAssets());
-        runtime->setCommands(&commands);      // Give runtime access to commands
-        runtime->setDeclaredVariables(&vars); // Give runtime access to declared vars
+        runtime->setCommands(&commands);
+        runtime->setDeclaredVariables(&vars); // Pass declared variables to runtime
     }
 
     // Initial render only if runtime was successfully initialized
     if (runtime)
     {
         log_i("Initial execution...");
+        // Get initial time
+        M5.RTC.getTime(&time_struct);
+        runtime->setTime(time_struct.hour, time_struct.min, time_struct.sec);
         runtime->setCounter(counter);
-        runtime->execute(); // This executes commands and pushes the canvas with GLD16
+        runtime->execute(); // This executes commands and pushes the canvas
         log_i("Initial execution complete.");
     }
     else
@@ -160,20 +123,29 @@ void setup()
 
 void loop()
 {
-    // Update counter (or other dynamic inputs)
+    // Update counter
     counter++;
 
     // Re-execute the script if runtime is valid
     if (runtime)
     {
+        // Get current time
+        M5.RTC.getTime(&time_struct);
+        // Update runtime environment
+        runtime->setTime(time_struct.hour, time_struct.min, time_struct.sec);
         runtime->setCounter(counter);
+        // Execute the script
         runtime->execute(); // Executes commands and pushes canvas
+        log_i("Executed loop #%d (Time: %02d:%02d:%02d)", counter, time_struct.hour, time_struct.min, time_struct.sec);
     }
     else
     {
         log_e("Runtime not initialized, skipping execution.");
+        // If runtime failed init (due to parse error), we are halted anyway.
+        // If it failed for other reasons, log and delay.
+        delay(5000);
     }
 
     // Delay or wait for trigger
-    delay(5000); // Update every 5 seconds for example
+    delay(10000); // Update every 10 seconds for example
 }

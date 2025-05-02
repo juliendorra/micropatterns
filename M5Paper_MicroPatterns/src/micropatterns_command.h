@@ -8,7 +8,7 @@
 // Enum for command types
 enum CommandType {
     CMD_UNKNOWN,
-    CMD_DEFINE_PATTERN,
+    CMD_DEFINE_PATTERN, // Handled at parse time -> NOOP
     CMD_VAR,
     CMD_LET,
     CMD_COLOR,
@@ -25,23 +25,24 @@ enum CommandType {
     CMD_FILL_RECT,
     CMD_CIRCLE,
     CMD_FILL_CIRCLE,
-    CMD_REPEAT, // Not implemented in this basic version
-    CMD_IF,     // Not implemented in this basic version
-    CMD_ELSE,   // Not implemented
-    CMD_ENDIF,  // Not implemented
-    CMD_ENDREPEAT,
-    CMD_NOOP    // For commands handled entirely at parse time (like DEFINE)
+    CMD_REPEAT,     // Block start
+    CMD_ENDREPEAT,  // Block end
+    CMD_IF,         // Block start
+    CMD_ELSE,       // Mid-block marker
+    CMD_ENDIF,      // Block end
+    CMD_NOOP        // For commands handled entirely at parse time
 };
 
-// Structure for parameter values (can be int or string)
+// Structure for parameter values (can be int, string, variable ref, or operator)
 struct ParamValue {
-    enum ValueType { TYPE_INT, TYPE_STRING, TYPE_VARIABLE } type;
+    enum ValueType { TYPE_INT, TYPE_STRING, TYPE_VARIABLE, TYPE_OPERATOR } type;
     int intValue;
-    String stringValue; // Also used for variable names (e.g., "$COUNTER")
+    String stringValue; // Also used for variable names ("$COUNTER") and operators ("+")
 
     ParamValue() : type(TYPE_INT), intValue(0) {}
     ParamValue(int v) : type(TYPE_INT), intValue(v) {}
-    ParamValue(String s, bool isVariable = false) : type(isVariable ? TYPE_VARIABLE : TYPE_STRING), stringValue(s) {}
+    // Constructor for strings, variables, operators
+    ParamValue(String s, ValueType t = TYPE_STRING) : type(t), stringValue(s) {}
 };
 
 // Structure for a parsed command
@@ -50,15 +51,11 @@ struct MicroPatternsCommand {
     int lineNumber = 0;
     std::map<String, ParamValue> params; // Use map for named parameters (Key = UPPERCASE NAME)
 
-    // Specific fields for commands not using generic params map
-    String definePatternName;
-    int definePatternWidth = 0;
-    int definePatternHeight = 0;
-    String definePatternData;
+    // --- Fields for specific commands ---
 
     // For VAR command
     String varName; // UPPERCASE, no '$'
-    std::vector<ParamValue> initialExpressionTokens; // Stores tokenized expression (numbers, $VARS, operators as strings)
+    std::vector<ParamValue> initialExpressionTokens; // Stores tokenized expression (numbers, $VARS, operators)
 
     // For LET command
     String letTargetVar; // UPPERCASE, no '$'
@@ -66,31 +63,44 @@ struct MicroPatternsCommand {
 
     // For REPEAT command
     ParamValue count; // Stores the parsed COUNT value (int or variable)
+    std::vector<MicroPatternsCommand> nestedCommands; // Stores commands inside the REPEAT block
 
-    // For block commands (REPEAT, IF)
-    std::vector<MicroPatternsCommand> nestedCommands; // Stores commands inside the block
+    // For IF command
+    std::vector<ParamValue> conditionTokens; // Stores tokenized condition expression
+    std::vector<MicroPatternsCommand> thenCommands;
+    std::vector<MicroPatternsCommand> elseCommands; // Populated only if ELSE is present
 
     MicroPatternsCommand(CommandType t = CMD_UNKNOWN, int line = 0) : type(t), lineNumber(line) {}
 };
 
 // Structure for defined patterns/assets
 struct MicroPatternsAsset {
-    String name; // Uppercase name
+    String name; // Uppercase name (used as key)
+    String originalName; // Original case name for display/errors
     int width = 0;
     int height = 0;
     std::vector<uint8_t> data; // 0 or 1
 };
 
+// Structure for transformation operations (used in state)
+struct TransformOp {
+    enum OpType { TRANSLATE, ROTATE } type;
+    float value1; // dx or degrees
+    float value2; // dy (only for translate)
+
+    TransformOp(OpType t, float v1, float v2 = 0) : type(t), value1(v1), value2(v2) {}
+};
+
+
 // Structure for drawing state
 struct MicroPatternsState {
     uint8_t color = 15; // 0=white, 15=black (M5EPD uses 4bpp)
     const MicroPatternsAsset* fillAsset = nullptr; // Pointer to current fill pattern, null for SOLID
-    float scale = 1.0;
-    int rotationDegrees = 0;
-    float translateX = 0;
-    float translateY = 0;
-    // Note: For simplicity, this state uses absolute values set by the *last*
-    // relevant command, not a cumulative transformation stack like the JS version.
+    float scale = 1.0; // Absolute scale factor set by last SCALE command
+    std::vector<TransformOp> transformations; // Sequence of translate/rotate ops applied after scale
+
+    // Default constructor initializes state
+    MicroPatternsState() : color(15), fillAsset(nullptr), scale(1.0) {}
 };
 
 #endif // MICROPATTERNS_COMMAND_H
