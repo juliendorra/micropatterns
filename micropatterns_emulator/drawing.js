@@ -181,13 +181,67 @@ class MicroPatternsDrawing {
         let scale = Math.round(state.scale); // Use rounded scale to match C++ implementation
         if (scale < 1) scale = 1;
 
-        // Use integer division consistent with C++
-        const scaledX = Math.floor(screenX / scale); // Use floor instead of trunc to match integer division
-        const scaledY = Math.floor(screenY / scale); // Use floor instead of trunc to match integer division
+        // IMPORTANT: We need to apply inverse transformations to get the correct pattern coordinates
+        // This ensures pattern rotation works for both FILL_RECT and FILL_CIRCLE
+        
+        // First, calculate the logical coordinates by applying inverse transformations
+        // We need to work backwards from screen coordinates to get the logical coordinates
+        // that would map to this screen position
+        
+        // Start with the current screen position
+        let logicalX = screenX;
+        let logicalY = screenY;
+        
+        // Apply inverse transformations in reverse order
+        // For each transformation in state.transformations (in reverse)
+        if (state.transformations.length > 0) {
+            // Track the accumulated rotation and origin offset (in reverse)
+            let currentAngle = 0;
+            let originOffsetX = 0;
+            let originOffsetY = 0;
+            
+            // Process transformations in forward order to calculate total angle and offset
+            for (const transform of state.transformations) {
+                if (transform.type === 'rotate') {
+                    currentAngle = (currentAngle + transform.degrees) % 360;
+                    if (currentAngle < 0) currentAngle += 360;
+                } else if (transform.type === 'translate') {
+                    // Calculate global displacement based on current angle
+                    const sinA = this.sinTable[currentAngle]; // Scaled by 256
+                    const cosA = this.cosTable[currentAngle]; // Scaled by 256
+                    const globalDX = Math.trunc((transform.dx * cosA - transform.dy * sinA) / 256);
+                    const globalDY = Math.trunc((transform.dx * sinA + transform.dy * cosA) / 256);
+                    originOffsetX += globalDX;
+                    originOffsetY += globalDY;
+                }
+            }
+            
+            // Now apply inverse transformations
+            // 1. Undo translation
+            logicalX -= originOffsetX;
+            logicalY -= originOffsetY;
+            
+            // 2. Undo rotation (apply negative angle)
+            if (currentAngle !== 0) {
+                const inverseAngle = (360 - currentAngle) % 360;
+                const sinD = this.sinTable[inverseAngle]; // Scaled by 256
+                const cosD = this.cosTable[inverseAngle]; // Scaled by 256
+                
+                const rotatedX = Math.trunc((logicalX * cosD - logicalY * sinD) / 256);
+                const rotatedY = Math.trunc((logicalX * sinD + logicalY * cosD) / 256);
+                
+                logicalX = rotatedX;
+                logicalY = rotatedY;
+            }
+        }
+        
+        // 3. Undo scaling
+        logicalX = Math.floor(logicalX / scale);
+        logicalY = Math.floor(logicalY / scale);
 
-        // Tiling logic using scaled screen coordinates
-        const assetX = scaledX % fillAsset.width;
-        const assetY = scaledY % fillAsset.height;
+        // Tiling logic using logical coordinates
+        const assetX = logicalX % fillAsset.width;
+        const assetY = logicalY % fillAsset.height;
         // Handle negative modulo results
         const px = (assetX < 0) ? assetX + fillAsset.width : assetX;
         const py = (assetY < 0) ? assetY + fillAsset.height : assetY;

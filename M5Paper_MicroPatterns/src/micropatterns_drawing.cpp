@@ -207,10 +207,66 @@ uint8_t MicroPatternsDrawing::getFillColor(int screenX, int screenY, const Micro
         int scale = round(state.scale);
         if (scale < 1) scale = 1;
         
-        int scaledX = screenX / scale;
-        int scaledY = screenY / scale;
+        // IMPORTANT: We need to apply inverse transformations to get the correct pattern coordinates
+        // This ensures pattern rotation works for both FILL_RECT and FILL_CIRCLE
+        
+        // Start with the current screen position
+        int logicalX = screenX;
+        int logicalY = screenY;
+        
+        // Apply inverse transformations in reverse order
+        if (!state.transformations.empty()) {
+            // Track the accumulated rotation and origin offset (in reverse)
+            int currentAngle = 0;
+            int32_t originOffsetX = 0;
+            int32_t originOffsetY = 0;
+            
+            // Process transformations in forward order to calculate total angle and offset
+            for (const auto& transform : state.transformations) {
+                if (transform.type == TransformOp::ROTATE) {
+                    int degrees = static_cast<int>(round(transform.value1)) % 360;
+                    if (degrees < 0) degrees += 360;
+                    currentAngle = (currentAngle + degrees) % 360;
+                } else if (transform.type == TransformOp::TRANSLATE) {
+                    int32_t dx = round(transform.value1);
+                    int32_t dy = round(transform.value2);
+                    
+                    // Calculate global displacement based on current angle
+                    int sinA = _sinTable[currentAngle];
+                    int cosA = _cosTable[currentAngle];
+                    
+                    int32_t globalDX = FIXED_TO_INT(dx * cosA - dy * sinA);
+                    int32_t globalDY = FIXED_TO_INT(dx * sinA + dy * cosA);
+                    
+                    originOffsetX += globalDX;
+                    originOffsetY += globalDY;
+                }
+            }
+            
+            // Now apply inverse transformations
+            // 1. Undo translation
+            logicalX -= originOffsetX;
+            logicalY -= originOffsetY;
+            
+            // 2. Undo rotation (apply negative angle)
+            if (currentAngle != 0) {
+                int inverseAngle = (360 - currentAngle) % 360;
+                int sinD = _sinTable[inverseAngle];
+                int cosD = _cosTable[inverseAngle];
+                
+                int32_t rotatedX = FIXED_TO_INT(logicalX * cosD - logicalY * sinD);
+                int32_t rotatedY = FIXED_TO_INT(logicalX * sinD + logicalY * cosD);
+                
+                logicalX = rotatedX;
+                logicalY = rotatedY;
+            }
+        }
+        
+        // 3. Undo scaling
+        int scaledX = logicalX / scale;
+        int scaledY = logicalY / scale;
 
-        // Tiling logic using scaled screen coordinates
+        // Tiling logic using logical coordinates
         // Use floorDiv/floorMod style logic for correct negative coordinate handling
         int assetX = scaledX % asset.width;
         int assetY = scaledY % asset.height;
