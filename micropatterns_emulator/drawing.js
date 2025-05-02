@@ -165,17 +165,29 @@ class MicroPatternsDrawing {
 
     // Helper function to get the correct pixel color for fills, considering fill asset and tiling.
     // screenX, screenY are the top-left canvas coordinates of the pixel/block being considered.
-    // fillAsset is the pattern object (or null for solid).
-    // stateColor is the current drawing color ('black' or 'white').
+    // state contains fillAsset, color, and scale.
     // Returns the effective color ('black', 'white') or 'white' if the pattern pixel is off.
-    _getFillAssetPixelColor(screenX, screenY, fillAsset, stateColor) {
+    _getFillAssetPixelColor(screenX, screenY, state) {
+        const fillAsset = state.fillAsset;
+        const stateColor = state.color;
+
         if (!fillAsset) {
             return stateColor; // Solid fill with the current state color
         }
-        // Use Math.floor for consistency with canvas coordinates
-        // Tiling logic: Use modulo on screen coordinates
-        const assetX = Math.floor(screenX) % fillAsset.width;
-        const assetY = Math.floor(screenY) % fillAsset.height;
+
+        // Apply scaling to pattern coordinates (matches C++ implementation)
+        // Divide screen coordinates by scale factor to get the corresponding pattern coordinate
+        // This makes the pattern appear larger when scale factor increases
+        let scale = Math.round(state.scale); // Use rounded scale to match C++ implementation
+        if (scale < 1) scale = 1;
+
+        // Use integer division consistent with C++
+        const scaledX = Math.floor(screenX / scale); // Use floor instead of trunc to match integer division
+        const scaledY = Math.floor(screenY / scale); // Use floor instead of trunc to match integer division
+
+        // Tiling logic using scaled screen coordinates
+        const assetX = scaledX % fillAsset.width;
+        const assetY = scaledY % fillAsset.height;
         // Handle negative modulo results
         const px = (assetX < 0) ? assetX + fillAsset.width : assetX;
         const py = (assetY < 0) ? assetY + fillAsset.height : assetY;
@@ -205,8 +217,8 @@ class MicroPatternsDrawing {
                 const p = this.transformPoint(logicalX, logicalY, state);
 
                 // Determine the color based on the fill asset using the class helper function
-                // Use the transformed screen coordinate (p.x, p.y) for asset lookup
-                const effectiveColor = this._getFillAssetPixelColor(p.x, p.y, state.fillAsset, state.color);
+                // Pass the whole state object which includes fillAsset, color, and scale
+                const effectiveColor = this._getFillAssetPixelColor(p.x, p.y, state);
 
                 // Draw the scaled block if the color is not white
                 if (effectiveColor !== 'white') {
@@ -219,7 +231,7 @@ class MicroPatternsDrawing {
     // Helper function to set a single "pixel" block on the canvas, considering scale
     // screenX, screenY are the top-left coordinates of the block on the canvas
     setPixel(screenX, screenY, color, state) {
-        const scale = state.scale;
+        const scale = Math.round(state.scale); // Use rounded scale to match C++ implementation
         this.ctx.fillStyle = color;
         // Use Math.trunc to ensure integer coordinates for fillRect
         this.ctx.fillRect(Math.trunc(screenX), Math.trunc(screenY), scale, scale);
@@ -277,37 +289,40 @@ class MicroPatternsDrawing {
         const scaledRadius = Math.max(1, radius * state.scale);
         // Use square of radius for distance check (avoids sqrt)
         const rSquared = scaledRadius * scaledRadius;
-        // Get the final scale factor for iterating screen pixels
-        const scale = state.scale;
 
         // Calculate bounding box based on scaled radius and transformed center
-        // Iterate through the top-left corners of potential scaled blocks
+        // Match C++ implementation by using floor/ceil for min/max
         const minX = Math.floor(center.x - scaledRadius);
         const minY = Math.floor(center.y - scaledRadius);
         const maxX = Math.ceil(center.x + scaledRadius);
         const maxY = Math.ceil(center.y + scaledRadius);
 
-        // Iterate through the top-left corners of potential scaled blocks within the bounding box
-        // Step by the final scale factor
-        for (let screenY = minY; screenY < maxY; screenY += scale) {
-            for (let screenX = minX; screenX < maxX; screenX += scale) {
-                // Check if the *center* of the potential scaled block is inside the circle
-                const blockCenterX = screenX + scale / 2;
-                const blockCenterY = screenY + scale / 2;
-                const dx = blockCenterX - center.x;
-                const dy = blockCenterY - center.y;
+        // Clip bounding box to canvas (match C++ implementation)
+        const clippedMinX = Math.max(0, minX);
+        const clippedMinY = Math.max(0, minY);
+        const clippedMaxX = Math.min(this.display_width, maxX);
+        const clippedMaxY = Math.min(this.display_height, maxY);
+
+        // Iterate through individual pixels within the bounding box (match C++ implementation)
+        // Don't step by scale - check every pixel like C++ does
+        for (let sy = clippedMinY; sy < clippedMaxY; sy++) {
+            for (let sx = clippedMinX; sx < clippedMaxX; sx++) {
+                // Check if the center of the pixel is inside the circle (match C++ implementation)
+                const dx = (sx + 0.5) - center.x;
+                const dy = (sy + 0.5) - center.y;
 
                 if (dx * dx + dy * dy <= rSquared) {
-                    // Get fill asset color for the top-left of the block using the class helper
-                    const effectiveColor = this._getFillAssetPixelColor(screenX, screenY, state.fillAsset, state.color);
-                     if (effectiveColor !== 'white') {
-                         // Draw the scaled block
-                         this.setPixel(screenX, screenY, effectiveColor, state);
-                     }
-                 } // End if (inside circle)
-             } // End inner for (screenX)
-         } // End outer for (screenY)
-     } // End fillCircle method
+                    // Get fill color for this screen pixel
+                    const fillColor = this._getFillAssetPixelColor(sx, sy, state);
+                    if (fillColor !== 'white') {
+                        // Draw a single raw pixel (not a scaled block)
+                        this.ctx.fillStyle = fillColor;
+                        this.ctx.fillRect(sx, sy, 1, 1);
+                    }
+                }
+            }
+        }
+    }
 
     // Draws a single logical pixel, conditionally based on the current fill pattern.
     drawFilledPixel(x, y, state) {
@@ -315,7 +330,8 @@ class MicroPatternsDrawing {
         const p = this.transformPoint(x, y, state);
 
         // Determine the effective color based on the fill asset at the screen coordinate (p.x, p.y)
-        const effectiveColor = this._getFillAssetPixelColor(p.x, p.y, state.fillAsset, state.color);
+        // Pass the whole state object which includes fillAsset, color, and scale
+        const effectiveColor = this._getFillAssetPixelColor(p.x, p.y, state);
 
         // Draw the scaled block only if the effective color is not white
         // (i.e., solid fill, or pattern pixel is '1')
