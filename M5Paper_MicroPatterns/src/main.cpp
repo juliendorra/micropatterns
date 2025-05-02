@@ -128,6 +128,7 @@ void loop()
         // Get current time
         M5.RTC.getTime(&time_struct);
         // Update runtime environment
+        log_d("Main loop - Counter before set: %d", counter);
         runtime->setTime(time_struct.hour, time_struct.min, time_struct.sec);
         runtime->setCounter(counter);
         // Execute the script

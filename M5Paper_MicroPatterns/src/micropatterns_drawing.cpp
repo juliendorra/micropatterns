@@ -159,6 +159,24 @@ void MicroPatternsDrawing::rawLine(int sx1, int sy1, int sx2, int sy2, uint8_t c
     }
 }
 
+// Draws a logical pixel, conditionally based on the current fill pattern.
+void MicroPatternsDrawing::drawFilledPixel(int lx, int ly, const MicroPatternsState& state) {
+    if (!_canvas) return;
+    int sx, sy;
+    // Transform the logical coordinate (top-left corner)
+    transformPoint(lx, ly, state, sx, sy);
+
+    // Determine fill color based on the *screen* coordinate (top-left of block)
+    uint8_t fillColor = getFillColor(sx, sy, state);
+
+    if (fillColor != COLOR_WHITE) {
+         // Draw the scaled block if the fill color isn't transparent
+         int scale = round(state.scale);
+         if (scale < 1) scale = 1;
+         drawScaledBlock(sx, sy, scale, fillColor);
+    }
+}
+
 // Helper to draw a scaled block using fillRect for efficiency
 void MicroPatternsDrawing::drawScaledBlock(int screenX, int screenY, int scale, uint8_t color) {
      if (!_canvas || scale <= 0) return;
@@ -183,10 +201,19 @@ uint8_t MicroPatternsDrawing::getFillColor(int screenX, int screenY, const Micro
         const MicroPatternsAsset& asset = *state.fillAsset;
         if (asset.width <= 0 || asset.height <= 0 || asset.data.empty()) return COLOR_WHITE; // Invalid asset
 
-        // Tiling logic using screen coordinates
+        // Apply scaling to pattern coordinates
+        // Divide screen coordinates by scale factor to get the corresponding pattern coordinate
+        // This makes the pattern appear larger when scale factor increases
+        int scale = round(state.scale);
+        if (scale < 1) scale = 1;
+        
+        int scaledX = screenX / scale;
+        int scaledY = screenY / scale;
+
+        // Tiling logic using scaled screen coordinates
         // Use floorDiv/floorMod style logic for correct negative coordinate handling
-        int assetX = screenX % asset.width;
-        int assetY = screenY % asset.height;
+        int assetX = scaledX % asset.width;
+        int assetY = scaledY % asset.height;
         if (assetX < 0) assetX += asset.width;
         if (assetY < 0) assetY += asset.height;
 
@@ -357,39 +384,17 @@ void MicroPatternsDrawing::drawAsset(int lx, int ly, const MicroPatternsAsset& a
         for (int ix = 0; ix < asset.width; ++ix) {
             int index = iy * asset.width + ix;
             if (index < asset.data.size() && asset.data[index] == 1) { // If asset pixel is 'on' (1)
-                // Calculate the logical position of this asset pixel relative to the asset's origin (lx, ly)
+                // Calculate the logical position of this asset pixel
                 int logicalPixelX = lx + ix;
                 int logicalPixelY = ly + iy;
 
-                // Transform this logical point's top-left corner to screen space
-                int sx, sy;
-                transformPoint(logicalPixelX, logicalPixelY, state, sx, sy);
+                // Transform this logical point to screen space (top-left of the block)
+                int screenX, screenY;
+                transformPoint(logicalPixelX, logicalPixelY, state, screenX, screenY);
 
-                 // Draw the scaled block using the current state color
-                 drawScaledBlock(sx, sy, scale, state.color);
+                // Draw a scaled block at the transformed position using the current state color
+                drawScaledBlock(screenX, screenY, scale, state.color);
             }
         }
-    }
-}
-
-// Draws a pixel conditionally based on the fill pattern at the transformed screen location.
-void MicroPatternsDrawing::drawFilledPixel(int lx, int ly, const MicroPatternsState& state) {
-    if (!_canvas) return;
-
-    int scale = round(state.scale);
-    if (scale < 1) scale = 1;
-
-    // Transform the top-left corner of the logical pixel
-    int sx, sy;
-    transformPoint(lx, ly, state, sx, sy);
-
-    // Determine the effective color based on the fill asset at the screen coordinate (sx, sy)
-    uint8_t effectiveColor = getFillColor(sx, sy, state);
-
-    // Draw the scaled block only if the effective color is not white
-    // (i.e., solid fill is active, or pattern pixel is '1' at this screen location)
-    if (effectiveColor != COLOR_WHITE) {
-         // Draw the scaled block using the determined effective color
-         drawScaledBlock(sx, sy, scale, effectiveColor);
     }
 }

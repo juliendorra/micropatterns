@@ -37,11 +37,12 @@ void MicroPatternsRuntime::resetState() {
     _environment["$HOUR"] = 0;
     _environment["$MINUTE"] = 0;
     _environment["$SECOND"] = 0;
-    _environment["$COUNTER"] = 0;
+    // _environment["$COUNTER"] = 0; // Preserve counter across resets
     _environment.erase("$INDEX"); // Ensure $INDEX is cleared initially
 }
 
 void MicroPatternsRuntime::setCounter(int counter) {
+    log_d("Runtime setCounter: %d", counter);
     _environment["$COUNTER"] = counter;
 }
 
@@ -82,7 +83,11 @@ int MicroPatternsRuntime::resolveValue(const ParamValue& val, int lineNumber, in
 
         // Check environment variables (keys are like "$COUNTER")
         if (_environment.count(varName)) {
-            return _environment.at(varName);
+            int value = _environment.at(varName);
+            if (varName == "$COUNTER") {
+                 log_d("Runtime resolveValue accessing $COUNTER: %d", value);
+            }
+            return value;
         }
         
         // Check user variables (keys are like "$MYVAR")
@@ -378,8 +383,10 @@ void MicroPatternsRuntime::execute() {
         return;
     }
 
-    // Reset state before each full execution (clears user vars, resets drawing state)
+    // Reset state before each full execution (clears user vars, resets drawing state, preserves counter)
     resetState();
+    log_d("Runtime execute start - Counter after resetState: %d", _environment["$COUNTER"]);
+
     // Initialize declared variables to 0 (or evaluated expression)
     // This happens *before* executing commands.
     // Note: resetState() clears _variables, so we need to re-initialize here.
