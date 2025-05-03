@@ -4,6 +4,8 @@
 #include "micropatterns_runtime.h"
 #include "micropatterns_drawing.h" // Drawing depends on runtime state
 #include "global_setting.h"        // For GetTimeZone
+#include "driver/rtc_io.h"         // For rtc_gpio functions and deep sleep configuration
+#include "driver/gpio.h"           // For gpio_num_t
 
 // --- Sample MicroPatterns Script ---
 // Updated Savanna Example with IF/ELSE and working REPEAT/LET
@@ -41,15 +43,18 @@ FILL_CIRCLE RADIUS=20 X=0 Y=0
 M5EPD_Canvas canvas(&M5.EPD);
 MicroPatternsParser parser;
 MicroPatternsRuntime *runtime = nullptr; // Initialize later after canvas setup
-int counter = 0;
-RTC_Time time_struct; // To store time from RTC
+RTC_DATA_ATTR int counter = 0;           // Use RTC memory to persist counter across deep sleep
+RTC_Time time_struct;                    // To store time from RTC
 
 void setup()
 {
+    pinMode(M5EPD_MAIN_PWR_PIN, OUTPUT);
+    M5.enableMainPower();
+
     // Initialize M5Paper hardware
     SysInit_Start(); // This function handles M5.begin(), EPD init, etc.
 
-    log_i("MicroPatterns M5Paper  v1.1");
+    log_i("MicroPatterns M5Paper v1.2 (Sleep Cycle %d)", counter);
 
     // Create canvas AFTER M5.EPD.begin() inside SysInit_Start()
     // Use hardcoded dimensions 540x960 for M5Paper
@@ -119,30 +124,29 @@ void setup()
 
 void loop()
 {
-    // Update counter
-    counter++;
-
-    // Re-execute the script if runtime is valid
+    // Execute the script once if runtime is valid
     if (runtime)
     {
-        // Get current time
         M5.RTC.getTime(&time_struct);
+        counter++;
         // Update runtime environment
-        log_d("Main loop - Counter before set: %d", counter);
+        log_d("Executing script - Counter: %d", counter);
         runtime->setTime(time_struct.hour, time_struct.min, time_struct.sec);
         runtime->setCounter(counter);
+
+        M5.EPD.Clear(true);
+
         // Execute the script
         runtime->execute(); // Executes commands and pushes canvas
-        log_i("Executed loop #%d (Time: %02d:%02d:%02d)", counter, time_struct.hour, time_struct.min, time_struct.sec);
+
+        log_i("Executed script for cycle #%d (Time: %02d:%02d:%02d)", counter, time_struct.hour, time_struct.min, time_struct.sec);
     }
     else
     {
         log_e("Runtime not initialized, skipping execution.");
         // If runtime failed init (due to parse error), we are halted anyway.
-        // If it failed for other reasons, log and delay.
-        delay(5000);
+        // If it failed for other reasons, log and prepare for sleep.
     }
 
-    // Delay or wait for trigger
-    delay(10000); // Update every 10 seconds for example
+    Shutdown();
 }

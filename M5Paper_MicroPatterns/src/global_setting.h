@@ -4,6 +4,7 @@
 #include <M5EPD.h>
 #include <nvs.h>
 #include <esp_task_wdt.h>
+#include <esp_sleep.h>
 
 // Basic settings placeholder - can be expanded later
 // Example: Timezone might still be relevant
