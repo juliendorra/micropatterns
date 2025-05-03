@@ -67,6 +67,8 @@ void setup()
     }
     log_i("Canvas created: %d x %d", canvas.width(), canvas.height());
 
+    M5.EPD.Clear(true);
+
     // Parse the script
     log_i("Parsing script...");
     if (!parser.parse(savanna_script))
@@ -133,8 +135,6 @@ void loop()
         log_d("Executing script - Counter: %d", counter);
         runtime->setTime(time_struct.hour, time_struct.min, time_struct.sec);
         runtime->setCounter(counter);
-
-        M5.EPD.Clear(true);
 
         // Execute the script
         runtime->execute(); // Executes commands and pushes canvas
