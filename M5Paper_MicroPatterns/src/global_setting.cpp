@@ -8,7 +8,7 @@
 #define DEFAULT_TIMEZONE 0 // Default timezone offset
 
 #define uS_TO_S_FACTOR 1000000ULL /* Conversion factor for micro seconds to seconds */
-#define TIME_TO_SLEEP 5           /* Time ESP32 will go to sleep (in seconds) */
+#define TIME_TO_SLEEP 1800        /* Time ESP32 will go to sleep (in seconds) */
 
 // Removed: SemaphoreHandle_t _xSemaphore_LoadingAnime = NULL;
 // Removed: static uint8_t _loading_anime_eixt_flag    = false;
@@ -74,11 +74,13 @@ void Shutdown()
 
     SaveSetting(); // Save any final settings if needed
 
-    delay(1000); // Wait for display update
+    // delay(1000); // Wait for display update
 
     // Configure wake-up timer (5 seconds)
     esp_sleep_enable_timer_wakeup(TIME_TO_SLEEP * uS_TO_S_FACTOR);
     log_i("Setup ESP32 to wake up after %d seconds", TIME_TO_SLEEP);
+
+    esp_sleep_enable_ext0_wakeup(GPIO_NUM_37, LOW);
 
     // Get current time from RTC
     // RTC_Time timeStruct;
