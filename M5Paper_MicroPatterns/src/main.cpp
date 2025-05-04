@@ -118,23 +118,6 @@ void setup()
         runtime->setCommands(&commands);
         runtime->setDeclaredVariables(&vars); // Pass declared variables to runtime
     }
-
-    // Initial render only if runtime was successfully initialized
-    if (runtime)
-    {
-        log_i("Initial execution...");
-        // Get initial time
-        M5.RTC.getTime(&time_struct);
-        runtime->setTime(time_struct.hour, time_struct.min, time_struct.sec);
-        runtime->setCounter(counter);
-        runtime->execute(); // This executes commands and pushes the canvas
-        log_i("Initial execution complete.");
-    }
-    else
-    {
-        log_e("Runtime not initialized, skipping initial execution.");
-        // Keep the parse error message displayed if parsing failed
-    }
 }
 
 void loop()
