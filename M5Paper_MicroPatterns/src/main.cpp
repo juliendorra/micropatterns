@@ -81,11 +81,24 @@ void setup()
             log_e("  %s", err.c_str());
         }
         // Halt or indicate error on screen
+
         canvas.fillCanvas(0); // White
         canvas.setTextSize(2);
         canvas.setTextDatum(TL_DATUM);
         canvas.setTextColor(15); // Black
-        canvas.drawString("Script Parse Error!", 10, 10);
+
+        const int x_pos = 20;
+        int y_pos = 50;
+        canvas.drawString("Script Parse Error!", x_pos, y_pos);
+
+        y_pos += 50;
+
+        for (const String &err : errors)
+        {
+            // Draw each error message with an incremented y position
+            canvas.drawString(err.c_str(), x_pos, y_pos);
+            y_pos += 50; // Increment y position for the next error message
+        }
         canvas.pushCanvas(0, 0, UPDATE_MODE_GC16);
         while (1)
             delay(1000); // Halt
