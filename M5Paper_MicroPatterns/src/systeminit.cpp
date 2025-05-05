@@ -32,6 +32,8 @@ void SysInit_Start(void)
     M5.EPD.begin(M5EPD_SCK_PIN, M5EPD_MOSI_PIN, M5EPD_MISO_PIN, M5EPD_CS_PIN,
                  M5EPD_BUSY_PIN);
 
+    M5.RTC.begin();
+
     // Don't do a full clear (true) which causes black blanking
     // Either use false (buffer clear only) or remove entirely
     // M5.EPD.Clear(false);  // Only clear buffer, not the physical display
