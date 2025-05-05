@@ -8,7 +8,7 @@
 #define DEFAULT_TIMEZONE 1 // Default timezone offset
 
 #define uS_TO_S_FACTOR 1000000ULL /* Conversion factor for micro seconds to seconds */
-#define TIME_TO_SLEEP 1877        /* Time ESP32 will go to sleep (in seconds) */
+#define TIME_TO_SLEEP 777         /* Time ESP32 will go to sleep (in seconds) */
 
 // Removed: SemaphoreHandle_t _xSemaphore_LoadingAnime = NULL;
 // Removed: static uint8_t _loading_anime_eixt_flag    = false;
