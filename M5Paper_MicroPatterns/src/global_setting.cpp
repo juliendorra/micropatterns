@@ -80,7 +80,7 @@ void Shutdown()
     esp_sleep_enable_timer_wakeup(TIME_TO_SLEEP * uS_TO_S_FACTOR);
     log_i("Setup ESP32 to wake up after %d seconds", TIME_TO_SLEEP);
 
-    esp_sleep_enable_ext0_wakeup(GPIO_NUM_37, LOW);
+    esp_sleep_enable_ext0_wakeup(GPIO_NUM_38, LOW);
 
     // Get current time from RTC
     // RTC_Time timeStruct;
