@@ -34,14 +34,14 @@ void MicroPatternsRuntime::resetState()
 {
     _currentState = MicroPatternsState(); // Reset drawing state (color, fill, transforms)
     _variables.clear();                   // Clear user variables
+    _environment.erase("$INDEX");         // Ensure $INDEX is cleared initially
+
     // Re-initialize environment variables that might change per run (counter, time)
     // Note: $WIDTH/$HEIGHT are set once in constructor.
-    // Actual values for time/counter should be set via setCounter/setTime before execute()
-    _environment["$HOUR"] = 0;
-    _environment["$MINUTE"] = 0;
-    _environment["$SECOND"] = 0;
-    // _environment["$COUNTER"] = 0; // Preserve counter across resets
-    _environment.erase("$INDEX"); // Ensure $INDEX is cleared initially
+
+    // Environment values for time and counter need to be set via setCounter/setTime before execute()
+    // Counter is preserved  across resets and managed by the system
+    // Hour, Minute and Second are based on the RTC
 }
 
 void MicroPatternsRuntime::setCounter(int counter)

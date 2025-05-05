@@ -125,10 +125,15 @@ void loop()
     // Execute the script once if runtime is valid
     if (runtime)
     {
+        // Environment variables
         M5.RTC.getTime(&time_struct);
         counter++;
+
         // Update runtime environment
         log_d("Executing script - Counter: %d", counter);
+        log_d("Executing script - Time: %d : %d : %d", time_struct.hour, time_struct.min, time_struct.sec);
+
+        // Passing the environment variables to the runtime
         runtime->setTime(time_struct.hour, time_struct.min, time_struct.sec);
         runtime->setCounter(counter);
 
