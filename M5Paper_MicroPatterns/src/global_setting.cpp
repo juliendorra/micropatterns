@@ -5,7 +5,7 @@
 #include <WiFi.h> // Keep for potential future use (e.g., time sync)
 #include <rtc.h>  // For RTC_TimeTypeDef
 
-#define DEFAULT_TIMEZONE 0 // Default timezone offset
+#define DEFAULT_TIMEZONE 1 // Default timezone offset
 
 #define uS_TO_S_FACTOR 1000000ULL /* Conversion factor for micro seconds to seconds */
 #define TIME_TO_SLEEP 1877        /* Time ESP32 will go to sleep (in seconds) */

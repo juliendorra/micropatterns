@@ -4,6 +4,5 @@
 #include <M5EPD.h>
 
 void SysInit_Start(void);
-// Removed SysInit_Loading and SysInit_UpdateInfo declarations
 
-#endif  //__SYSTEMINIT_H
+#endif //__SYSTEMINIT_H
