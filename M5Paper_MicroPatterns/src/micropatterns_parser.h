@@ -20,6 +20,7 @@ public:
     const std::map<String, MicroPatternsAsset>& getAssets() const;
     const std::vector<String>& getErrors() const;
     const std::set<String>& getDeclaredVariables() const; // Returns set of declared var names (UPPERCASE, no '$')
+    void reset(); // Moved to public
 
 private:
     std::vector<MicroPatternsCommand> _commands;
@@ -29,7 +30,7 @@ private:
     int _lineNumber;
     std::vector<MicroPatternsCommand*> _commandStack; // Stack to manage nested blocks (REPEAT, IF)
 
-    void reset();
+    // void reset(); // Moved to public
     void addError(const String& message);
     bool processLine(const String& line);
     bool parseDefinePattern(const String& argsString);
