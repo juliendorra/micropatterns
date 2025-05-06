@@ -19,7 +19,7 @@ void MicroPatternsParser::addError(const String& message) {
     _errors.push_back("Line " + String(_lineNumber) + ": " + message);
 }
 
-const std::vector<MicroPatternsCommand>& MicroPatternsParser::getCommands() const {
+const std::list<MicroPatternsCommand>& MicroPatternsParser::getCommands() const { // Changed to std::list
     return _commands;
 }
 
@@ -155,30 +155,21 @@ bool MicroPatternsParser::processLine(const String& line) {
         return true;
     }
 
-    // If it's a block end, pop the stack and return the completed command object
+    // If it's a block end, pop the stack. The command object itself is already in the structure.
     if (isBlockEnd) {
-        MicroPatternsCommand* completedBlock = _commandStack.back();
-        _commandStack.pop_back();
-        // Add the completed block to the parent's list or top-level list
         if (_commandStack.empty()) {
-            _commands.push_back(*completedBlock);
-        } else {
-            _commandStack.back()->nestedCommands.push_back(*completedBlock);
-             // If the parent was an IF, add to the correct branch
-             if (_commandStack.back()->type == CMD_IF) {
-                 MicroPatternsCommand* parentIf = _commandStack.back();
-                 if (parentIf->params.count("_processingElse") && parentIf->params["_processingElse"].intValue == 1) {
-                     parentIf->elseCommands.push_back(*completedBlock);
-                 } else {
-                     parentIf->thenCommands.push_back(*completedBlock);
-                 }
-             } else { // Parent is REPEAT
-                 _commandStack.back()->nestedCommands.push_back(*completedBlock);
-             }
+            // This case should ideally be caught by the specific ENDREPEAT/ENDIF checks
+            // that ensure the stack is not empty and the top is of the correct type.
+            // If we reach here, it's an internal logic error.
+            addError("Internal parser error: Unmatched block end (ENDREPEAT/ENDIF) encountered with empty command stack.");
+            return false; // Signal error
         }
-        // We don't need the pointer anymore, but the object is copied.
-        // delete completedBlock; // Don't delete, it was allocated on stack or in vector
-        return true; // Don't add ENDREPEAT/ENDIF itself as a command object
+        // The IF/REPEAT command object (which _commandStack.back() pointed to) is already correctly
+        // placed in its parent's command list or the top-level _commands list.
+        // Its nested command lists (thenCommands, elseCommands, nestedCommands) have been populated.
+        // ENDIF/ENDREPEAT just signals that this block is now closed for parsing.
+        _commandStack.pop_back();
+        return true; // Successfully processed block end. Don't add ENDREPEAT/ENDIF itself as a command object.
     }
 
 
@@ -918,72 +909,91 @@ bool MicroPatternsParser::parseCondition(const String& conditionString, std::vec
         if (isspace(c)) {
             if (currentToken.length() > 0) {
                 ParamValue val = parseValue(currentToken);
-                 // Allow values or operators here, let runtime validate structure
-                 if (val.type == ParamValue::TYPE_VARIABLE && !validateVariableUsage(val.stringValue)) return false;
-                 tokens.push_back(val);
-                 currentToken = "";
-                 state = NONE;
-            }
-            continue; // Skip whitespace
-        }
-
-        // Check for multi-char operators first (==, !=, <=, >=)
-        String op = "";
-        if (String("=!<>").indexOf(c) != -1) {
-            if (next_c == '=') {
-                op += c;
-                op += next_c;
-            } else if (String("=<>").indexOf(c) != -1) { // Single char comparison or equals
-                 // Check if it's assignment '=' which is invalid here
-                 if (c == '=') {
-                     addError("Invalid operator '=' in condition. Use '==' for comparison.");
-                     return false;
-                 }
-                 op += c;
-            }
-            // Also check for single '!' which is invalid alone
-            else if (c == '!') {
-                 addError("Invalid operator '!' in condition. Use '!=' for not equals.");
-                 return false;
-            }
-        }
-        // Check for arithmetic operators (+-*/%) allowed in conditions (e.g., modulo)
-        else if (String("+-*/%").indexOf(c) != -1) {
-             op += c;
-        }
-
-
-        if (op.length() > 0) {
-            // Process preceding token if any
-            if (currentToken.length() > 0) {
-                ParamValue val = parseValue(currentToken);
                 if (val.type == ParamValue::TYPE_VARIABLE && !validateVariableUsage(val.stringValue)) return false;
                 tokens.push_back(val);
                 currentToken = "";
                 state = NONE;
             }
-            // Add operator token
-            tokens.push_back(ParamValue(op, ParamValue::TYPE_OPERATOR));
-            if (op.length() == 2) i++; // Skip the second char of the operator (e.g., '=')
-            state = NONE;
-        } else if (c == '$') {
-             if (currentToken.length() > 0) { addError("Syntax error near '$'."); return false; }
-             state = VARIABLE;
-             currentToken += c;
-        } else if (isdigit(c) || (c == '-' && state == NONE && (tokens.empty() || tokens.back().type == ParamValue::TYPE_OPERATOR))) {
-             // Allow '-' only at start or after operator
-             if (state == VARIABLE) { currentToken += c; } // Append digit to variable name (e.g. $var1) - check if valid?
-             else {
-                 if (state != NUMBER && currentToken.length() > 0) { addError("Syntax error near digit."); return false; }
-                 state = NUMBER;
+            continue; // Skip whitespace
+        }
+
+        String op_found = "";
+        // Check for two-character operators first
+        if (next_c != '\0') {
+            String two_char_op = String(c) + String(next_c);
+            if (two_char_op == "==" || two_char_op == "!=" || two_char_op == "<=" || two_char_op == ">=") {
+                op_found = two_char_op;
+            }
+        }
+
+        // If not a two-char op, check for one-character comparison or arithmetic ops
+        if (op_found.length() == 0) {
+            if (c == '<' || c == '>') {
+                op_found = String(c);
+            } else if (String("+-*/%").indexOf(c) != -1) { // Arithmetic ops
+                op_found = String(c);
+            } else if (c == '=') { // Single '=' is an error in conditions
+                addError("Invalid operator '=' in condition. Use '==' for comparison.");
+                return false;
+            } else if (c == '!') { // Single '!' is an error
+                addError("Invalid operator '!' in condition. Use '!=' for not equals.");
+                return false;
+            }
+        }
+
+        if (op_found.length() > 0) { // An operator was found
+            // Process any preceding token (value)
+            if (currentToken.length() > 0) {
+                ParamValue val = parseValue(currentToken);
+                if (val.type == ParamValue::TYPE_VARIABLE && !validateVariableUsage(val.stringValue)) return false;
+                tokens.push_back(val);
+                currentToken = "";
+            }
+            // Add the operator token
+            tokens.push_back(ParamValue(op_found, ParamValue::TYPE_OPERATOR));
+            i += (op_found.length() - 1); // Advance index if it was a two-character operator
+            state = NONE; // Reset state, expecting a value next
+        } else { // Character is part of a value (number or variable)
+            if (c == '$') {
+                 if (currentToken.length() > 0 && state != NONE) { // Cannot have $ in middle of number/var
+                     addError("Syntax error: Unexpected '$' in token '" + currentToken + "'.");
+                     return false;
+                 }
+                 state = VARIABLE;
                  currentToken += c;
-             }
-        } else if (isalpha(c) || c == '_') {
-             if (state == VARIABLE) { currentToken += c; }
-             else { addError("Invalid character '" + String(c) + "' in condition."); return false; }
-        } else {
-             addError("Invalid character '" + String(c) + "' in condition.");
-             return false;
+            } else if (isdigit(c)) {
+                if (state == NONE || state == NUMBER) {
+                    state = NUMBER;
+                    currentToken += c;
+                } else if (state == VARIABLE) { // Allow digits in variable names, e.g., $var1
+                    currentToken +=c;
+                } else {
+                    addError("Syntax error: Unexpected digit '" + String(c) + "' in token '" + currentToken + "'.");
+                    return false;
+                }
+            } else if (c == '-') { // Handle unary minus or part of a number
+                if (state == NONE && (tokens.empty() || tokens.back().type == ParamValue::TYPE_OPERATOR)) {
+                    // Valid start of a negative number
+                    state = NUMBER;
+                    currentToken += c;
+                } else {
+                    addError("Syntax error: Unexpected '-' in token '" + currentToken + "'. Use as unary operator or for subtraction.");
+                    return false;
+                }
+            } else if (isalpha(c) || c == '_') {
+                if (state == NONE && currentToken.length() == 0) { // Start of a potential keyword or bare string (invalid in conditions unless variable)
+                    addError("Invalid character '" + String(c) + "' in condition. Values must be numbers or variables ($var).");
+                    return false;
+                } else if (state == VARIABLE) {
+                    currentToken += c; // Append to variable name
+                } else {
+                     addError("Invalid character '" + String(c) + "' in condition token '" + currentToken + "'.");
+                     return false;
+                }
+            } else {
+                 addError("Invalid character '" + String(c) + "' in condition.");
+                 return false;
+            }
         }
     } // End for loop
 

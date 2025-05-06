@@ -3,6 +3,7 @@
 
 #include <Arduino.h>
 #include <vector>
+#include <list> // Added for std::list
 #include <map> // Use map for parameters
 
 // Enum for command types
@@ -63,12 +64,12 @@ struct MicroPatternsCommand {
 
     // For REPEAT command
     ParamValue count; // Stores the parsed COUNT value (int or variable)
-    std::vector<MicroPatternsCommand> nestedCommands; // Stores commands inside the REPEAT block
+    std::list<MicroPatternsCommand> nestedCommands; // Stores commands inside the REPEAT block
 
     // For IF command
     std::vector<ParamValue> conditionTokens; // Stores tokenized condition expression
-    std::vector<MicroPatternsCommand> thenCommands;
-    std::vector<MicroPatternsCommand> elseCommands; // Populated only if ELSE is present
+    std::list<MicroPatternsCommand> thenCommands;
+    std::list<MicroPatternsCommand> elseCommands; // Populated only if ELSE is present
 
     MicroPatternsCommand(CommandType t = CMD_UNKNOWN, int line = 0) : type(t), lineNumber(line) {}
 };

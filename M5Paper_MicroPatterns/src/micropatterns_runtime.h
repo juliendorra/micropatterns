@@ -3,6 +3,7 @@
 
 #include <M5EPD.h>
 #include <vector>
+#include <list> // Added for std::list
 #include <map>
 #include <set> // Include set for declared variables check
 #include "micropatterns_command.h"
@@ -12,7 +13,7 @@ class MicroPatternsRuntime {
 public:
     MicroPatternsRuntime(M5EPD_Canvas* canvas, const std::map<String, MicroPatternsAsset>& assets);
 
-    void setCommands(const std::vector<MicroPatternsCommand>* commands);
+    void setCommands(const std::list<MicroPatternsCommand>* commands); // Changed to std::list
     // Pass declared variables from parser for initialization and checks
     void setDeclaredVariables(const std::set<String>* declaredVariables);
 
@@ -30,7 +31,7 @@ private:
     M5EPD_Canvas* _canvas;
     MicroPatternsDrawing _drawing;
     const std::map<String, MicroPatternsAsset>& _assets; // Reference to assets from parser
-    const std::vector<MicroPatternsCommand>* _commands = nullptr; // Pointer to commands from parser
+    const std::list<MicroPatternsCommand>* _commands = nullptr; // Changed to std::list
     const std::set<String>* _declaredVariables = nullptr; // Pointer to declared vars from parser
 
     MicroPatternsState _currentState;
@@ -44,7 +45,7 @@ private:
     void executeCommand(const MicroPatternsCommand& cmd, int loopIndex = -1);
 
     // Helper to resolve parameter values (literals or variables)
-    int resolveIntParam(const String& paramName, const std::map<String, ParamValue>& params, int defaultValue, int lineNumber);
+    int resolveIntParam(const String& paramName, const std::map<String, ParamValue>& params, int defaultValue, int lineNumber, int loopIndex);
     String resolveStringParam(const String& paramName, const std::map<String, ParamValue>& params, const String& defaultValue, int lineNumber);
     String resolveAssetNameParam(const String& paramName, const std::map<String, ParamValue>& params, int lineNumber);
 

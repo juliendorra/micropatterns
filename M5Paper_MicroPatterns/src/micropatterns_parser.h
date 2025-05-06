@@ -3,6 +3,7 @@
 
 #include <Arduino.h>
 #include <vector>
+#include <list> // Added for std::list
 #include <map>
 #include <set> // For declared variables
 #include "micropatterns_command.h"
@@ -16,14 +17,14 @@ public:
     bool parse(const String& scriptText);
 
     // Getters
-    const std::vector<MicroPatternsCommand>& getCommands() const;
+    const std::list<MicroPatternsCommand>& getCommands() const; // Changed to std::list
     const std::map<String, MicroPatternsAsset>& getAssets() const;
     const std::vector<String>& getErrors() const;
     const std::set<String>& getDeclaredVariables() const; // Returns set of declared var names (UPPERCASE, no '$')
     void reset(); // Moved to public
 
 private:
-    std::vector<MicroPatternsCommand> _commands;
+    std::list<MicroPatternsCommand> _commands; // Changed to std::list
     std::map<String, MicroPatternsAsset> _assets; // Key is UPPERCASE name
     std::vector<String> _errors;
     std::set<String> _declaredVariables; // Store declared var names (UPPERCASE, no '$')

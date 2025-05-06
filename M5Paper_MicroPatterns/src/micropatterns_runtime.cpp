@@ -21,7 +21,7 @@ MicroPatternsRuntime::MicroPatternsRuntime(M5EPD_Canvas *canvas, const std::map<
     // $INDEX is managed during execution
 }
 
-void MicroPatternsRuntime::setCommands(const std::vector<MicroPatternsCommand> *commands)
+void MicroPatternsRuntime::setCommands(const std::list<MicroPatternsCommand> *commands) // Changed to std::list
 {
     _commands = commands;
 }
@@ -139,7 +139,8 @@ int MicroPatternsRuntime::resolveValue(const ParamValue &val, int lineNumber, in
     }
 }
 
-int MicroPatternsRuntime::resolveIntParam(const String &paramName, const std::map<String, ParamValue> &params, int defaultValue, int lineNumber)
+// This is the correct resolveIntParam, now matching the 5-argument header declaration.
+int MicroPatternsRuntime::resolveIntParam(const String &paramName, const std::map<String, ParamValue> &params, int defaultValue, int lineNumber, int loopIndex)
 {
     String upperParamName = paramName;
     upperParamName.toUpperCase(); // Ensure lookup is case-insensitive
@@ -149,8 +150,8 @@ int MicroPatternsRuntime::resolveIntParam(const String &paramName, const std::ma
         const ParamValue &val = params.at(upperParamName);
         if (val.type == ParamValue::TYPE_INT || val.type == ParamValue::TYPE_VARIABLE)
         {
-            // Resolve the value, passing loopIndex = -1 as params aren't inside loops directly
-            return resolveValue(val, lineNumber, -1);
+            // Resolve the value, passing the correct loopIndex
+            return resolveValue(val, lineNumber, loopIndex);
         }
         else
         {
@@ -162,7 +163,8 @@ int MicroPatternsRuntime::resolveIntParam(const String &paramName, const std::ma
     return defaultValue;
 }
 
-String MicroPatternsRuntime::resolveStringParam(const String &paramName, const std::map<String, ParamValue> &params, const String &defaultValue, int lineNumber)
+// This function resolves string parameters like color names or keywords.
+String MicroPatternsRuntime::resolveStringParam(const String &paramName, const std::map<String, ParamValue> &params, const String& defaultValue, int lineNumber)
 {
     String upperParamName = paramName;
     upperParamName.toUpperCase(); // Ensure case-insensitive parameter name lookup
@@ -177,7 +179,8 @@ String MicroPatternsRuntime::resolveStringParam(const String &paramName, const s
         }
         else
         {
-            runtimeError("Parameter " + paramName + " requires a string or keyword. Got type " + String(val.type), lineNumber);
+            // This case should ideally not be hit if parser creates ParamValue correctly for string params
+            runtimeError("Parameter " + paramName + " requires a string or keyword. Got type " + String(val.type) + " with value " + String(val.intValue), lineNumber);
             return defaultValue;
         }
     }
@@ -489,50 +492,20 @@ void MicroPatternsRuntime::execute()
     resetState();
     log_d("Runtime execute start - Counter after resetState: %d", _environment["$COUNTER"]);
 
-    // Initialize declared variables to 0 (or evaluated expression)
-    // This happens *before* executing commands.
-    // Note: resetState() clears _variables, so we need to re-initialize here.
-    for (const auto &cmd : *_commands)
-    {
-        if (cmd.type == CMD_VAR)
-        {
-            // Initialize the declared variable. cmd.varName is UPPERCASE, no '$'
-            String varKey = "$" + cmd.varName; // Store with '$' prefix (case-insensitive)
-            if (!_variables.count(varKey))
-            { // Check if already initialized (shouldn't happen with reset)
-                if (!cmd.initialExpressionTokens.empty())
-                {
-                    // Evaluate the initial expression (loopIndex = -1 for top-level)
-                    int initialValue = evaluateExpression(cmd.initialExpressionTokens, cmd.lineNumber, -1);
-                    _variables[varKey] = initialValue;
-                }
-                else
-                {
-                    // No initializer, default to 0
-                    _variables[varKey] = 0;
-                }
-            }
-            else
-            {
-                runtimeError("Variable " + varKey + " already initialized (internal error).", cmd.lineNumber);
-            }
-        }
-    }
+    // VAR initialization is now handled by executeCommand when CMD_VAR is encountered.
+    // This allows VARs inside blocks to be initialized correctly.
 
     _drawing.clearCanvas(); // Start with a clear (white) canvas
 
     // Execute top-level commands
     int commandCounter = 0;
-    for (const auto &cmd : *_commands)
+    for (const auto &cmd : *_commands) // Iterate all top-level commands
     {
-        // Skip VAR commands as they were handled above for initialization
-        if (cmd.type != CMD_VAR)
-        {
-            executeCommand(cmd, -1); // Pass loopIndex = -1 for top-level execution
-            commandCounter++;
-            if (commandCounter > 0 && commandCounter % 20 == 0) { // Yield every 20 top-level commands
-                yield();
-            }
+        // VAR commands will now be handled by executeCommand like any other command.
+        executeCommand(cmd, -1); // Pass loopIndex = -1 for top-level execution
+        commandCounter++;
+        if (commandCounter > 0 && commandCounter % 20 == 0) { // Yield every 20 top-level commands
+            yield();
         }
     }
 
@@ -553,8 +526,22 @@ void MicroPatternsRuntime::executeCommand(const MicroPatternsCommand &cmd, int l
         switch (cmd.type)
         {
         case CMD_VAR:
-            // Initialization is handled before main execution loop in execute()
+        {
+            // cmd.varName is UPPERCASE, no '$'
+            String varKey = "$" + cmd.varName; // Store with '$' prefix
+            // This handles VAR initialization at any level (top-level or nested).
+            // For VARs inside loops, this will re-initialize them on each execution of VAR.
+            if (!cmd.initialExpressionTokens.empty())
+            {
+                int initialValue = evaluateExpression(cmd.initialExpressionTokens, cmd.lineNumber, loopIndex);
+                _variables[varKey] = initialValue;
+            }
+            else
+            {
+                _variables[varKey] = 0; // Default to 0 if no initializer
+            }
             break;
+        }
 
         case CMD_LET:
         {
@@ -630,21 +617,21 @@ void MicroPatternsRuntime::executeCommand(const MicroPatternsCommand &cmd, int l
             break;
         case CMD_TRANSLATE:
         {
-            int dx = resolveIntParam("DX", cmd.params, 0, cmd.lineNumber);
-            int dy = resolveIntParam("DY", cmd.params, 0, cmd.lineNumber);
+            int dx = resolveIntParam("DX", cmd.params, 0, cmd.lineNumber, loopIndex);
+            int dy = resolveIntParam("DY", cmd.params, 0, cmd.lineNumber, loopIndex);
             _currentState.transformations.emplace_back(TransformOp::TRANSLATE, dx, dy);
             break;
         }
         case CMD_ROTATE:
         {
-            int degrees = resolveIntParam("DEGREES", cmd.params, 0, cmd.lineNumber);
+            int degrees = resolveIntParam("DEGREES", cmd.params, 0, cmd.lineNumber, loopIndex);
             // Store the absolute rotation degrees for this operation
             _currentState.transformations.emplace_back(TransformOp::ROTATE, degrees);
             break;
         }
         case CMD_SCALE:
         {
-            int factor = resolveIntParam("FACTOR", cmd.params, 1, cmd.lineNumber);
+            int factor = resolveIntParam("FACTOR", cmd.params, 1, cmd.lineNumber, loopIndex);
             // Set the absolute scale factor
             _currentState.scale = (factor >= 1) ? factor : 1.0;
             break;
@@ -653,66 +640,66 @@ void MicroPatternsRuntime::executeCommand(const MicroPatternsCommand &cmd, int l
         // Drawing commands
         case CMD_PIXEL:
         {
-            int x = resolveIntParam("X", cmd.params, 0, cmd.lineNumber);
-            int y = resolveIntParam("Y", cmd.params, 0, cmd.lineNumber);
+            int x = resolveIntParam("X", cmd.params, 0, cmd.lineNumber, loopIndex);
+            int y = resolveIntParam("Y", cmd.params, 0, cmd.lineNumber, loopIndex);
             _drawing.drawPixel(x, y, _currentState);
             break;
         }
         case CMD_FILL_PIXEL:
         {
-            int x = resolveIntParam("X", cmd.params, 0, cmd.lineNumber);
-            int y = resolveIntParam("Y", cmd.params, 0, cmd.lineNumber);
+            int x = resolveIntParam("X", cmd.params, 0, cmd.lineNumber, loopIndex);
+            int y = resolveIntParam("Y", cmd.params, 0, cmd.lineNumber, loopIndex);
             _drawing.drawFilledPixel(x, y, _currentState);
             break;
         }
         case CMD_LINE:
         {
-            int x1 = resolveIntParam("X1", cmd.params, 0, cmd.lineNumber);
-            int y1 = resolveIntParam("Y1", cmd.params, 0, cmd.lineNumber);
-            int x2 = resolveIntParam("X2", cmd.params, 0, cmd.lineNumber);
-            int y2 = resolveIntParam("Y2", cmd.params, 0, cmd.lineNumber);
+            int x1 = resolveIntParam("X1", cmd.params, 0, cmd.lineNumber, loopIndex);
+            int y1 = resolveIntParam("Y1", cmd.params, 0, cmd.lineNumber, loopIndex);
+            int x2 = resolveIntParam("X2", cmd.params, 0, cmd.lineNumber, loopIndex);
+            int y2 = resolveIntParam("Y2", cmd.params, 0, cmd.lineNumber, loopIndex);
             _drawing.drawLine(x1, y1, x2, y2, _currentState);
             break;
         }
         case CMD_RECT:
         {
-            int x = resolveIntParam("X", cmd.params, 0, cmd.lineNumber);
-            int y = resolveIntParam("Y", cmd.params, 0, cmd.lineNumber);
-            int w = resolveIntParam("WIDTH", cmd.params, 0, cmd.lineNumber);
-            int h = resolveIntParam("HEIGHT", cmd.params, 0, cmd.lineNumber);
+            int x = resolveIntParam("X", cmd.params, 0, cmd.lineNumber, loopIndex);
+            int y = resolveIntParam("Y", cmd.params, 0, cmd.lineNumber, loopIndex);
+            int w = resolveIntParam("WIDTH", cmd.params, 0, cmd.lineNumber, loopIndex);
+            int h = resolveIntParam("HEIGHT", cmd.params, 0, cmd.lineNumber, loopIndex);
             _drawing.drawRect(x, y, w, h, _currentState);
             break;
         }
         case CMD_FILL_RECT:
         {
-            int x = resolveIntParam("X", cmd.params, 0, cmd.lineNumber);
-            int y = resolveIntParam("Y", cmd.params, 0, cmd.lineNumber);
-            int w = resolveIntParam("WIDTH", cmd.params, 0, cmd.lineNumber);
-            int h = resolveIntParam("HEIGHT", cmd.params, 0, cmd.lineNumber);
+            int x = resolveIntParam("X", cmd.params, 0, cmd.lineNumber, loopIndex);
+            int y = resolveIntParam("Y", cmd.params, 0, cmd.lineNumber, loopIndex);
+            int w = resolveIntParam("WIDTH", cmd.params, 0, cmd.lineNumber, loopIndex);
+            int h = resolveIntParam("HEIGHT", cmd.params, 0, cmd.lineNumber, loopIndex);
             _drawing.fillRect(x, y, w, h, _currentState);
             break;
         }
         case CMD_CIRCLE:
         {
-            int x = resolveIntParam("X", cmd.params, 0, cmd.lineNumber);
-            int y = resolveIntParam("Y", cmd.params, 0, cmd.lineNumber);
-            int r = resolveIntParam("RADIUS", cmd.params, 0, cmd.lineNumber);
+            int x = resolveIntParam("X", cmd.params, 0, cmd.lineNumber, loopIndex);
+            int y = resolveIntParam("Y", cmd.params, 0, cmd.lineNumber, loopIndex);
+            int r = resolveIntParam("RADIUS", cmd.params, 0, cmd.lineNumber, loopIndex);
             _drawing.drawCircle(x, y, r, _currentState);
             break;
         }
         case CMD_FILL_CIRCLE:
         {
-            int x = resolveIntParam("X", cmd.params, 0, cmd.lineNumber);
-            int y = resolveIntParam("Y", cmd.params, 0, cmd.lineNumber);
-            int r = resolveIntParam("RADIUS", cmd.params, 0, cmd.lineNumber);
+            int x = resolveIntParam("X", cmd.params, 0, cmd.lineNumber, loopIndex);
+            int y = resolveIntParam("Y", cmd.params, 0, cmd.lineNumber, loopIndex);
+            int r = resolveIntParam("RADIUS", cmd.params, 0, cmd.lineNumber, loopIndex);
             _drawing.fillCircle(x, y, r, _currentState);
             break;
         }
         case CMD_DRAW:
         {
             String assetName = resolveAssetNameParam("NAME", cmd.params, cmd.lineNumber); // UPPERCASE name
-            int x = resolveIntParam("X", cmd.params, 0, cmd.lineNumber);
-            int y = resolveIntParam("Y", cmd.params, 0, cmd.lineNumber);
+            int x = resolveIntParam("X", cmd.params, 0, cmd.lineNumber, loopIndex);
+            int y = resolveIntParam("Y", cmd.params, 0, cmd.lineNumber, loopIndex);
             if (assetName != "SOLID")
             {
                 if (_assets.count(assetName))

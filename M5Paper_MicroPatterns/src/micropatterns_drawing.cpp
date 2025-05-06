@@ -85,11 +85,12 @@ void MicroPatternsDrawing::transformPoint(int lx, int ly, const MicroPatternsSta
             currentX = rotatedRelX + originOffsetX;
             currentY = rotatedRelY + originOffsetY;
 
-            // Update the total accumulated angle for subsequent translations
-            currentAngle = (currentAngle + degrees) % 360; // Keep track of angle for translate
-            // Note: The spec says ROTATE sets absolute angle. If so, currentAngle should just be set to degrees.
-            // Let's assume cumulative rotation based on JS implementation for now.
-            // If ROTATE is absolute, change `currentAngle = (currentAngle + degrees) % 360;` to `currentAngle = degrees;`
+            // Update the total accumulated angle for subsequent translations.
+            // To match the JS emulator's apparent cumulative behavior for currentAngle:
+            currentAngle = (currentAngle + degrees) % 360;
+            if (currentAngle < 0) currentAngle += 360;
+            // If ROTATE were strictly absolute as per one interpretation of the spec,
+            // this would be: currentAngle = degrees;
 
         } else if (op.type == TransformOp::TRANSLATE) {
             int32_t dx = round(op.value1); // Translation along current (rotated) X axis
