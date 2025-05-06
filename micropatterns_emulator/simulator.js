@@ -15,6 +15,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // Display Size UI
     const displaySizeSelect = document.getElementById('displaySizeSelect');
     const displayInfoSpan = document.getElementById('displayInfoSpan');
+    const zoomToggleButton = document.getElementById('zoomToggleButton');
 
     // Script Management UI
     const scriptListSelect = document.getElementById('scriptList');
@@ -42,22 +43,42 @@ document.addEventListener('DOMContentLoaded', () => {
         MINUTE: document.getElementById('envMinute'),
         SECOND: document.getElementById('envSecond'),
         COUNTER: document.getElementById('envCounter'),
-        WIDTH: 200, // Initial default, will be set by updateCanvasDimensions
-        HEIGHT: 200, // Initial default
+        WIDTH: 540, // Initial default, will be set by updateCanvasDimensions
+        HEIGHT: 960, // Initial default
     };
 
-    function updateCanvasDimensions(width, height) {
-        env.WIDTH = width;
-        env.HEIGHT = height;
+    let m5PaperZoomFactor = 0.5; // 0.5 for 50% zoom, 1.0 for 100% zoom
+
+    function applyM5PaperZoom() {
+        if (canvas.width === 540 && canvas.height === 960) {
+            canvas.style.width = (canvas.width * m5PaperZoomFactor) + 'px';
+            canvas.style.height = (canvas.height * m5PaperZoomFactor) + 'px';
+            zoomToggleButton.textContent = m5PaperZoomFactor === 1.0 ? "Zoom Out (50%)" : "Zoom In (100%)";
+        }
+    }
+
+    function updateCanvasDimensions(actualWidth, actualHeight) {
+        env.WIDTH = actualWidth;
+        env.HEIGHT = actualHeight;
         
-        canvas.width = width; // Set attribute for drawing buffer
-        canvas.height = height; // Set attribute for drawing buffer
+        canvas.width = actualWidth; // Set attribute for drawing buffer
+        canvas.height = actualHeight; // Set attribute for drawing buffer
         
-        canvas.style.width = width + 'px'; // Set CSS style for display size
-        canvas.style.height = height + 'px'; // Set CSS style for display size
+        if (actualWidth === 540 && actualHeight === 960) {
+            // For M5Paper, apply the current zoom factor for display
+            // m5PaperZoomFactor is initialized to 0.5
+            applyM5PaperZoom();
+            zoomToggleButton.disabled = false;
+        } else {
+            // For other sizes (e.g., 200x200), display at 100%
+            canvas.style.width = actualWidth + 'px';
+            canvas.style.height = actualHeight + 'px';
+            zoomToggleButton.disabled = true;
+            zoomToggleButton.textContent = "Zoom"; // Reset button text
+        }
         
         if (displayInfoSpan) {
-            displayInfoSpan.textContent = `${width}x${height}`;
+            displayInfoSpan.textContent = `${actualWidth}x${actualHeight}`;
         }
         // Update the comment in the new script template if newScript is called later
         // This is handled by newScript() itself as it reads env.WIDTH/HEIGHT
@@ -227,19 +248,33 @@ document.addEventListener('DOMContentLoaded', () => {
     setInterval(updateRealTimeDisplay, 1000);
     // --- End Real-Time Display ---
 
-    // Initial setup of canvas dimensions
+    // Initial setup of canvas dimensions - M5Paper (540x960) is default in HTML select
+    // updateCanvasDimensions will handle the initial 50% zoom for M5Paper.
     if (displaySizeSelect) {
-        const initialSize = displaySizeSelect.value.split('x').map(Number);
-        updateCanvasDimensions(initialSize[0], initialSize[1]);
+        const initialValue = displaySizeSelect.value; // Should be "540x960"
+        const [initialWidth, initialHeight] = initialValue.split('x').map(Number);
+        m5PaperZoomFactor = 0.5; // Ensure 50% zoom on initial load for M5Paper
+        updateCanvasDimensions(initialWidth, initialHeight);
     } else {
-        // Fallback if select element not found, though it should be
-        updateCanvasDimensions(200, 200);
+        // Fallback, though select should exist
+        updateCanvasDimensions(540, 960); // Default to M5Paper if select somehow missing
     }
 
+    if (zoomToggleButton) {
+        zoomToggleButton.addEventListener('click', () => {
+            if (canvas.width === 540 && canvas.height === 960) { // Only active for M5Paper
+                m5PaperZoomFactor = (m5PaperZoomFactor === 0.5) ? 1.0 : 0.5;
+                applyM5PaperZoom();
+            }
+        });
+    }
 
     if (displaySizeSelect) {
         displaySizeSelect.addEventListener('change', (event) => {
             const [newWidth, newHeight] = event.target.value.split('x').map(Number);
+            if (newWidth === 540 && newHeight === 960) {
+                m5PaperZoomFactor = 0.5; // Reset to 50% zoom when selecting M5Paper
+            }
             updateCanvasDimensions(newWidth, newHeight);
             runScript(); // Re-run script with new dimensions
         });

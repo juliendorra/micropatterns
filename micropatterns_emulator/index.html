@@ -237,15 +237,17 @@ ENDREPEAT
 
     <div class="column">
         <h2>Emulator Display</h2>
-        <div style="margin-bottom: 10px;">
-            <label for="displaySizeSelect" style="margin-right: 5px;">Display Size:</label>
-            <select id="displaySizeSelect">
-                <option value="200x200">200x200 (Default)</option>
-                <option value="540x960">540x960 (M5Paper)</option>
-                <option value="960x540">960x540 (M5Paper Landscape)</option>
-            </select>
+        <div style="margin-bottom: 10px; display: flex; align-items: center; gap: 10px;">
+            <div>
+                <label for="displaySizeSelect" style="margin-right: 5px;">Display Size:</label>
+                <select id="displaySizeSelect">
+                    <option value="540x960">540x960 (M5Paper)</option>
+                    <option value="200x200">200x200 (Default)</option>
+                </select>
+            </div>
+            <button id="zoomToggleButton" title="Toggle M5Paper Zoom (50%/100%)" style="padding: 4px 8px;">Zoom</button>
         </div>
-        <canvas id="displayCanvas" width="200" height="200"></canvas>
+        <canvas id="displayCanvas" width="540" height="960"></canvas> <!-- Default to M5Paper actual size for buffer -->
 
         <div class="controls-group">
             <h3>Environment</h3>

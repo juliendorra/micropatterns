@@ -8,13 +8,19 @@ For the full MicroPatterns language specification and project details, please se
 
 1.  **Open `index.html`:** Launch the file in a modern web browser.
 2.  **Write Script:** Edit the MicroPatterns code in the text area on the left. A sample script is provided using the latest syntax (`DEFINE PATTERN`, `VAR $var`, `LET $var = ...`, `FILL`, `DRAW`).
-3.  **Set Display Size:** Use the "Display Size" dropdown above the canvas to select the desired dimensions (e.g., 200x200, 540x960 for M5Paper). This will update the `$WIDTH` and `$HEIGHT` environment variables available to your script.
-4.  **Set Environment:** Adjust the `$HOUR`, `$MINUTE`, `$SECOND`, and `$COUNTER` values in the "Environment Variables" section.
-5.  **Run Script:** Click the "Run Script" button. The script will be parsed and executed, drawing the result on the canvas display.
-6.  **Increment Counter:** Click "Increment Counter" to increase the `$COUNTER` by one and automatically re-run the script, showing how the output changes over time (or iterations).
-7.  **Errors:** Any parsing or runtime errors will appear in the red box below the script input, indicating the line number and error message.
-8.  **Patterns:** Patterns defined using `DEFINE PATTERN` in the script will be listed under "Patterns Defined" after a successful parse. Click on a preview to interactively edit its pixels in the editor. You can also drag & drop image files onto previews to import them.
-9.  **New Command:** Includes the `FILL_PIXEL` command for drawing pixels conditionally based on the current fill pattern.
+3.  **Set Display Size:**
+    *   Use the "Display Size" dropdown above the canvas to select dimensions.
+    *   **540x960 (M5Paper)** is the default. It initially displays at 50% zoom (270x480 pixels on your screen) for better viewing.
+    *   **200x200 (Default)** displays at 100% zoom.
+    *   The `$WIDTH` and `$HEIGHT` environment variables available to your script will reflect the *actual selected resolution* (e.g., 540 and 960 for M5Paper).
+4.  **Toggle Zoom (M5Paper):**
+    *   If M5Paper (540x960) display is selected, use the "Zoom" button to toggle the visual display between 50% (default) and 100% (actual pixel size). This does not affect the script's `$WIDTH` or `$HEIGHT`.
+5.  **Set Environment:** Adjust the `$HOUR`, `$MINUTE`, `$SECOND`, and `$COUNTER` values in the "Environment Variables" section.
+6.  **Run Script:** Click the "Run Script" button. The script will be parsed and executed, drawing the result on the canvas display.
+7.  **Increment Counter:** Click "Increment Counter" to increase the `$COUNTER` by one and automatically re-run the script, showing how the output changes over time (or iterations).
+8.  **Errors:** Any parsing or runtime errors will appear in the red box below the script input, indicating the line number and error message.
+9.  **Patterns:** Patterns defined using `DEFINE PATTERN` in the script will be listed under "Patterns Defined" after a successful parse. Click on a preview to interactively edit its pixels in the editor. You can also drag & drop image files onto previews to import them.
+10. **New Command:** Includes the `FILL_PIXEL` command for drawing pixels conditionally based on the current fill pattern.
 
 ## Emulator Implementation Notes
 
