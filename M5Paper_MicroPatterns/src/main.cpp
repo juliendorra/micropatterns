@@ -11,6 +11,7 @@
 #include <ArduinoJson.h>           // For parsing JSON
 #include <SPIFFS.h>                // For saving/loading scripts
 #include <WiFi.h>                  // Include WiFi header
+#include <WiFiClientSecure.h>      // For HTTPS client configuration
 
 // --- Default Script (if loading from SPIFFS fails) ---
 const char *default_script = R"(
@@ -269,6 +270,11 @@ bool fetchAndStoreScripts()
         return false;
     }
 
+    WiFiClientSecure httpsClient;
+    // Set the root CA certificate for the secure client
+    // rootCACertificate is defined in global_setting.cpp and extern'd in global_setting.h
+    httpsClient.setCACert(rootCACertificate);
+
     HTTPClient http;
     bool success = true;
 
@@ -276,7 +282,12 @@ bool fetchAndStoreScripts()
     String listUrl = String(API_BASE_URL) + "/api/scripts";
     log_i("Fetching script list from: %s", listUrl.c_str());
 
-    http.begin(listUrl, "");
+    // Use the configured WiFiClientSecure for HTTPClient
+    if (!http.begin(httpsClient, listUrl)) {
+        log_e("HTTPClient begin failed for list URL!");
+        disconnectWiFi();
+        return false;
+    }
 
     int httpCode = http.GET();
 
@@ -324,7 +335,12 @@ bool fetchAndStoreScripts()
                     String scriptUrl = String(API_BASE_URL) + "/api/scripts/" + scriptId;
                     log_d("Fetching script content from: %s", scriptUrl.c_str());
                     http.end(); // End previous connection before starting new one
-                    http.begin(scriptUrl, "");
+                    // Use the configured WiFiClientSecure for HTTPClient
+                    if (!http.begin(httpsClient, scriptUrl)) {
+                        log_e("HTTPClient begin failed for script URL: %s", scriptUrl.c_str());
+                        // Optionally skip this script and continue with others
+                        continue;
+                    }
                     int scriptHttpCode = http.GET();
                     yield(); // Yield after blocking network call (GET)
 

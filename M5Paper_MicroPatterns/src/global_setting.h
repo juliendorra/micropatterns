@@ -17,6 +17,8 @@ extern const char* WIFI_PASSWORD;
 extern const char* NTP_SERVER;
 // API Endpoint
 extern const char* API_BASE_URL;
+// Root CA Certificate for HTTPS
+extern const char* rootCACertificate;
 // GPIO Pins
 #define BUTTON_UP_PIN GPIO_NUM_37
 #define BUTTON_DOWN_PIN GPIO_NUM_39
