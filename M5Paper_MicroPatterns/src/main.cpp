@@ -78,6 +78,8 @@ bool fetchAndStoreScripts();
 bool selectNextScript(bool moveUp);
 bool loadScriptToExecute();
 void displayMessage(const String &msg, int y_offset = 50, uint16_t color = 15); // Black=15, White=0
+void displayParseErrors();
+void handleWakeupAndScriptExecution();
 
 // Interrupt handling for wakeup pin is defined in global_setting.cpp
 
@@ -101,150 +103,122 @@ void setup()
     // Don't clear here, clear happens in runtime or if displaying messages
 }
 
-void refreshScripts()
+void loop()
 {
-    // Determine wake-up reason
-    bool fetchScripts = false;
-    bool scriptChange = false;
-    bool moveUp = false;
+    handleWakeupAndScriptExecution();
+    goToLightSleep();
+}
 
-    // Check which GPIO triggered the wakeup
-    if (wakeup_pin != 0)
-    {
+void displayParseErrors() {
+    const auto& errors = parser.getErrors();
+    canvas.fillCanvas(0); // White background
+    displayMessage("Parse Error: " + currentScriptId, 50, 15);
+    int y_pos = 100;
+    for (const String& err : errors) {
+        log_e("  %s", err.c_str());
+        displayMessage(err, y_pos, 15);
+        y_pos += 30;
+        if (y_pos > canvas.height() - 50) break;
+    }
+    canvas.pushCanvas(0, 0, UPDATE_MODE_GC16);
+}
+
+void handleWakeupAndScriptExecution() {
+    bool scriptChangeRequest = false;
+    bool moveUpDirection = false;
+    bool fetchFromServerAfterExecution = false;
+
+    // 1. Determine Wakeup Reason & Intent
+    if (wakeup_pin != 0) {
         log_i("Wakeup caused by GPIO %d", wakeup_pin);
-
-        if (wakeup_pin == BUTTON_UP_PIN)
-        {
-            log_i("Button UP (GPIO %d) detected LOW.", wakeup_pin);
-            fetchScripts = true; // Fetch scripts on button press
-            scriptChange = true;
-            moveUp = true;
+        if (wakeup_pin == BUTTON_UP_PIN) {
+            log_i("Button UP (GPIO %d) detected.", wakeup_pin);
+            scriptChangeRequest = true;
+            moveUpDirection = true;
+            fetchFromServerAfterExecution = true;
+        } else if (wakeup_pin == BUTTON_DOWN_PIN) {
+            log_i("Button DOWN (GPIO %d) detected.", wakeup_pin);
+            scriptChangeRequest = true;
+            moveUpDirection = false;
+            fetchFromServerAfterExecution = true;
+        } else if (wakeup_pin == BUTTON_PUSH_PIN) {
+            log_i("Button PUSH (GPIO %d) detected.", wakeup_pin);
+            // For PUSH, just re-run current script. No fetch by default.
+            // If fetch is desired for PUSH, set fetchFromServerAfterExecution = true;
         }
-        else if (wakeup_pin == BUTTON_DOWN_PIN)
-        {
-            log_i("Button DOWN (GPIO %d) detected LOW.", wakeup_pin);
-            fetchScripts = true; // Fetch scripts on button press
-            scriptChange = true;
-            moveUp = false;
-        }
-        else if (wakeup_pin == BUTTON_PUSH_PIN)
-        {
-            log_i("Button PUSH (GPIO %d) detected LOW.", wakeup_pin);
-            // fetchScripts = true;
-        }
-    }
-    else
-    {
-        log_i("Wakeup caused by timer or unknown source");
+    } else {
+        log_i("Wakeup caused by timer or unknown source.");
     }
 
-    // --- Script Fetching and Selection ---
-    if (fetchScripts)
-    {
-        displayMessage("Fetching scripts...", 50, 15); // Display message on screen
-        canvas.pushCanvas(0, 0, UPDATE_MODE_DU4);      // Faster update for message
-        yield(); // Yield after pushing canvas
-        if (!fetchAndStoreScripts())
-        {
-            displayMessage("Fetch Failed!", 100, 15);
-            canvas.pushCanvas(0, 0, UPDATE_MODE_GC16); // Update display
-            // Continue with potentially old scripts
+    // 2. Handle Script Selection if Requested (for UP/DOWN)
+    if (scriptChangeRequest) {
+        if (!selectNextScript(moveUpDirection)) {
+            log_e("Failed to select next script. Will attempt to run current/default.");
+            // loadScriptToExecute() below will handle loading the (potentially unchanged) currentScriptId or default.
         }
-        else
-        {
-            displayMessage("Fetch OK!", 100, 15);
-            canvas.pushCanvas(0, 0, UPDATE_MODE_GC16); // Update display
-            yield(); // Yield after pushing canvas
-            delay(1000);                               // Show message briefly
-        }
+        // selectNextScript updates currentScriptId and displays a "Selected: ..." message.
     }
 
-    if (scriptChange)
-    {
-        if (!selectNextScript(moveUp))
-        {
-            log_e("Failed to select next script.");
-            // Keep currentScriptId as is
-        }
+    // 3. Load Script Content (current, newly selected, or default)
+    if (!loadScriptToExecute()) { // Loads currentScriptId (which might have been updated by selectNextScript) and currentScriptContent
+        log_w("Failed to load script from SPIFFS. Using default script.");
+        currentScriptContent = default_script;
+        currentScriptId = "default"; // Ensure currentScriptId reflects the default script
     }
 
-    // --- Load Script for Execution ---
-    if (!loadScriptToExecute())
-    {
-        log_w("Failed to load script from SPIFFS or selection. Using default script.");
-        currentScriptContent = default_script; // Use default script content
-        currentScriptId = "default";
-    }
-
-    // --- Parse and Prepare Runtime ---
-    log_i("Parsing script ID: %s", currentScriptId.c_str());
-    parser.reset(); // Reset parser state (now public)
-    if (!parser.parse(currentScriptContent))
-    {
+    // 4. Parse and Prepare Runtime
+    log_i("Preparing to execute script ID: %s", currentScriptId.c_str());
+    parser.reset();
+    if (!parser.parse(currentScriptContent)) {
         log_e("Script parsing failed for ID: %s", currentScriptId.c_str());
-        const auto &errors = parser.getErrors();
-        // Display errors on screen
-        canvas.fillCanvas(0); // White background
-        displayMessage("Parse Error: " + currentScriptId, 50, 15);
-        int y_pos = 100;
-        for (const String &err : errors)
-        {
-            log_e("  %s", err.c_str());
-            displayMessage(err, y_pos, 15);
-            y_pos += 30; // Adjust spacing
-            if (y_pos > canvas.height() - 50)
-                break; // Avoid drawing off screen
-        }
-        canvas.pushCanvas(0, 0, UPDATE_MODE_GC16);
-        runtime = nullptr; // Ensure runtime is not used
-    }
-    else
-    {
-        log_i("Script '%s' parsed successfully.", currentScriptId.c_str());
-        // Initialize runtime AFTER canvas is created and script is parsed successfully
-        // Delete previous runtime instance if it exists
-        if (runtime)
-        {
+        displayParseErrors(); // Display parse errors on screen
+        if (runtime) {
             delete runtime;
             runtime = nullptr;
+        }
+    } else {
+        log_i("Script '%s' parsed successfully.", currentScriptId.c_str());
+        if (runtime) {
+            delete runtime;
         }
         runtime = new MicroPatternsRuntime(&canvas, parser.getAssets());
         runtime->setCommands(&parser.getCommands());
         runtime->setDeclaredVariables(&parser.getDeclaredVariables());
     }
-}
 
-void loop()
-{
-    // Execute the script once if runtime is valid
-    if (runtime)
-    {
+    // 5. Execute Script (if runtime is valid)
+    if (runtime) {
         M5.RTC.getTime(&time_struct);
-        executionCounter++; // Increment the counter stored in RTC memory
+        executionCounter++; // Increment counter
 
-        // Update runtime environment
         log_i("Executing script '%s' - Cycle: %d, Time: %02d:%02d:%02d",
               currentScriptId.c_str(), executionCounter, time_struct.hour, time_struct.min, time_struct.sec);
 
         runtime->setTime(time_struct.hour, time_struct.min, time_struct.sec);
         runtime->setCounter(executionCounter);
-
-        // Execute the script (includes drawing and pushing canvas)
-        runtime->execute();
-
+        runtime->execute(); // This includes drawing and pushing canvas
         log_i("Finished execution for cycle #%d", executionCounter);
-    }
-    else
-    {
+    } else {
         log_e("Runtime not initialized, skipping execution. Check for parse errors.");
-        // If runtime failed init (due to parse error), error message is already shown.
+        // Error message (if any from parsing) should have already been shown by displayParseErrors().
     }
 
-    refreshScripts();
-
-    // Go to light sleep
-    goToLightSleep();
+    // 6. Fetch from Server if Requested (e.g., after UP/DOWN interaction and execution)
+    if (fetchFromServerAfterExecution) {
+        displayMessage("Fetching scripts...", 50, 15); // Display message on screen
+        canvas.pushCanvas(0, 0, UPDATE_MODE_DU4);      // Faster update for message
+        yield();
+        if (!fetchAndStoreScripts()) {
+            displayMessage("Fetch Failed!", 100, 15);
+        } else {
+            displayMessage("Fetch OK!", 100, 15);
+        }
+        canvas.pushCanvas(0, 0, UPDATE_MODE_GC16); // Update display with fetch result
+        yield();
+        delay(1000);                               // Show message briefly
+    }
 }
+
 
 // --- Helper Functions ---
 
@@ -325,14 +299,14 @@ bool fetchAndStoreScripts()
                 // 2. Fetch Each Script Content
                 for (JsonObject scriptInfo : scriptList)
                 {
-                    const char *scriptId = scriptInfo["id"];
-                    if (!scriptId)
+                    const char *scriptIdJson = scriptInfo["id"]; // Renamed to avoid conflict
+                    if (!scriptIdJson)
                     {
                         log_w("Skipping script with missing ID in list.");
                         continue;
                     }
 
-                    String scriptUrl = String(API_BASE_URL) + "/api/scripts/" + scriptId;
+                    String scriptUrl = String(API_BASE_URL) + "/api/scripts/" + scriptIdJson;
                     log_d("Fetching script content from: %s", scriptUrl.c_str());
                     http.end(); // End previous connection before starting new one
                     // Use the configured WiFiClientSecure for HTTPClient
@@ -355,30 +329,30 @@ bool fetchAndStoreScripts()
 
                         if (scriptError)
                         {
-                            log_e("Failed to parse script content JSON for ID %s: %s", scriptId, scriptError.c_str());
+                            log_e("Failed to parse script content JSON for ID %s: %s", scriptIdJson, scriptError.c_str());
                             // Optionally save raw payload? Or mark as failed?
                         }
                         else
                         {
-                            const char *scriptContent = scriptDoc["content"];
-                            if (scriptContent)
+                            const char *scriptContentFetched = scriptDoc["content"]; // Renamed
+                            if (scriptContentFetched)
                             {
-                                if (!saveScriptContent(scriptId, scriptContent))
+                                if (!saveScriptContent(scriptIdJson, scriptContentFetched))
                                 {
-                                    log_e("Failed to save script content for ID %s to SPIFFS.", scriptId);
+                                    log_e("Failed to save script content for ID %s to SPIFFS.", scriptIdJson);
                                     // Consider this a partial failure?
                                 }
                                 yield(); // Yield after saving content to SPIFFS
                             }
                             else
                             {
-                                log_e("Missing 'content' field in script JSON for ID %s.", scriptId);
+                                log_e("Missing 'content' field in script JSON for ID %s.", scriptIdJson);
                             }
                         }
                     }
                     else
                     {
-                        log_e("HTTP error fetching script ID %s: %d - %s", scriptId, scriptHttpCode, http.errorToString(scriptHttpCode).c_str());
+                        log_e("HTTP error fetching script ID %s: %d - %s", scriptIdJson, scriptHttpCode, http.errorToString(scriptHttpCode).c_str());
                         // Mark as failed?
                     }
                     http.end(); // End connection for this script
@@ -425,8 +399,8 @@ bool selectNextScript(bool moveUp)
     for (int i = 0; i < scriptList.size(); i++)
     {
         JsonObject scriptInfo = scriptList[i];
-        const char *id = scriptInfo["id"];
-        if (id && loadedCurrentId == id)
+        const char *idJson = scriptInfo["id"]; // Renamed
+        if (idJson && loadedCurrentId == idJson)
         {
             currentIndex = i;
             break;
@@ -457,7 +431,9 @@ bool selectNextScript(bool moveUp)
             if (saveCurrentScriptId(nextId))
             {
                 yield(); // Yield after saving current script ID to SPIFFS
-                displayMessage(String("Selected: ") + (nextName ? nextName : nextId), 150, 15); // Show selection
+                // Display message on screen (will be overwritten by script execution or fetch messages soon)
+                canvas.fillCanvas(0); // Clear for message
+                displayMessage(String("Selected: ") + (nextName ? nextName : nextId), 150, 15);
                 canvas.pushCanvas(0, 0, UPDATE_MODE_GC16);
                 yield(); // Yield after pushing canvas
                 delay(1500); // Show message
@@ -485,53 +461,67 @@ bool selectNextScript(bool moveUp)
 // Loads the current script ID and its content into global variables
 bool loadScriptToExecute()
 {
-    if (!loadCurrentScriptId(currentScriptId) || currentScriptId.length() == 0)
-    {
-        log_w("No current script ID found in SPIFFS. Trying first script from list.");
-        yield(); // Yield after loadCurrentScriptId attempt
+    // 1. Attempt to load currentScriptId from SPIFFS.
+    //    The global currentScriptId will be updated by loadCurrentScriptId.
+    bool idLoadedFromSpiffs = loadCurrentScriptId(currentScriptId);
 
-        DynamicJsonDocument listDoc(4096); // Document to hold the list
-        // Call loadScriptList to populate listDoc
-        if (!loadScriptList(listDoc))
-        {
-             log_e("Failed to load script list from SPIFFS. Cannot determine script ID.");
-             return false;
+    if (!idLoadedFromSpiffs || currentScriptId.length() == 0) {
+        log_w("No current script ID found in SPIFFS or it was empty. Attempting to use first script from list.");
+        yield();
+
+        DynamicJsonDocument listDoc(4096);
+        if (!loadScriptList(listDoc)) {
+            log_e("Failed to load script list from SPIFFS. Cannot determine a script ID to run.");
+            currentScriptId = ""; // Ensure currentScriptId is cleared
+            currentScriptContent = "";
+            return false; // Cannot proceed without a list to pick from
         }
-        // Check if the loaded document contains a valid array and it's not empty
+
         if (!listDoc.is<JsonArray>() || listDoc.as<JsonArray>().size() == 0) {
-            log_e("Failed to load script list (not an array or empty). Cannot determine script ID.");
-            return false;
+            log_e("Script list is not an array or is empty. Cannot determine a script ID to run.");
+            currentScriptId = ""; // Ensure currentScriptId is cleared
+            currentScriptContent = "";
+            return false; // Cannot pick from an invalid or empty list
         }
 
-        JsonArray scriptList = listDoc.as<JsonArray>(); // Get array view after loading
-        // yield() was here, but loadScriptList already has file operations.
-        // It's fine to yield after a block of operations.
-
-        // scriptList is guaranteed to be non-empty here by the check above.
+        JsonArray scriptList = listDoc.as<JsonArray>();
+        // scriptList.size() > 0 is guaranteed by the check above
         JsonObject firstScript = scriptList[0];
         const char *firstId = firstScript["id"];
-        if (firstId)
-        {
+
+        if (firstId && strlen(firstId) > 0) { // Check if firstId is valid and not empty
             currentScriptId = firstId;
-            log_i("Using first script from list: %s", currentScriptId.c_str());
-            saveCurrentScriptId(currentScriptId.c_str()); // Save it as current
-            yield(); // Yield after saveCurrentScriptId to SPIFFS
-        }
-        else
-        {
-            log_e("First script in list has no ID.");
-            return false; // Cannot proceed without an ID
+            log_i("Using first script from list as current: %s", currentScriptId.c_str());
+            if (!saveCurrentScriptId(currentScriptId.c_str())) {
+                log_w("Failed to save the first script ID ('%s') as current to SPIFFS.", currentScriptId.c_str());
+                // Continue anyway, currentScriptId is set in memory.
+            }
+            yield();
+        } else {
+            log_e("First script in list has no valid ID. Cannot determine a script ID to run.");
+            currentScriptId = ""; // Ensure currentScriptId is cleared
+            currentScriptContent = "";
+            return false;
         }
     }
 
-    // Now load the content for the determined currentScriptId
-    if (!loadScriptContent(currentScriptId.c_str(), currentScriptContent))
-    {
-        log_e("Failed to load script content for ID: %s", currentScriptId.c_str());
+    // At this point, currentScriptId should be populated (either from SPIFFS or the first from the list).
+    // If it's still somehow empty, it's an error.
+    if (currentScriptId.length() == 0) {
+        log_e("FATAL: currentScriptId is empty after attempting all loading strategies.");
+        currentScriptContent = "";
+        return false;
+    }
+
+    // 2. Load content for the determined currentScriptId.
+    log_i("Attempting to load content for script ID: %s", currentScriptId.c_str());
+    if (!loadScriptContent(currentScriptId.c_str(), currentScriptContent)) {
+        log_e("Failed to load script content for ID: '%s'.", currentScriptId.c_str());
         currentScriptContent = ""; // Clear content on failure
         return false;
     }
     yield(); // Yield after loading script content from SPIFFS
 
+    log_i("Successfully set up script ID '%s' for execution.", currentScriptId.c_str());
     return true; // Successfully loaded ID and Content
 }
