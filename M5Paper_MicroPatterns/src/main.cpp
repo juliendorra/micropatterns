@@ -82,12 +82,13 @@ String currentScriptContent = "";       // Content of the script to execute
 // --- Tasking Globals ---
 TaskHandle_t g_fetchTaskHandle = NULL;
 SemaphoreHandle_t g_fetchRequestSemaphore = NULL; // Binary semaphore to trigger fetch
-QueueHandle_t g_displayMessageQueue = NULL;     // Queue for messages from fetch task to display task
+QueueHandle_t g_displayMessageQueue = NULL;       // Queue for messages from fetch task to display task
 
 volatile bool g_fetch_task_in_progress = false;
 volatile bool g_user_interrupt_signal_for_fetch_task = false; // Signal to fetch task to stop
 
-struct DisplayMsg {
+struct DisplayMsg
+{
     char text[64]; // Increased size for longer messages
     int y_offset;
     uint16_t color;
@@ -95,7 +96,8 @@ struct DisplayMsg {
     bool push_full_update; // GC16 vs DU4
 };
 
-enum FetchResultStatus {
+enum FetchResultStatus
+{
     FETCH_SUCCESS,
     FETCH_GENUINE_ERROR,
     FETCH_INTERRUPTED_BY_USER,
@@ -125,7 +127,7 @@ void setup()
     {
         log_e("Failed to create canvas framebuffer!");
         displayMessage("Canvas Error!");
-        canvas.pushCanvas(0,0,UPDATE_MODE_GC16);
+        canvas.pushCanvas(0, 0, UPDATE_MODE_GC16);
         while (1)
             delay(1000); // Halt
     }
@@ -133,25 +135,28 @@ void setup()
 
     // Create FreeRTOS objects
     g_displayMessageQueue = xQueueCreate(5, sizeof(DisplayMsg));
-    if (g_displayMessageQueue == NULL) {
+    if (g_displayMessageQueue == NULL)
+    {
         log_e("Failed to create display message queue!");
     }
     g_fetchRequestSemaphore = xSemaphoreCreateBinary();
-    if (g_fetchRequestSemaphore == NULL) {
+    if (g_fetchRequestSemaphore == NULL)
+    {
         log_e("Failed to create fetch request semaphore!");
     }
 
     // Create the fetching task, pinned to Core 0
     xTaskCreatePinnedToCore(
-        fetchTaskFunction,          // Task function
-        "FetchTask",                // Name of the task
-        8192,                       // Stack size in words (increased for WiFi/HTTPS)
-        NULL,                       // Task input parameter
-        1,                          // Priority of the task (1 is common for app tasks)
-        &g_fetchTaskHandle,         // Task handle
-        0                           // Core where the task should run (0)
+        fetchTaskFunction,  // Task function
+        "FetchTask",        // Name of the task
+        8192,               // Stack size in words (increased for WiFi/HTTPS)
+        NULL,               // Task input parameter
+        1,                  // Priority of the task (1 is common for app tasks)
+        &g_fetchTaskHandle, // Task handle
+        0                   // Core where the task should run (0)
     );
-    if (g_fetchTaskHandle == NULL) {
+    if (g_fetchTaskHandle == NULL)
+    {
         log_e("Failed to create fetch task!");
     }
 }
@@ -160,12 +165,15 @@ void loop()
 {
     // Process any messages from the fetch task for display
     DisplayMsg msg;
-    if (g_displayMessageQueue != NULL && xQueueReceive(g_displayMessageQueue, &msg, 0) == pdTRUE) { // Non-blocking check
-        if (msg.clear_canvas_first) canvas.fillCanvas(0); // Usually white
+    if (g_displayMessageQueue != NULL && xQueueReceive(g_displayMessageQueue, &msg, 0) == pdTRUE)
+    { // Non-blocking check
+        if (msg.clear_canvas_first)
+            canvas.fillCanvas(0); // Usually white
         displayMessage(msg.text, msg.y_offset, msg.color);
         canvas.pushCanvas(0, 0, msg.push_full_update ? UPDATE_MODE_GC16 : UPDATE_MODE_DU4);
         // Brief delay for important messages, helps user see them
-        if (msg.push_full_update && (strcmp(msg.text, "Fetch OK!") == 0 || strstr(msg.text, "Failed") != NULL || strstr(msg.text, "Interrupted") != NULL)) {
+        if (msg.push_full_update && (strcmp(msg.text, "Fetch OK!") == 0 || strstr(msg.text, "Failed") != NULL || strstr(msg.text, "Interrupted") != NULL))
+        {
             delay(1000);
         }
     }
@@ -174,64 +182,80 @@ void loop()
     goToLightSleep();
 }
 
-void displayParseErrors() {
-    const auto& errors = parser.getErrors();
+void displayParseErrors()
+{
+    const auto &errors = parser.getErrors();
     canvas.fillCanvas(0); // White background
     displayMessage("Parse Error: " + currentScriptId, 50, 15);
     int y_pos = 100;
-    for (const String& err : errors) {
+    for (const String &err : errors)
+    {
         log_e("  %s", err.c_str());
         displayMessage(err, y_pos, 15);
         y_pos += 30;
-        if (y_pos > canvas.height() - 50) break;
+        if (y_pos > canvas.height() - 50)
+            break;
     }
     canvas.pushCanvas(0, 0, UPDATE_MODE_GC16);
 }
 
-void handleWakeupAndScriptExecution() {
+void handleWakeupAndScriptExecution()
+{
     bool scriptChangeRequest = false;
     bool moveUpDirection = false;
     bool fetchFromServerAfterExecution = false;
 
     // 1. Determine Wakeup Reason & Intent
     uint8_t current_wakeup_pin_val = wakeup_pin; // Capture volatile read
-    if (current_wakeup_pin_val != 0) {
+    if (current_wakeup_pin_val != 0)
+    {
         wakeup_pin = 0; // Consume the event for this cycle of handleWakeupAndScriptExecution
         log_i("Wakeup caused by GPIO %d", current_wakeup_pin_val);
 
-        if (g_fetch_task_in_progress) {
+        if (g_fetch_task_in_progress)
+        {
             log_i("User action during fetch. Signaling fetch task to interrupt.");
             g_user_interrupt_signal_for_fetch_task = true;
             // No delay here, fetch task will check the flag. UI continues immediately.
         }
 
-        if (current_wakeup_pin_val == BUTTON_UP_PIN) {
+        if (current_wakeup_pin_val == BUTTON_UP_PIN)
+        {
             log_i("Button UP (GPIO %d) detected.", current_wakeup_pin_val);
             scriptChangeRequest = true;
             moveUpDirection = true;
             fetchFromServerAfterExecution = true;
-        } else if (current_wakeup_pin_val == BUTTON_DOWN_PIN) {
+        }
+        else if (current_wakeup_pin_val == BUTTON_DOWN_PIN)
+        {
             log_i("Button DOWN (GPIO %d) detected.", current_wakeup_pin_val);
             scriptChangeRequest = true;
             moveUpDirection = false;
             fetchFromServerAfterExecution = true;
-        } else if (current_wakeup_pin_val == BUTTON_PUSH_PIN) {
+        }
+        else if (current_wakeup_pin_val == BUTTON_PUSH_PIN)
+        {
             log_i("Button PUSH (GPIO %d) detected.", current_wakeup_pin_val);
             // For PUSH, just re-run current script. No fetch by default.
         }
-    } else {
+    }
+    else
+    {
         log_i("Wakeup caused by timer or unknown source.");
     }
 
     // 2. Handle Script Selection if Requested (for UP/DOWN)
-    if (scriptChangeRequest) {
-        if (!selectNextScript(moveUpDirection)) {
+    if (scriptChangeRequest)
+    {
+        if (!selectNextScript(moveUpDirection))
+        {
             log_e("Failed to select next script. Will attempt to run current/default.");
         }
     }
 
     // 3. Load Script Content (current, newly selected, or default)
-    if (!loadScriptToExecute()) {
+    if (!loadScriptToExecute())
+    {
         log_w("Failed to load script from SPIFFS. Using default script.");
         currentScriptContent = default_script;
         currentScriptId = "default";
@@ -240,16 +264,21 @@ void handleWakeupAndScriptExecution() {
     // 4. Parse and Prepare Runtime
     log_i("Preparing to execute script ID: %s", currentScriptId.c_str());
     parser.reset();
-    if (!parser.parse(currentScriptContent)) {
+    if (!parser.parse(currentScriptContent))
+    {
         log_e("Script parsing failed for ID: %s", currentScriptId.c_str());
         displayParseErrors();
-        if (runtime) {
+        if (runtime)
+        {
             delete runtime;
             runtime = nullptr;
         }
-    } else {
+    }
+    else
+    {
         log_i("Script '%s' parsed successfully.", currentScriptId.c_str());
-        if (runtime) {
+        if (runtime)
+        {
             delete runtime;
         }
         runtime = new MicroPatternsRuntime(&canvas, parser.getAssets());
@@ -258,7 +287,8 @@ void handleWakeupAndScriptExecution() {
     }
 
     // 5. Execute Script (if runtime is valid)
-    if (runtime) {
+    if (runtime)
+    {
         M5.RTC.getTime(&time_struct);
         executionCounter++;
 
@@ -269,21 +299,28 @@ void handleWakeupAndScriptExecution() {
         runtime->setCounter(executionCounter);
         runtime->execute(); // This includes drawing and pushing canvas
         log_i("Finished execution for cycle #%d", executionCounter);
-    } else {
+    }
+    else
+    {
         log_e("Runtime not initialized, skipping execution. Check for parse errors.");
     }
 
     // 6. Trigger Fetch from Server if Requested
-    if (fetchFromServerAfterExecution) {
-        if (g_fetch_task_in_progress) {
+    if (fetchFromServerAfterExecution)
+    {
+        if (g_fetch_task_in_progress)
+        {
             log_i("Requesting new fetch while one is in progress. Current fetch will be signaled to interrupt if not already.");
             // The g_user_interrupt_signal_for_fetch_task might have already been set above.
             // The fetch task will clear this signal at the beginning of its new operation.
         }
-        if (g_fetchRequestSemaphore != NULL) {
-             xSemaphoreGive(g_fetchRequestSemaphore);
-             log_i("Fetch request semaphore given.");
-        } else {
+        if (g_fetchRequestSemaphore != NULL)
+        {
+            xSemaphoreGive(g_fetchRequestSemaphore);
+            log_i("Fetch request semaphore given.");
+        }
+        else
+        {
             log_e("Fetch request semaphore is NULL, cannot trigger fetch.");
         }
         // UI task no longer displays "Fetching..." directly. Fetch task sends message.
@@ -292,7 +329,8 @@ void handleWakeupAndScriptExecution() {
 
 void displayMessage(const String &msg, int y_offset, uint16_t color)
 {
-    if (!canvas.frameBuffer()) return;
+    if (!canvas.frameBuffer())
+        return;
     canvas.setTextSize(3);
     canvas.setTextDatum(TC_DATUM);
     canvas.setTextColor(color);
@@ -300,21 +338,26 @@ void displayMessage(const String &msg, int y_offset, uint16_t color)
     log_i("Displaying message: %s", msg.c_str());
 }
 
-void fetchTaskFunction(void *pvParameters) {
+void fetchTaskFunction(void *pvParameters)
+{
     DisplayMsg msg_to_send;
     log_i("FetchTask started and pinned to core %d", xPortGetCoreID());
 
-    for (;;) {
-        if (g_fetchRequestSemaphore != NULL && xSemaphoreTake(g_fetchRequestSemaphore, portMAX_DELAY) == pdTRUE) {
+    for (;;)
+    {
+        if (g_fetchRequestSemaphore != NULL && xSemaphoreTake(g_fetchRequestSemaphore, portMAX_DELAY) == pdTRUE)
+        {
             log_i("FetchTask: Semaphore taken, starting fetch operation.");
             g_fetch_task_in_progress = true;
             g_user_interrupt_signal_for_fetch_task = false; // Clear interrupt signal for this new fetch run
 
             // Send "Fetching scripts..." message to UI task
-            if (g_displayMessageQueue != NULL) {
-                strncpy(msg_to_send.text, "Fetching scripts...", sizeof(msg_to_send.text) -1);
-                msg_to_send.text[sizeof(msg_to_send.text)-1] = '\0';
-                msg_to_send.y_offset = 50; msg_to_send.color = 15;
+            if (g_displayMessageQueue != NULL)
+            {
+                strncpy(msg_to_send.text, "Fetching scripts...", sizeof(msg_to_send.text) - 1);
+                msg_to_send.text[sizeof(msg_to_send.text) - 1] = '\0';
+                msg_to_send.y_offset = 50;
+                msg_to_send.color = 15;
                 msg_to_send.clear_canvas_first = false;
                 msg_to_send.push_full_update = false; // DU4 for quick message
                 xQueueSend(g_displayMessageQueue, &msg_to_send, pdMS_TO_TICKS(100));
@@ -323,51 +366,70 @@ void fetchTaskFunction(void *pvParameters) {
             FetchResultStatus fetch_status = perform_fetch_operations();
 
             // Prepare result message
-            switch(fetch_status) {
-                case FETCH_SUCCESS:
-                    strncpy(msg_to_send.text, "Fetch OK!", sizeof(msg_to_send.text)-1);
-                    log_i("FetchTask: Completed successfully.");
-                    break;
-                case FETCH_GENUINE_ERROR:
-                    strncpy(msg_to_send.text, "Fetch Failed!", sizeof(msg_to_send.text)-1);
-                    log_e("FetchTask: Failed with genuine error.");
-                    break;
-                case FETCH_INTERRUPTED_BY_USER:
-                    strncpy(msg_to_send.text, "Fetch Interrupted", sizeof(msg_to_send.text)-1);
-                    log_i("FetchTask: Interrupted by user.");
-                    break;
-                case FETCH_NO_WIFI:
-                     strncpy(msg_to_send.text, "Fetch: No WiFi", sizeof(msg_to_send.text)-1);
-                    log_w("FetchTask: No WiFi connection.");
-                    break;
+            switch (fetch_status)
+            {
+            case FETCH_SUCCESS:
+                strncpy(msg_to_send.text, "Fetch OK!", sizeof(msg_to_send.text) - 1);
+                log_i("FetchTask: Completed successfully.");
+                break;
+            case FETCH_GENUINE_ERROR:
+                strncpy(msg_to_send.text, "Fetch Failed!", sizeof(msg_to_send.text) - 1);
+                log_e("FetchTask: Failed with genuine error.");
+                break;
+            case FETCH_INTERRUPTED_BY_USER:
+                strncpy(msg_to_send.text, "Fetch Interrupted", sizeof(msg_to_send.text) - 1);
+                log_i("FetchTask: Interrupted by user.");
+                break;
+            case FETCH_NO_WIFI:
+                strncpy(msg_to_send.text, "Fetch: No WiFi", sizeof(msg_to_send.text) - 1);
+                log_w("FetchTask: No WiFi connection.");
+                break;
             }
-            msg_to_send.text[sizeof(msg_to_send.text)-1] = '\0';
-            msg_to_send.y_offset = 100; msg_to_send.color = 15;
+            msg_to_send.text[sizeof(msg_to_send.text) - 1] = '\0';
+            msg_to_send.y_offset = 100;
+            msg_to_send.color = 15;
             msg_to_send.clear_canvas_first = false;
             msg_to_send.push_full_update = true; // GC16 for final status
 
-            if (g_displayMessageQueue != NULL) {
+            if (g_displayMessageQueue != NULL)
+            {
                 xQueueSend(g_displayMessageQueue, &msg_to_send, pdMS_TO_TICKS(100));
             }
-            
+
             g_fetch_task_in_progress = false;
             // g_user_interrupt_signal_for_fetch_task is already false or handled.
             log_i("FetchTask: Operation finished, going back to wait for semaphore.");
-        } else {
+        }
+        else
+        {
             // Semaphore not available or timeout (if not portMAX_DELAY)
             vTaskDelay(pdMS_TO_TICKS(10)); // Small delay if semaphore take fails for some reason
         }
     }
 }
 
-FetchResultStatus perform_fetch_operations() {
-    if (!connectToWiFi()) {
-        log_e("perform_fetch_operations: WiFi connection failed.");
+FetchResultStatus perform_fetch_operations()
+{
+    bool wifiConnected = connectToWiFi(); // connectToWiFi now handles its own cleanup on interrupt
+
+    // Check interrupt flag *immediately* after connectToWiFi returns.
+    // This handles cases where interrupt happened during connectToWiFi OR right after it succeeded.
+    if (g_user_interrupt_signal_for_fetch_task) {
+        log_i("perform_fetch_operations: Fetch interrupted by user (checked after connectToWiFi).");
+        if (wifiConnected) { // If WiFi *did* connect but interrupt came just after
+            disconnectWiFi(); // Ensure WiFi is off
+        }
+        // Note: if connectToWiFi was interrupted, it already turned off WiFi.
+        return FETCH_INTERRUPTED_BY_USER;
+    }
+
+    if (!wifiConnected) { // WiFi failed for reasons other than user interrupt (e.g. timeout)
+        log_e("perform_fetch_operations: WiFi connection failed (not user interrupted).");
+        // connectToWiFi already turned off WiFi module on timeout or other internal failure.
         return FETCH_NO_WIFI;
     }
 
-    // Check for interruption early
-    if (g_user_interrupt_signal_for_fetch_task) { disconnectWiFi(); return FETCH_INTERRUPTED_BY_USER; }
+    // If we reach here, WiFi is connected and no interrupt was pending immediately after connection.
 
     WiFiClientSecure httpsClient;
     httpsClient.setCACert(rootCACertificate);
@@ -378,9 +440,14 @@ FetchResultStatus perform_fetch_operations() {
     String listUrl = String(API_BASE_URL) + "/api/scripts";
     log_i("perform_fetch_operations: Fetching script list from: %s", listUrl.c_str());
 
-    if (g_user_interrupt_signal_for_fetch_task) { disconnectWiFi(); return FETCH_INTERRUPTED_BY_USER; }
+    if (g_user_interrupt_signal_for_fetch_task)
+    {
+        disconnectWiFi();
+        return FETCH_INTERRUPTED_BY_USER;
+    }
 
-    if (!http.begin(httpsClient, listUrl)) {
+    if (!http.begin(httpsClient, listUrl))
+    {
         log_e("perform_fetch_operations: HTTPClient begin failed for list URL!");
         disconnectWiFi();
         return FETCH_GENUINE_ERROR;
@@ -389,85 +456,150 @@ FetchResultStatus perform_fetch_operations() {
     int httpCode = http.GET();
     vTaskDelay(pdMS_TO_TICKS(10)); // Small yield after blocking call
 
-    if (g_user_interrupt_signal_for_fetch_task) { http.end(); disconnectWiFi(); return FETCH_INTERRUPTED_BY_USER; }
+    if (g_user_interrupt_signal_for_fetch_task)
+    {
+        http.end();
+        disconnectWiFi();
+        return FETCH_INTERRUPTED_BY_USER;
+    }
 
-    if (httpCode == HTTP_CODE_OK) {
+    if (httpCode == HTTP_CODE_OK)
+    {
         String payload = http.getString();
-        if (g_user_interrupt_signal_for_fetch_task) { http.end(); disconnectWiFi(); return FETCH_INTERRUPTED_BY_USER; }
+        if (g_user_interrupt_signal_for_fetch_task)
+        {
+            http.end();
+            disconnectWiFi();
+            return FETCH_INTERRUPTED_BY_USER;
+        }
         log_d("perform_fetch_operations: Script list payload: %s", payload.c_str());
 
-        if (!saveScriptList(payload.c_str())) {
+        if (!saveScriptList(payload.c_str()))
+        {
             log_e("perform_fetch_operations: Failed to save script list JSON to SPIFFS.");
             overall_fetch_successful = false; // Mark as partial failure
         }
-        
-        if (g_user_interrupt_signal_for_fetch_task) { http.end(); disconnectWiFi(); return FETCH_INTERRUPTED_BY_USER; }
 
-        if (overall_fetch_successful) { // Proceed only if list saving was okay
+        if (g_user_interrupt_signal_for_fetch_task)
+        {
+            http.end();
+            disconnectWiFi();
+            return FETCH_INTERRUPTED_BY_USER;
+        }
+
+        if (overall_fetch_successful)
+        { // Proceed only if list saving was okay
             DynamicJsonDocument listDoc(4096);
             DeserializationError error = deserializeJson(listDoc, payload);
-            if (g_user_interrupt_signal_for_fetch_task) { http.end(); disconnectWiFi(); return FETCH_INTERRUPTED_BY_USER; }
+            if (g_user_interrupt_signal_for_fetch_task)
+            {
+                http.end();
+                disconnectWiFi();
+                return FETCH_INTERRUPTED_BY_USER;
+            }
 
-            if (error) {
+            if (error)
+            {
                 log_e("perform_fetch_operations: Failed to parse script list JSON: %s", error.c_str());
                 overall_fetch_successful = false;
-            } else if (!listDoc.is<JsonArray>()) {
+            }
+            else if (!listDoc.is<JsonArray>())
+            {
                 log_e("perform_fetch_operations: Script list JSON is not an array.");
                 overall_fetch_successful = false;
-            } else {
+            }
+            else
+            {
                 JsonArray scriptList = listDoc.as<JsonArray>();
                 log_i("perform_fetch_operations: Found %d scripts in list. Fetching content...", scriptList.size());
 
-                for (JsonObject scriptInfo : scriptList) {
-                    if (g_user_interrupt_signal_for_fetch_task) { overall_fetch_successful = false; break; }
+                for (JsonObject scriptInfo : scriptList)
+                {
+                    if (g_user_interrupt_signal_for_fetch_task)
+                    {
+                        overall_fetch_successful = false;
+                        break;
+                    }
 
                     const char *scriptIdJson = scriptInfo["id"];
-                    if (!scriptIdJson) {
+                    if (!scriptIdJson)
+                    {
                         log_w("perform_fetch_operations: Skipping script with missing ID in list.");
                         continue;
                     }
 
                     String scriptUrl = String(API_BASE_URL) + "/api/scripts/" + scriptIdJson;
                     log_d("perform_fetch_operations: Fetching script content from: %s", scriptUrl.c_str());
-                    
-                    http.end(); // End previous connection
-                    if (g_user_interrupt_signal_for_fetch_task) { overall_fetch_successful = false; break; }
 
-                    if (!http.begin(httpsClient, scriptUrl)) {
-                        log_e("perform_fetch_operations: HTTPClient begin failed for script URL: %s", scriptUrl.c_str());
-                        overall_fetch_successful = false; continue; // Skip this script
+                    http.end(); // End previous connection
+                    if (g_user_interrupt_signal_for_fetch_task)
+                    {
+                        overall_fetch_successful = false;
+                        break;
                     }
-                    
+
+                    if (!http.begin(httpsClient, scriptUrl))
+                    {
+                        log_e("perform_fetch_operations: HTTPClient begin failed for script URL: %s", scriptUrl.c_str());
+                        overall_fetch_successful = false;
+                        continue; // Skip this script
+                    }
+
                     int scriptHttpCode = http.GET();
                     vTaskDelay(pdMS_TO_TICKS(10)); // Small yield
 
-                    if (g_user_interrupt_signal_for_fetch_task) { http.end(); overall_fetch_successful = false; break; }
+                    if (g_user_interrupt_signal_for_fetch_task)
+                    {
+                        http.end();
+                        overall_fetch_successful = false;
+                        break;
+                    }
 
-                    if (scriptHttpCode == HTTP_CODE_OK) {
+                    if (scriptHttpCode == HTTP_CODE_OK)
+                    {
                         String scriptPayload = http.getString();
-                        if (g_user_interrupt_signal_for_fetch_task) { http.end(); overall_fetch_successful = false; break; }
+                        if (g_user_interrupt_signal_for_fetch_task)
+                        {
+                            http.end();
+                            overall_fetch_successful = false;
+                            break;
+                        }
 
                         DynamicJsonDocument scriptDoc(8192);
                         DeserializationError scriptError = deserializeJson(scriptDoc, scriptPayload);
-                        if (g_user_interrupt_signal_for_fetch_task) { http.end(); overall_fetch_successful = false; break; }
+                        if (g_user_interrupt_signal_for_fetch_task)
+                        {
+                            http.end();
+                            overall_fetch_successful = false;
+                            break;
+                        }
 
-                        if (scriptError) {
+                        if (scriptError)
+                        {
                             log_e("perform_fetch_operations: Failed to parse script content JSON for ID %s: %s", scriptIdJson, scriptError.c_str());
                             overall_fetch_successful = false;
-                        } else {
+                        }
+                        else
+                        {
                             const char *scriptContentFetched = scriptDoc["content"];
-                            if (scriptContentFetched) {
-                                if (!saveScriptContent(scriptIdJson, scriptContentFetched)) {
+                            if (scriptContentFetched)
+                            {
+                                if (!saveScriptContent(scriptIdJson, scriptContentFetched))
+                                {
                                     log_e("perform_fetch_operations: Failed to save script content for ID %s.", scriptIdJson);
                                     overall_fetch_successful = false;
                                 }
                                 vTaskDelay(pdMS_TO_TICKS(5)); // Small yield after SPIFFS write
-                            } else {
+                            }
+                            else
+                            {
                                 log_e("perform_fetch_operations: Missing 'content' field for ID %s.", scriptIdJson);
                                 overall_fetch_successful = false;
                             }
                         }
-                    } else {
+                    }
+                    else
+                    {
                         log_e("perform_fetch_operations: HTTP error fetching script ID %s: %d", scriptIdJson, scriptHttpCode);
                         overall_fetch_successful = false;
                     }
@@ -476,7 +608,9 @@ FetchResultStatus perform_fetch_operations() {
                 } // End loop through scripts
             }
         }
-    } else {
+    }
+    else
+    {
         log_e("perform_fetch_operations: HTTP error fetching script list: %d", httpCode);
         overall_fetch_successful = false;
     }
@@ -484,12 +618,17 @@ FetchResultStatus perform_fetch_operations() {
     http.end();
     disconnectWiFi();
 
-    if (g_user_interrupt_signal_for_fetch_task) { return FETCH_INTERRUPTED_BY_USER; }
-    if (overall_fetch_successful) { return FETCH_SUCCESS; }
-    
+    if (g_user_interrupt_signal_for_fetch_task)
+    {
+        return FETCH_INTERRUPTED_BY_USER;
+    }
+    if (overall_fetch_successful)
+    {
+        return FETCH_SUCCESS;
+    }
+
     return FETCH_GENUINE_ERROR; // If not success and not interrupted, must be a genuine error
 }
-
 
 // Selects the next script ID based on the direction (up/down)
 bool selectNextScript(bool moveUp)
@@ -501,7 +640,8 @@ bool selectNextScript(bool moveUp)
         log_e("Cannot select next script, failed to load script list from SPIFFS.");
         return false;
     }
-    if (!listDoc.is<JsonArray>() || listDoc.as<JsonArray>().size() == 0) {
+    if (!listDoc.is<JsonArray>() || listDoc.as<JsonArray>().size() == 0)
+    {
         log_e("Cannot select next script, list is empty or not an array after loading.");
         return false;
     }
@@ -547,7 +687,7 @@ bool selectNextScript(bool moveUp)
             {
                 vTaskDelay(pdMS_TO_TICKS(10)); // Yield after SPIFFS save
                 canvas.fillCanvas(0);
-                displayMessage(String("Selected: ") + (nextName ? nextName : nextId), 150, 15);
+                displayMessage((nextName ? nextName : nextId), 150, 15);
                 canvas.pushCanvas(0, 0, UPDATE_MODE_GC16);
                 vTaskDelay(pdMS_TO_TICKS(10)); // Yield after push
                 delay(1500);
@@ -578,11 +718,13 @@ bool loadScriptToExecute()
     bool idLoadedFromSpiffs = loadCurrentScriptId(currentScriptId);
     vTaskDelay(pdMS_TO_TICKS(10)); // Yield
 
-    if (!idLoadedFromSpiffs || currentScriptId.length() == 0) {
+    if (!idLoadedFromSpiffs || currentScriptId.length() == 0)
+    {
         log_w("No current script ID found in SPIFFS or it was empty. Attempting to use first script from list.");
-        
+
         DynamicJsonDocument listDoc(4096);
-        if (!loadScriptList(listDoc)) {
+        if (!loadScriptList(listDoc))
+        {
             log_e("Failed to load script list from SPIFFS. Cannot determine a script ID to run.");
             currentScriptId = "";
             currentScriptContent = "";
@@ -590,7 +732,8 @@ bool loadScriptToExecute()
         }
         vTaskDelay(pdMS_TO_TICKS(10)); // Yield
 
-        if (!listDoc.is<JsonArray>() || listDoc.as<JsonArray>().size() == 0) {
+        if (!listDoc.is<JsonArray>() || listDoc.as<JsonArray>().size() == 0)
+        {
             log_e("Script list is not an array or is empty. Cannot determine a script ID to run.");
             currentScriptId = "";
             currentScriptContent = "";
@@ -601,14 +744,18 @@ bool loadScriptToExecute()
         JsonObject firstScript = scriptList[0];
         const char *firstId = firstScript["id"];
 
-        if (firstId && strlen(firstId) > 0) {
+        if (firstId && strlen(firstId) > 0)
+        {
             currentScriptId = firstId;
             log_i("Using first script from list as current: %s", currentScriptId.c_str());
-            if (!saveCurrentScriptId(currentScriptId.c_str())) {
+            if (!saveCurrentScriptId(currentScriptId.c_str()))
+            {
                 log_w("Failed to save the first script ID ('%s') as current to SPIFFS.", currentScriptId.c_str());
             }
             vTaskDelay(pdMS_TO_TICKS(10)); // Yield
-        } else {
+        }
+        else
+        {
             log_e("First script in list has no valid ID. Cannot determine a script ID to run.");
             currentScriptId = "";
             currentScriptContent = "";
@@ -616,14 +763,16 @@ bool loadScriptToExecute()
         }
     }
 
-    if (currentScriptId.length() == 0) {
+    if (currentScriptId.length() == 0)
+    {
         log_e("FATAL: currentScriptId is empty after attempting all loading strategies.");
         currentScriptContent = "";
         return false;
     }
 
     log_i("Attempting to load content for script ID: %s", currentScriptId.c_str());
-    if (!loadScriptContent(currentScriptId.c_str(), currentScriptContent)) {
+    if (!loadScriptContent(currentScriptId.c_str(), currentScriptContent))
+    {
         log_e("Failed to load script content for ID: '%s'.", currentScriptId.c_str());
         currentScriptContent = "";
         return false;

@@ -29,6 +29,9 @@ extern volatile uint8_t wakeup_pin;
 // ISR for button interrupts
 void IRAM_ATTR button_isr(void* arg);
 
+// Forward declaration for the global interrupt flag from main.cpp
+extern volatile bool g_user_interrupt_signal_for_fetch_task;
+
 // Basic settings placeholder - can be expanded later
 // Example: Timezone might still be relevant
 extern int8_t global_timezone;

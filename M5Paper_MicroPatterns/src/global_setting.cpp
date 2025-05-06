@@ -125,12 +125,26 @@ bool connectToWiFi()
     WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
     unsigned long startTime = millis();
+    unsigned long last_dot_log_time = millis();
+
     while (WiFi.status() != WL_CONNECTED)
     {
-        delay(500);
-        log_d(".");
-        if (millis() - startTime > 15000)
-        { // 15 second timeout
+        // Check for user interrupt frequently
+        if (g_user_interrupt_signal_for_fetch_task) {
+            log_i("connectToWiFi: User interrupt detected. Aborting connection.");
+            WiFi.disconnect(false); // Try to stop current operations
+            WiFi.mode(WIFI_OFF);    // Turn off WiFi module
+            return false;
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(50)); // Yield for a short period (50ms)
+
+        if (millis() - last_dot_log_time > 500) { // Log "." approx every 500ms
+            log_d(".");
+            last_dot_log_time = millis();
+        }
+
+        if (millis() - startTime > 15000) { // 15 second timeout
             log_e("WiFi connection timed out!");
             WiFi.disconnect(false); // Don't erase config
             WiFi.mode(WIFI_OFF);    // Turn off WiFi module
