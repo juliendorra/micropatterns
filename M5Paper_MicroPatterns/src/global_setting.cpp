@@ -267,21 +267,67 @@ bool initializeSPIFFS()
 
 bool saveScriptList(const char *jsonContent)
 {
+    DynamicJsonDocument fetchedListDoc(4096);
+    DeserializationError error = deserializeJson(fetchedListDoc, jsonContent);
+    if (error)
+    {
+        log_e("saveScriptList: Failed to parse fetched script list JSON: %s", error.c_str());
+        return false;
+    }
+    if (!fetchedListDoc.is<JsonArray>())
+    {
+        log_e("saveScriptList: Fetched script list JSON is not an array.");
+        return false;
+    }
+
+    JsonArray fetchedArray = fetchedListDoc.as<JsonArray>();
+    DynamicJsonDocument augmentedListDoc(4096); // Potentially larger if names are long
+    JsonArray augmentedArray = augmentedListDoc.to<JsonArray>();
+
+    int scriptIndex = 0;
+    for (JsonObject scriptInfo : fetchedArray)
+    {
+        const char *humanId = scriptInfo["id"];
+        const char *humanName = scriptInfo["name"];
+
+        if (!humanId)
+        {
+            log_w("saveScriptList: Skipping script with missing 'id' in fetched list.");
+            continue;
+        }
+
+        String fileId = "s" + String(scriptIndex);
+        scriptIndex++;
+
+        JsonObject newEntry = augmentedArray.createNestedObject();
+        newEntry["id"] = humanId;
+        if (humanName) {
+            newEntry["name"] = humanName;
+        } else {
+            newEntry["name"] = humanId; // Fallback if name is missing
+        }
+        newEntry["fileId"] = fileId;
+    }
+
     File file = SPIFFS.open("/scripts/list.json", FILE_WRITE);
     if (!file)
     {
-        log_e("Failed to open /scripts/list.json for writing");
+        log_e("saveScriptList: Failed to open /scripts/list.json for writing");
         return false;
     }
-    if (file.print(jsonContent))
+
+    String outputJson;
+    serializeJson(augmentedListDoc, outputJson);
+
+    if (file.print(outputJson))
     {
-        log_i("Script list saved successfully to SPIFFS.");
+        log_i("Augmented script list saved successfully to SPIFFS (%d scripts).", augmentedArray.size());
         file.close();
         return true;
     }
     else
     {
-        log_e("Failed to write script list to SPIFFS.");
+        log_e("saveScriptList: Failed to write augmented script list to SPIFFS.");
         file.close();
         return false;
     }
@@ -323,49 +369,72 @@ bool loadScriptList(DynamicJsonDocument &doc) // Changed parameter
     return true;
 }
 
-bool saveScriptContent(const char *id, const char *content)
+bool saveScriptContent(const char *fileId, const char *content)
 {
-    String path = "/scripts/content/" + String(id) + ".txt";
+    String path = "/scripts/content/" + String(fileId); // Use fileId, no .txt
     File file = SPIFFS.open(path.c_str(), FILE_WRITE);
     if (!file)
     {
-        log_e("Failed to open %s for writing", path.c_str());
+        log_e("Failed to open %s for writing (using fileId: %s)", path.c_str(), fileId);
         return false;
     }
     if (file.print(content))
     {
-        log_i("Script content for ID '%s' saved successfully.", id);
+        log_i("Script content for fileId '%s' saved successfully to %s.", fileId, path.c_str());
         file.close();
         return true;
     }
     else
     {
-        log_e("Failed to write script content for ID '%s'.", id);
+        log_e("Failed to write script content for fileId '%s' to %s.", fileId, path.c_str());
         file.close();
         return false;
     }
 }
 
-bool loadScriptContent(const char *id, String &content)
+bool loadScriptContent(const char *fileId, String &content)
 {
-    String path = "/scripts/content/" + String(id) + ".txt";
-    File file = SPIFFS.open(path.c_str(), FILE_READ);
-    if (!file || file.isDirectory())
-    {
-        log_w("Failed to open %s for reading or it's a directory.", path.c_str());
+    String path = "/scripts/content/" + String(fileId); // Use fileId, no .txt
+    log_d("loadScriptContent: Attempting to load path: %s (using fileId: %s, length: %d)", path.c_str(), fileId, path.length());
+
+    if (!SPIFFS.exists(path.c_str())) {
+        log_w("loadScriptContent: Path does not exist: %s", path.c_str());
+        content = "";
         return false;
     }
+    log_d("loadScriptContent: Path exists: %s", path.c_str());
+
+    File file = SPIFFS.open(path.c_str(), FILE_READ);
+    if (!file)
+    {
+        log_w("loadScriptContent: SPIFFS.open failed for path: %s. file.operator! is true.", path.c_str());
+        content = "";
+        return false;
+    }
+    
+    log_d("loadScriptContent: SPIFFS.open succeeded for path: %s. File name from object: %s, Size: %u", path.c_str(), file.name(), file.size());
+
+    if (file.isDirectory())
+    {
+        log_w("loadScriptContent: Path is a directory: %s", path.c_str());
+        file.close();
+        content = "";
+        return false;
+    }
+
     content = file.readString();
+    size_t fileSizeBeforeRead = file.size(); // Get size before closing, though readString might affect reported size for some impls.
     file.close();
+
     if (content.length() > 0)
     {
-        log_i("Script content for ID '%s' loaded successfully (%d bytes).", id, content.length());
+        log_i("Script content for fileId '%s' loaded successfully (read %d bytes from path %s).", fileId, content.length(), path.c_str());
         return true;
     }
     else
     {
-        log_w("Script content file for ID '%s' is empty or read failed.", id);
-        return false; // Consider empty file as failure? Or success? Let's say failure.
+        log_w("Script content file for fileId '%s' (path: %s) is empty or readString() failed (content length: %d, reported file size: %u).", fileId, path.c_str(), content.length(), fileSizeBeforeRead);
+        return false;
     }
 }
 

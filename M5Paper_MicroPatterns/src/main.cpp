@@ -85,7 +85,8 @@ SemaphoreHandle_t g_fetchRequestSemaphore = NULL; // Binary semaphore to trigger
 QueueHandle_t g_displayMessageQueue = NULL;       // Queue for messages from fetch task to display task
 
 volatile bool g_fetch_task_in_progress = false;
-volatile bool g_user_interrupt_signal_for_fetch_task = false; // Signal to fetch task to stop
+volatile bool g_user_interrupt_signal_for_fetch_task = false; // Signal to fetch task to stop (hard stop)
+volatile bool g_fetch_restart_pending = false; // Signal to fetch task to restart gracefully
 
 struct DisplayMsg
 {
@@ -100,8 +101,9 @@ enum FetchResultStatus
 {
     FETCH_SUCCESS,
     FETCH_GENUINE_ERROR,
-    FETCH_INTERRUPTED_BY_USER,
-    FETCH_NO_WIFI
+    FETCH_INTERRUPTED_BY_USER, // Hard interrupt
+    FETCH_NO_WIFI,
+    FETCH_RESTART_REQUESTED    // Graceful restart
 };
 
 // Function Prototypes
@@ -214,8 +216,9 @@ void handleWakeupAndScriptExecution()
 
         if (g_fetch_task_in_progress)
         {
-            log_i("User action during fetch. Signaling fetch task to interrupt.");
-            g_user_interrupt_signal_for_fetch_task = true;
+            log_i("User action during fetch. Signaling fetch task to restart.");
+            g_fetch_restart_pending = true; // Signal a graceful restart
+            // g_user_interrupt_signal_for_fetch_task = true; // This would be for a hard stop
             // No delay here, fetch task will check the flag. UI continues immediately.
         }
 
@@ -348,57 +351,90 @@ void fetchTaskFunction(void *pvParameters)
         if (g_fetchRequestSemaphore != NULL && xSemaphoreTake(g_fetchRequestSemaphore, portMAX_DELAY) == pdTRUE)
         {
             log_i("FetchTask: Semaphore taken, starting fetch operation.");
-            g_fetch_task_in_progress = true;
-            g_user_interrupt_signal_for_fetch_task = false; // Clear interrupt signal for this new fetch run
+            bool restart_fetch_immediately;
+            bool first_attempt_in_cycle = true;
 
-            // Send "Fetching scripts..." message to UI task
-            if (g_displayMessageQueue != NULL)
+            do
             {
-                strncpy(msg_to_send.text, "Fetching scripts...", sizeof(msg_to_send.text) - 1);
-                msg_to_send.text[sizeof(msg_to_send.text) - 1] = '\0';
-                msg_to_send.y_offset = 50;
+                restart_fetch_immediately = false;
+                g_fetch_task_in_progress = true;
+                // g_user_interrupt_signal_for_fetch_task is for hard stop, cleared by perform_fetch_operations or if it triggers
+                // g_fetch_restart_pending is for soft restart, cleared when acted upon below or by perform_fetch_operations
+
+                // Send "Fetching scripts..." or "Restarting fetch..." message to UI task
+                if (g_displayMessageQueue != NULL)
+                {
+                    if (first_attempt_in_cycle)
+                    {
+                        strncpy(msg_to_send.text, "Fetching scripts...", sizeof(msg_to_send.text) - 1);
+                    }
+                    else
+                    {
+                        strncpy(msg_to_send.text, "Restarting fetch...", sizeof(msg_to_send.text) - 1);
+                    }
+                    msg_to_send.text[sizeof(msg_to_send.text) - 1] = '\0';
+                    msg_to_send.y_offset = 50;
+                    msg_to_send.color = 15;
+                    msg_to_send.clear_canvas_first = false;
+                    msg_to_send.push_full_update = false; // DU4 for quick message
+                    xQueueSend(g_displayMessageQueue, &msg_to_send, pdMS_TO_TICKS(100));
+                }
+                first_attempt_in_cycle = false;
+
+                FetchResultStatus fetch_status = perform_fetch_operations(); // This function checks g_fetch_restart_pending
+
+                // Prepare result message based on status
+                bool send_final_message = true;
+                msg_to_send.y_offset = 100; // Standard y_offset for result messages
                 msg_to_send.color = 15;
                 msg_to_send.clear_canvas_first = false;
-                msg_to_send.push_full_update = false; // DU4 for quick message
-                xQueueSend(g_displayMessageQueue, &msg_to_send, pdMS_TO_TICKS(100));
-            }
+                msg_to_send.push_full_update = true; // GC16 for final status
 
-            FetchResultStatus fetch_status = perform_fetch_operations();
+                switch (fetch_status)
+                {
+                case FETCH_SUCCESS:
+                    strncpy(msg_to_send.text, "Fetch OK!", sizeof(msg_to_send.text) - 1);
+                    log_i("FetchTask: Completed successfully.");
+                    disconnectWiFi(); // Disconnect on final success
+                    break;
+                case FETCH_GENUINE_ERROR:
+                    strncpy(msg_to_send.text, "Fetch Failed!", sizeof(msg_to_send.text) - 1);
+                    log_e("FetchTask: Failed with genuine error.");
+                    disconnectWiFi(); // Disconnect on final error
+                    break;
+                case FETCH_INTERRUPTED_BY_USER: // Hard interrupt
+                    strncpy(msg_to_send.text, "Fetch Interrupted!", sizeof(msg_to_send.text) - 1);
+                    log_i("FetchTask: Hard interrupted by user.");
+                    // disconnectWiFi() should have been called by perform_fetch_operations
+                    break;
+                case FETCH_NO_WIFI:
+                    strncpy(msg_to_send.text, "Fetch: No WiFi", sizeof(msg_to_send.text) - 1);
+                    log_w("FetchTask: No WiFi connection.");
+                    // disconnectWiFi() should have been called by perform_fetch_operations or connectToWiFi
+                    break;
+                case FETCH_RESTART_REQUESTED:
+                    log_i("FetchTask: Restart requested. Looping.");
+                    // UI message for restarting is handled by the next iteration's "Restarting fetch..."
+                    send_final_message = false; // Don't send a "final" message yet
+                    g_fetch_restart_pending = false; // Consume the flag
+                    restart_fetch_immediately = true;
+                    vTaskDelay(pdMS_TO_TICKS(200)); // Brief pause before restarting
+                    break;
+                }
+                msg_to_send.text[sizeof(msg_to_send.text) - 1] = '\0';
 
-            // Prepare result message
-            switch (fetch_status)
-            {
-            case FETCH_SUCCESS:
-                strncpy(msg_to_send.text, "Fetch OK!", sizeof(msg_to_send.text) - 1);
-                log_i("FetchTask: Completed successfully.");
-                break;
-            case FETCH_GENUINE_ERROR:
-                strncpy(msg_to_send.text, "Fetch Failed!", sizeof(msg_to_send.text) - 1);
-                log_e("FetchTask: Failed with genuine error.");
-                break;
-            case FETCH_INTERRUPTED_BY_USER:
-                strncpy(msg_to_send.text, "Fetch Interrupted", sizeof(msg_to_send.text) - 1);
-                log_i("FetchTask: Interrupted by user.");
-                break;
-            case FETCH_NO_WIFI:
-                strncpy(msg_to_send.text, "Fetch: No WiFi", sizeof(msg_to_send.text) - 1);
-                log_w("FetchTask: No WiFi connection.");
-                break;
-            }
-            msg_to_send.text[sizeof(msg_to_send.text) - 1] = '\0';
-            msg_to_send.y_offset = 100;
-            msg_to_send.color = 15;
-            msg_to_send.clear_canvas_first = false;
-            msg_to_send.push_full_update = true; // GC16 for final status
+                if (send_final_message && g_displayMessageQueue != NULL)
+                {
+                    xQueueSend(g_displayMessageQueue, &msg_to_send, pdMS_TO_TICKS(100));
+                }
 
-            if (g_displayMessageQueue != NULL)
-            {
-                xQueueSend(g_displayMessageQueue, &msg_to_send, pdMS_TO_TICKS(100));
-            }
+                g_fetch_task_in_progress = false;
 
-            g_fetch_task_in_progress = false;
-            // g_user_interrupt_signal_for_fetch_task is already false or handled.
-            log_i("FetchTask: Operation finished, going back to wait for semaphore.");
+            } while (restart_fetch_immediately);
+
+            // g_user_interrupt_signal_for_fetch_task should be false here unless a hard interrupt occurred.
+            // g_fetch_restart_pending is false.
+            log_i("FetchTask: Operation cycle finished, going back to wait for semaphore.");
         }
         else
         {
@@ -410,26 +446,29 @@ void fetchTaskFunction(void *pvParameters)
 
 FetchResultStatus perform_fetch_operations()
 {
-    bool wifiConnected = connectToWiFi(); // connectToWiFi now handles its own cleanup on interrupt
+    // Clear hard interrupt signal for this specific attempt. Restart signal is handled differently.
+    g_user_interrupt_signal_for_fetch_task = false;
 
-    // Check interrupt flag *immediately* after connectToWiFi returns.
-    // This handles cases where interrupt happened during connectToWiFi OR right after it succeeded.
-    if (g_user_interrupt_signal_for_fetch_task) {
-        log_i("perform_fetch_operations: Fetch interrupted by user (checked after connectToWiFi).");
-        if (wifiConnected) { // If WiFi *did* connect but interrupt came just after
-            disconnectWiFi(); // Ensure WiFi is off
-        }
-        // Note: if connectToWiFi was interrupted, it already turned off WiFi.
+    bool wifiConnected = connectToWiFi(); // connectToWiFi checks g_user_interrupt_signal_for_fetch_task
+
+    if (g_user_interrupt_signal_for_fetch_task) { // Check if connectToWiFi was hard-interrupted
+        log_i("perform_fetch_operations: connectToWiFi hard-interrupted.");
+        // connectToWiFi should have handled disconnect
         return FETCH_INTERRUPTED_BY_USER;
     }
+    if (g_fetch_restart_pending) { // Check for restart request immediately after connection attempt
+        log_i("perform_fetch_operations: Restart requested after connectToWiFi attempt.");
+        // WiFi might be on or off depending on connectToWiFi result. If on, keep it on.
+        return FETCH_RESTART_REQUESTED;
+    }
 
-    if (!wifiConnected) { // WiFi failed for reasons other than user interrupt (e.g. timeout)
-        log_e("perform_fetch_operations: WiFi connection failed (not user interrupted).");
-        // connectToWiFi already turned off WiFi module on timeout or other internal failure.
+    if (!wifiConnected) {
+        log_e("perform_fetch_operations: WiFi connection failed.");
         return FETCH_NO_WIFI;
     }
 
-    // If we reach here, WiFi is connected and no interrupt was pending immediately after connection.
+    // If we reach here, WiFi is connected.
+    log_i("perform_fetch_operations: WiFi connected. Proceeding with fetch.");
 
     WiFiClientSecure httpsClient;
     httpsClient.setCACert(rootCACertificate);
@@ -440,143 +479,114 @@ FetchResultStatus perform_fetch_operations()
     String listUrl = String(API_BASE_URL) + "/api/scripts";
     log_i("perform_fetch_operations: Fetching script list from: %s", listUrl.c_str());
 
-    if (g_user_interrupt_signal_for_fetch_task)
-    {
-        disconnectWiFi();
-        return FETCH_INTERRUPTED_BY_USER;
-    }
+    // Check for hard interrupt or soft restart before beginning HTTP transaction
+    if (g_user_interrupt_signal_for_fetch_task) { http.end(); disconnectWiFi(); return FETCH_INTERRUPTED_BY_USER; }
+    if (g_fetch_restart_pending) { http.end(); return FETCH_RESTART_REQUESTED; }
 
     if (!http.begin(httpsClient, listUrl))
     {
         log_e("perform_fetch_operations: HTTPClient begin failed for list URL!");
-        disconnectWiFi();
+        // disconnectWiFi(); // WiFi will be disconnected by caller task if this is a final error
         return FETCH_GENUINE_ERROR;
     }
 
     int httpCode = http.GET();
     vTaskDelay(pdMS_TO_TICKS(10)); // Small yield after blocking call
 
-    if (g_user_interrupt_signal_for_fetch_task)
-    {
-        http.end();
-        disconnectWiFi();
-        return FETCH_INTERRUPTED_BY_USER;
-    }
+    // Check for hard interrupt or soft restart after HTTP GET
+    if (g_user_interrupt_signal_for_fetch_task) { http.end(); disconnectWiFi(); return FETCH_INTERRUPTED_BY_USER; }
+    if (g_fetch_restart_pending) { http.end(); return FETCH_RESTART_REQUESTED; }
 
     if (httpCode == HTTP_CODE_OK)
     {
-        String payload = http.getString();
-        if (g_user_interrupt_signal_for_fetch_task)
-        {
-            http.end();
-            disconnectWiFi();
-            return FETCH_INTERRUPTED_BY_USER;
-        }
-        log_d("perform_fetch_operations: Script list payload: %s", payload.c_str());
+        String payload = http.getString(); // This is the raw JSON string of the script list from API
+        // Check for hard interrupt or soft restart after getting string
+        if (g_user_interrupt_signal_for_fetch_task) { http.end(); disconnectWiFi(); return FETCH_INTERRUPTED_BY_USER; }
+        if (g_fetch_restart_pending) { http.end(); return FETCH_RESTART_REQUESTED; }
 
+        log_d("perform_fetch_operations: Script list payload from API: %s", payload.c_str());
+
+        // saveScriptList now parses payload, generates fileIds, and saves the augmented list to SPIFFS
         if (!saveScriptList(payload.c_str()))
         {
-            log_e("perform_fetch_operations: Failed to save script list JSON to SPIFFS.");
+            log_e("perform_fetch_operations: Failed to save augmented script list to SPIFFS.");
             overall_fetch_successful = false; // Mark as partial failure
         }
 
-        if (g_user_interrupt_signal_for_fetch_task)
-        {
-            http.end();
-            disconnectWiFi();
-            return FETCH_INTERRUPTED_BY_USER;
-        }
+        // Check for hard interrupt or soft restart after saving list
+        if (g_user_interrupt_signal_for_fetch_task) { http.end(); disconnectWiFi(); return FETCH_INTERRUPTED_BY_USER; }
+        if (g_fetch_restart_pending) { http.end(); return FETCH_RESTART_REQUESTED; }
 
         if (overall_fetch_successful)
-        { // Proceed only if list saving was okay
-            DynamicJsonDocument listDoc(4096);
-            DeserializationError error = deserializeJson(listDoc, payload);
-            if (g_user_interrupt_signal_for_fetch_task)
-            {
-                http.end();
-                disconnectWiFi();
-                return FETCH_INTERRUPTED_BY_USER;
-            }
-
-            if (error)
-            {
-                log_e("perform_fetch_operations: Failed to parse script list JSON: %s", error.c_str());
+        {
+            // Now load the augmented list from SPIFFS to get fileIds for fetching content
+            DynamicJsonDocument augmentedListDoc(4096); // Doc to hold the list from SPIFFS
+            if (!loadScriptList(augmentedListDoc)) { // loadScriptList loads from /scripts/list.json
+                log_e("perform_fetch_operations: Failed to load augmented script list from SPIFFS after saving.");
                 overall_fetch_successful = false;
             }
-            else if (!listDoc.is<JsonArray>())
-            {
-                log_e("perform_fetch_operations: Script list JSON is not an array.");
-                overall_fetch_successful = false;
-            }
-            else
-            {
-                JsonArray scriptList = listDoc.as<JsonArray>();
-                log_i("perform_fetch_operations: Found %d scripts in list. Fetching content...", scriptList.size());
+            // Check for hard interrupt or soft restart after loading augmented list
+            if (g_user_interrupt_signal_for_fetch_task) { http.end(); disconnectWiFi(); return FETCH_INTERRUPTED_BY_USER; }
+            if (g_fetch_restart_pending) { http.end(); return FETCH_RESTART_REQUESTED; }
 
-                for (JsonObject scriptInfo : scriptList)
+            if (overall_fetch_successful && augmentedListDoc.is<JsonArray>())
+            {
+                JsonArray scriptListFromSpiffs = augmentedListDoc.as<JsonArray>();
+                log_i("perform_fetch_operations: Loaded %d scripts from augmented list. Fetching content...", scriptListFromSpiffs.size());
+
+                for (JsonObject scriptInfo : scriptListFromSpiffs)
                 {
-                    if (g_user_interrupt_signal_for_fetch_task)
-                    {
-                        overall_fetch_successful = false;
-                        break;
-                    }
+                    // Check for hard interrupt or soft restart at the start of each script fetch iteration
+                    if (g_user_interrupt_signal_for_fetch_task) { overall_fetch_successful = false; http.end(); disconnectWiFi(); return FETCH_INTERRUPTED_BY_USER; }
+                    if (g_fetch_restart_pending) { overall_fetch_successful = false; http.end(); return FETCH_RESTART_REQUESTED; }
 
-                    const char *scriptIdJson = scriptInfo["id"];
-                    if (!scriptIdJson)
+                    const char *humanId = scriptInfo["id"];
+                    const char *fileId = scriptInfo["fileId"]; // Get the generated fileId
+
+                    if (!humanId || !fileId)
                     {
-                        log_w("perform_fetch_operations: Skipping script with missing ID in list.");
+                        log_w("perform_fetch_operations: Skipping script with missing 'id' or 'fileId' in augmented list.");
                         continue;
                     }
 
-                    String scriptUrl = String(API_BASE_URL) + "/api/scripts/" + scriptIdJson;
-                    log_d("perform_fetch_operations: Fetching script content from: %s", scriptUrl.c_str());
+                    String scriptUrl = String(API_BASE_URL) + "/api/scripts/" + humanId; // Fetch API using humanId
+                    log_d("perform_fetch_operations: Fetching script content for humanId '%s' (fileId '%s') from: %s", humanId, fileId, scriptUrl.c_str());
 
-                    http.end(); // End previous connection
-                    if (g_user_interrupt_signal_for_fetch_task)
-                    {
-                        overall_fetch_successful = false;
-                        break;
-                    }
+                    http.end(); // End previous connection before starting new one
+                    // Check for hard interrupt or soft restart before new http.begin
+                    if (g_user_interrupt_signal_for_fetch_task) { overall_fetch_successful = false; http.end(); disconnectWiFi(); return FETCH_INTERRUPTED_BY_USER; }
+                    if (g_fetch_restart_pending) { overall_fetch_successful = false; http.end(); return FETCH_RESTART_REQUESTED; }
 
                     if (!http.begin(httpsClient, scriptUrl))
                     {
                         log_e("perform_fetch_operations: HTTPClient begin failed for script URL: %s", scriptUrl.c_str());
                         overall_fetch_successful = false;
-                        continue; // Skip this script
+                        continue;
                     }
 
                     int scriptHttpCode = http.GET();
-                    vTaskDelay(pdMS_TO_TICKS(10)); // Small yield
+                    vTaskDelay(pdMS_TO_TICKS(10));
 
-                    if (g_user_interrupt_signal_for_fetch_task)
-                    {
-                        http.end();
-                        overall_fetch_successful = false;
-                        break;
-                    }
+                    // Check for hard interrupt or soft restart after script GET
+                    if (g_user_interrupt_signal_for_fetch_task) { overall_fetch_successful = false; http.end(); disconnectWiFi(); return FETCH_INTERRUPTED_BY_USER; }
+                    if (g_fetch_restart_pending) { overall_fetch_successful = false; http.end(); return FETCH_RESTART_REQUESTED; }
 
                     if (scriptHttpCode == HTTP_CODE_OK)
                     {
                         String scriptPayload = http.getString();
-                        if (g_user_interrupt_signal_for_fetch_task)
-                        {
-                            http.end();
-                            overall_fetch_successful = false;
-                            break;
-                        }
+                        // Check for hard interrupt or soft restart after script getString
+                        if (g_user_interrupt_signal_for_fetch_task) { overall_fetch_successful = false; http.end(); disconnectWiFi(); return FETCH_INTERRUPTED_BY_USER; }
+                        if (g_fetch_restart_pending) { overall_fetch_successful = false; http.end(); return FETCH_RESTART_REQUESTED; }
 
-                        DynamicJsonDocument scriptDoc(8192);
+                        DynamicJsonDocument scriptDoc(8192); // Increased size for script content
                         DeserializationError scriptError = deserializeJson(scriptDoc, scriptPayload);
-                        if (g_user_interrupt_signal_for_fetch_task)
-                        {
-                            http.end();
-                            overall_fetch_successful = false;
-                            break;
-                        }
+                        // Check for hard interrupt or soft restart after script deserialize
+                        if (g_user_interrupt_signal_for_fetch_task) { overall_fetch_successful = false; http.end(); disconnectWiFi(); return FETCH_INTERRUPTED_BY_USER; }
+                        if (g_fetch_restart_pending) { overall_fetch_successful = false; http.end(); return FETCH_RESTART_REQUESTED; }
 
                         if (scriptError)
                         {
-                            log_e("perform_fetch_operations: Failed to parse script content JSON for ID %s: %s", scriptIdJson, scriptError.c_str());
+                            log_e("perform_fetch_operations: Failed to parse script content JSON for humanId %s: %s", humanId, scriptError.c_str());
                             overall_fetch_successful = false;
                         }
                         else
@@ -584,28 +594,35 @@ FetchResultStatus perform_fetch_operations()
                             const char *scriptContentFetched = scriptDoc["content"];
                             if (scriptContentFetched)
                             {
-                                if (!saveScriptContent(scriptIdJson, scriptContentFetched))
+                                // Save content using fileId
+                                if (!saveScriptContent(fileId, scriptContentFetched))
                                 {
-                                    log_e("perform_fetch_operations: Failed to save script content for ID %s.", scriptIdJson);
+                                    log_e("perform_fetch_operations: Failed to save script content for fileId %s (humanId %s).", fileId, humanId);
                                     overall_fetch_successful = false;
                                 }
-                                vTaskDelay(pdMS_TO_TICKS(5)); // Small yield after SPIFFS write
+                                vTaskDelay(pdMS_TO_TICKS(5));
+                                // Check for hard interrupt or soft restart after saving script content
+                                if (g_user_interrupt_signal_for_fetch_task) { overall_fetch_successful = false; http.end(); disconnectWiFi(); return FETCH_INTERRUPTED_BY_USER; }
+                                if (g_fetch_restart_pending) { overall_fetch_successful = false; http.end(); return FETCH_RESTART_REQUESTED; }
                             }
                             else
                             {
-                                log_e("perform_fetch_operations: Missing 'content' field for ID %s.", scriptIdJson);
+                                log_e("perform_fetch_operations: Missing 'content' field for humanId %s.", humanId);
                                 overall_fetch_successful = false;
                             }
                         }
                     }
                     else
                     {
-                        log_e("perform_fetch_operations: HTTP error fetching script ID %s: %d", scriptIdJson, scriptHttpCode);
+                        log_e("perform_fetch_operations: HTTP error fetching script humanId %s: %d", humanId, scriptHttpCode);
                         overall_fetch_successful = false;
                     }
-                    http.end();
-                    vTaskDelay(pdMS_TO_TICKS(50)); // Delay between script fetches
-                } // End loop through scripts
+                    http.end(); // End connection for this script
+                    vTaskDelay(pdMS_TO_TICKS(50));
+                }
+            } else if (overall_fetch_successful) { // If overall_fetch_successful is true but augmentedListDoc is not array
+                 log_e("perform_fetch_operations: Augmented script list from SPIFFS is not an array or failed to load.");
+                 overall_fetch_successful = false;
             }
         }
     }
@@ -615,19 +632,31 @@ FetchResultStatus perform_fetch_operations()
         overall_fetch_successful = false;
     }
 
-    http.end();
-    disconnectWiFi();
+    http.end(); // Final cleanup of HTTP client
 
-    if (g_user_interrupt_signal_for_fetch_task)
-    {
-        return FETCH_INTERRUPTED_BY_USER;
+    // Final checks before returning success/error
+    // If a hard interrupt occurred at any point and wasn't caught by an earlier return:
+    if (g_user_interrupt_signal_for_fetch_task) { disconnectWiFi(); return FETCH_INTERRUPTED_BY_USER; }
+    // If a restart was requested and wasn't caught:
+    if (g_fetch_restart_pending) { return FETCH_RESTART_REQUESTED; }
+
+
+    // If we reach here, the operation completed (or failed genuinely) without interrupts/restarts
+    // WiFi is disconnected by the caller task (fetchTaskFunction) for final states like SUCCESS or GENUINE_ERROR.
+    // However, if an error occurred and WiFi is still on, it's good to turn it off here.
+    // But for FETCH_SUCCESS, we want the caller to handle disconnect.
+    // Let's ensure WiFi is disconnected only on GENUINE_ERROR here if it wasn't a restart/interrupt.
+    if (!overall_fetch_successful && !g_fetch_restart_pending && !g_user_interrupt_signal_for_fetch_task) {
+         // disconnectWiFi(); // Caller will handle disconnect for GENUINE_ERROR
     }
+
+
     if (overall_fetch_successful)
     {
         return FETCH_SUCCESS;
     }
-
-    return FETCH_GENUINE_ERROR; // If not success and not interrupted, must be a genuine error
+    // If not success, and not interrupted or restart_pending, it's a genuine error.
+    return FETCH_GENUINE_ERROR;
 }
 
 // Selects the next script ID based on the direction (up/down)
@@ -715,70 +744,131 @@ bool selectNextScript(bool moveUp)
 // Loads the current script ID and its content into global variables
 bool loadScriptToExecute()
 {
-    bool idLoadedFromSpiffs = loadCurrentScriptId(currentScriptId);
-    vTaskDelay(pdMS_TO_TICKS(10)); // Yield
+    String humanReadableScriptIdFromSpiffs; // ID from /current_script.id
+    bool spiffsIdLoaded = false;
+    String determinedFileId = "";
+    String finalHumanIdForExecution = ""; // This will be set to the ID we actually try to load content for
 
-    if (!idLoadedFromSpiffs || currentScriptId.length() == 0)
-    {
-        log_w("No current script ID found in SPIFFS or it was empty. Attempting to use first script from list.");
+    // 1. Load human-readable ID from /current_script.id
+    if (loadCurrentScriptId(humanReadableScriptIdFromSpiffs) && humanReadableScriptIdFromSpiffs.length() > 0) {
+        log_i("loadScriptToExecute: Current human-readable script ID from SPIFFS: '%s'", humanReadableScriptIdFromSpiffs.c_str());
+        spiffsIdLoaded = true;
+    } else {
+        log_w("loadScriptToExecute: No current script ID found in SPIFFS or it was empty. Will try first from list.");
+    }
+    vTaskDelay(pdMS_TO_TICKS(10));
 
-        DynamicJsonDocument listDoc(4096);
-        if (!loadScriptList(listDoc))
-        {
-            log_e("Failed to load script list from SPIFFS. Cannot determine a script ID to run.");
-            currentScriptId = "";
-            currentScriptContent = "";
-            return false;
+    // 2. Load the script list
+    DynamicJsonDocument listDoc(4096);
+    bool listIsPotentiallyCorrupt = false; // Flag if list.json seems to have issues with fileIds
+    JsonArray scriptList; // Will be assigned if list loads successfully
+
+    if (loadScriptList(listDoc) && listDoc.is<JsonArray>() && listDoc.as<JsonArray>().size() > 0) {
+        scriptList = listDoc.as<JsonArray>();
+        log_i("loadScriptToExecute: Script list loaded with %d entries.", scriptList.size());
+        // Initial check: does the first item have a fileId? If not, list is likely bad.
+        JsonObject firstEntryTest = scriptList[0];
+        const char* testId = firstEntryTest["id"];
+        const char* testFileId = firstEntryTest["fileId"];
+        if (!testId || strlen(testId) == 0 || !testFileId || strlen(testFileId) == 0) {
+            log_w("loadScriptToExecute: First script in list.json is missing 'id' or 'fileId'. List may be corrupted.");
+            listIsPotentiallyCorrupt = true;
         }
-        vTaskDelay(pdMS_TO_TICKS(10)); // Yield
+    } else {
+        log_e("loadScriptToExecute: Failed to load script list, or list is empty/invalid. Marking as potentially corrupt.");
+        listIsPotentiallyCorrupt = true; // Mark list as corrupt if loading failed or list is unusable
+        // scriptList remains unassigned or empty. Logic will proceed to fallback.
+    }
+    vTaskDelay(pdMS_TO_TICKS(10));
 
-        if (!listDoc.is<JsonArray>() || listDoc.as<JsonArray>().size() == 0)
-        {
-            log_e("Script list is not an array or is empty. Cannot determine a script ID to run.");
-            currentScriptId = "";
-            currentScriptContent = "";
-            return false;
-        }
-
-        JsonArray scriptList = listDoc.as<JsonArray>();
-        JsonObject firstScript = scriptList[0];
-        const char *firstId = firstScript["id"];
-
-        if (firstId && strlen(firstId) > 0)
-        {
-            currentScriptId = firstId;
-            log_i("Using first script from list as current: %s", currentScriptId.c_str());
-            if (!saveCurrentScriptId(currentScriptId.c_str()))
-            {
-                log_w("Failed to save the first script ID ('%s') as current to SPIFFS.", currentScriptId.c_str());
+    // 3. Try to use humanReadableScriptIdFromSpiffs if it was loaded
+    bool foundAndMappedSpiffsId = false;
+    if (spiffsIdLoaded) {
+        bool idExistsInList = false;
+        for (JsonObject scriptInfo : scriptList) {
+            const char *hId = scriptInfo["id"];
+            if (hId && humanReadableScriptIdFromSpiffs == hId) {
+                idExistsInList = true;
+                const char *fId = scriptInfo["fileId"];
+                if (fId && strlen(fId) > 0) {
+                    determinedFileId = fId;
+                    finalHumanIdForExecution = humanReadableScriptIdFromSpiffs;
+                    foundAndMappedSpiffsId = true;
+                    log_i("loadScriptToExecute: Found fileId '%s' for humanId '%s' (from SPIFFS preference).", determinedFileId.c_str(), finalHumanIdForExecution.c_str());
+                } else {
+                    log_w("loadScriptToExecute: HumanId '%s' (from SPIFFS preference) found in list but has no valid fileId.", humanReadableScriptIdFromSpiffs.c_str());
+                    listIsPotentiallyCorrupt = true; // Mark list as problematic
+                }
+                break; // Found the entry for humanReadableScriptIdFromSpiffs
             }
-            vTaskDelay(pdMS_TO_TICKS(10)); // Yield
         }
-        else
-        {
-            log_e("First script in list has no valid ID. Cannot determine a script ID to run.");
-            currentScriptId = "";
-            currentScriptContent = "";
-            return false;
+        if (!idExistsInList) {
+            log_w("loadScriptToExecute: HumanId '%s' (from SPIFFS preference) not found in the script list. Will try first from list.", humanReadableScriptIdFromSpiffs.c_str());
         }
+        // If ID existed but fileId was invalid, foundAndMappedSpiffsId remains false.
     }
 
-    if (currentScriptId.length() == 0)
-    {
-        log_e("FATAL: currentScriptId is empty after attempting all loading strategies.");
-        currentScriptContent = "";
-        return false;
+    // 4. If spiffsId wasn't used (not loaded, not found, or no fileId for it), try first script from list
+    if (!foundAndMappedSpiffsId && scriptList.size() > 0) {
+        log_i("loadScriptToExecute: Attempting to use first script from the list.");
+        JsonObject firstScript = scriptList[0];
+        const char *firstHumanId = firstScript["id"];
+        const char *firstFileId = firstScript["fileId"];
+
+        if (firstHumanId && strlen(firstHumanId) > 0 && firstFileId && strlen(firstFileId) > 0) {
+            finalHumanIdForExecution = firstHumanId;
+            determinedFileId = firstFileId;
+            log_i("loadScriptToExecute: Using first script: humanId '%s', fileId '%s'", finalHumanIdForExecution.c_str(), determinedFileId.c_str());
+            // Save this first script's humanId as the current one for next boot
+            if (!saveCurrentScriptId(finalHumanIdForExecution.c_str())) {
+                log_w("loadScriptToExecute: Failed to save the first script's humanId ('%s') as current to SPIFFS.", finalHumanIdForExecution.c_str());
+            }
+        } else {
+            log_e("loadScriptToExecute: First script in list has no valid humanId or fileId. List is confirmed problematic.");
+            listIsPotentiallyCorrupt = true; // Confirm list is problematic
+            // finalHumanIdForExecution and determinedFileId remain empty
+        }
+        vTaskDelay(pdMS_TO_TICKS(10));
     }
 
-    log_i("Attempting to load content for script ID: %s", currentScriptId.c_str());
-    if (!loadScriptContent(currentScriptId.c_str(), currentScriptContent))
-    {
-        log_e("Failed to load script content for ID: '%s'.", currentScriptId.c_str());
-        currentScriptContent = "";
-        return false;
-    }
-    vTaskDelay(pdMS_TO_TICKS(10)); // Yield after loading script content
+    // 5. If we still don't have a fileId, list.json is bad or empty. Fallback to default.
+    if (determinedFileId.length() == 0) {
+        log_e("loadScriptToExecute: Could not determine a valid script/fileId from list.json or list was unusable.");
+        // Set currentScriptId for handleWakeupAndScriptExecution to use for logging/default script context
+        currentScriptId = spiffsIdLoaded ? humanReadableScriptIdFromSpiffs : "default";
+        currentScriptContent = ""; // Signal to use default_script
+        
+        if (listIsPotentiallyCorrupt) {
+            if (spiffsIdLoaded) {
+                // If current_script.id was loaded and list is corrupt, clear current_script.id
+                log_w("loadScriptToExecute: List.json seems corrupted. Clearing current_script.id ('%s') to avoid getting stuck.", humanReadableScriptIdFromSpiffs.c_str());
+                saveCurrentScriptId(""); // Clear it
+            } else {
+                log_w("loadScriptToExecute: List.json seems corrupted. No specific current_script.id was loaded to clear.");
+            }
 
-    log_i("Successfully set up script ID '%s' for execution.", currentScriptId.c_str());
+            // Trigger a fetch operation to try and rebuild the list
+            log_w("loadScriptToExecute: Triggering a fetch operation to rebuild corrupted/missing list.json.");
+            if (g_fetchRequestSemaphore != NULL) {
+                xSemaphoreGive(g_fetchRequestSemaphore);
+                log_i("loadScriptToExecute: Fetch request semaphore given due to corrupted/missing list.");
+            } else {
+                log_e("loadScriptToExecute: Fetch request semaphore is NULL, cannot trigger fetch for corrupted list.");
+            }
+        }
+        return false; // Fallback to default script
+    }
+
+    // 6. Load script content using the determined fileId
+    currentScriptId = finalHumanIdForExecution; // Set global currentScriptId for execution context
+    log_i("loadScriptToExecute: Attempting to load content for humanId '%s' using fileId '%s'", currentScriptId.c_str(), determinedFileId.c_str());
+    if (!loadScriptContent(determinedFileId.c_str(), currentScriptContent)) {
+        log_e("loadScriptToExecute: Failed to load script content for fileId '%s' (humanId '%s'). Using default.", determinedFileId.c_str(), currentScriptId.c_str());
+        currentScriptContent = ""; // Signal to use default_script
+        return false; // Content load failed, fallback to default
+    }
+    vTaskDelay(pdMS_TO_TICKS(10));
+
+    log_i("loadScriptToExecute: Successfully set up script humanId '%s' (fileId '%s') for execution.", currentScriptId.c_str(), determinedFileId.c_str());
     return true;
 }
