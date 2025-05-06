@@ -273,8 +273,8 @@ bool saveScriptList(const char *jsonContent)
     }
 }
 
-// Loads the script list JSON string and parses it into the provided JsonArray
-bool loadScriptList(JsonArray &listArray)
+// Loads the script list JSON string and parses it into the provided DynamicJsonDocument
+bool loadScriptList(DynamicJsonDocument &doc) // Changed parameter
 {
     File file = SPIFFS.open("/scripts/list.json", FILE_READ);
     if (!file || file.isDirectory())
@@ -283,10 +283,9 @@ bool loadScriptList(JsonArray &listArray)
         return false;
     }
 
-    // Allocate a temporary JsonDocument. Adjust size as needed.
-    // Calculate size based on expected number of scripts * size per script entry + buffer
-    // Example: 20 scripts * ({"id":"...", "name":"..."} ~ 100 chars) = 2000 + buffer
-    DynamicJsonDocument doc(4096); // Increased size
+    // The caller provides the DynamicJsonDocument, so we use it directly.
+    // Clear it first to ensure it's empty before deserialization.
+    doc.clear();
 
     DeserializationError error = deserializeJson(doc, file);
     file.close();
@@ -294,25 +293,19 @@ bool loadScriptList(JsonArray &listArray)
     if (error)
     {
         log_e("Failed to parse script list JSON: %s", error.c_str());
+        doc.clear(); // Ensure doc is cleared on error
         return false;
     }
 
     if (!doc.is<JsonArray>())
     {
         log_e("Script list JSON is not an array.");
+        doc.clear(); // Ensure doc is cleared if content is not an array
         return false;
     }
 
-    // Clear the provided array before adding new elements
-    listArray = doc.as<JsonArray>(); // Assign the parsed array
-
-    if (listArray.isNull())
-    {
-        log_e("Failed to assign parsed JSON array.");
-        return false;
-    }
-
-    log_i("Script list loaded successfully from SPIFFS. Found %d scripts.", listArray.size());
+    // The document 'doc' is now populated. The caller will use doc.as<JsonArray>().
+    log_i("Script list loaded successfully into Document from SPIFFS. Found %d scripts.", doc.as<JsonArray>().size());
     return true;
 }
 

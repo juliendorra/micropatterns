@@ -401,14 +401,21 @@ bool fetchAndStoreScripts()
 // Selects the next script ID based on the direction (up/down)
 bool selectNextScript(bool moveUp)
 {
-    DynamicJsonDocument listDoc(4096);              // Use a doc to hold the array
-    JsonArray scriptList = listDoc.to<JsonArray>(); // Create an empty array
+    DynamicJsonDocument listDoc(4096); // Document to hold the list
 
-    if (!loadScriptList(scriptList) || scriptList.size() == 0)
+    // Call loadScriptList to populate listDoc
+    if (!loadScriptList(listDoc))
     {
-        log_e("Cannot select next script, list is empty or failed to load.");
+        log_e("Cannot select next script, failed to load script list from SPIFFS.");
         return false;
     }
+    // Check if the loaded document contains a valid array and it's not empty
+    if (!listDoc.is<JsonArray>() || listDoc.as<JsonArray>().size() == 0) {
+        log_e("Cannot select next script, list is empty or not an array after loading.");
+        return false;
+    }
+
+    JsonArray scriptList = listDoc.as<JsonArray>(); // Get the array view from our document
     yield(); // Yield after loading script list from SPIFFS
 
     String loadedCurrentId;
@@ -482,31 +489,38 @@ bool loadScriptToExecute()
     {
         log_w("No current script ID found in SPIFFS. Trying first script from list.");
         yield(); // Yield after loadCurrentScriptId attempt
-        // Try loading the list and using the first script ID
-        DynamicJsonDocument listDoc(4096);
-        JsonArray scriptList = listDoc.to<JsonArray>();
-        if (loadScriptList(scriptList) && scriptList.size() > 0)
+
+        DynamicJsonDocument listDoc(4096); // Document to hold the list
+        // Call loadScriptList to populate listDoc
+        if (!loadScriptList(listDoc))
         {
-            yield(); // Yield after loadScriptList from SPIFFS
-            JsonObject firstScript = scriptList[0];
-            const char *firstId = firstScript["id"];
-            if (firstId)
-            {
-                currentScriptId = firstId;
-                log_i("Using first script from list: %s", currentScriptId.c_str());
-                saveCurrentScriptId(currentScriptId.c_str()); // Save it as current
-                yield(); // Yield after saveCurrentScriptId to SPIFFS
-            }
-            else
-            {
-                log_e("First script in list has no ID.");
-                return false; // Cannot proceed without an ID
-            }
+             log_e("Failed to load script list from SPIFFS. Cannot determine script ID.");
+             return false;
+        }
+        // Check if the loaded document contains a valid array and it's not empty
+        if (!listDoc.is<JsonArray>() || listDoc.as<JsonArray>().size() == 0) {
+            log_e("Failed to load script list (not an array or empty). Cannot determine script ID.");
+            return false;
+        }
+
+        JsonArray scriptList = listDoc.as<JsonArray>(); // Get array view after loading
+        // yield() was here, but loadScriptList already has file operations.
+        // It's fine to yield after a block of operations.
+
+        // scriptList is guaranteed to be non-empty here by the check above.
+        JsonObject firstScript = scriptList[0];
+        const char *firstId = firstScript["id"];
+        if (firstId)
+        {
+            currentScriptId = firstId;
+            log_i("Using first script from list: %s", currentScriptId.c_str());
+            saveCurrentScriptId(currentScriptId.c_str()); // Save it as current
+            yield(); // Yield after saveCurrentScriptId to SPIFFS
         }
         else
         {
-            log_e("Failed to load script list or list is empty. Cannot determine script ID.");
-            return false; // No script ID found
+            log_e("First script in list has no ID.");
+            return false; // Cannot proceed without an ID
         }
     }
 
