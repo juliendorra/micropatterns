@@ -1,5 +1,6 @@
 #include "micropatterns_drawing.h"
 #include <cmath> // For round, floor, ceil in some places, but avoid for core transforms
+#include <Arduino.h> // For yield()
 
 // Define colors (assuming 0=white, 15=black for M5EPD 4bpp buffer)
 const uint8_t COLOR_WHITE = 0;
@@ -333,9 +334,16 @@ void MicroPatternsDrawing::fillRect(int lx, int ly, int lw, int lh, const MicroP
     int scale = round(state.scale);
     if (scale < 1) scale = 1;
 
+    int pixelCount = 0;
     // Iterate through logical grid within the rectangle
     for (int iy = 0; iy < lh; ++iy) {
         for (int ix = 0; ix < lw; ++ix) {
+            // Yield periodically
+            if (pixelCount > 0 && pixelCount % 500 == 0) { // Adjust frequency as needed
+                yield();
+            }
+            pixelCount++;
+
             // Transform the top-left corner of this logical pixel
             int sx, sy;
             transformPoint(lx + ix, ly + iy, state, sx, sy);
@@ -410,9 +418,16 @@ void MicroPatternsDrawing::fillCircle(int lcx, int lcy, int lr, const MicroPatte
      maxX = min(_canvasWidth, maxX);
      maxY = min(_canvasHeight, maxY);
 
+     int pixelCount = 0;
      // Iterate through screen pixels in the bounding box
     for (int sy = minY; sy < maxY; ++sy) {
         for (int sx = minX; sx < maxX; ++sx) {
+            // Yield periodically
+            if (pixelCount > 0 && pixelCount % 1000 == 0) { // Adjust frequency as needed
+                yield();
+            }
+            pixelCount++;
+
             // Check if the center of the screen pixel is inside the circle
             float dx = (float)sx + 0.5f - scx;
             float dy = (float)sy + 0.5f - scy;
@@ -435,9 +450,16 @@ void MicroPatternsDrawing::drawAsset(int lx, int ly, const MicroPatternsAsset& a
     int scale = round(state.scale);
     if (scale < 1) scale = 1;
 
+    int pixelCount = 0;
     // Iterate through the asset's logical pixels
     for (int iy = 0; iy < asset.height; ++iy) {
         for (int ix = 0; ix < asset.width; ++ix) {
+            // Yield periodically
+            if (pixelCount > 0 && pixelCount % 200 == 0) { // Adjust frequency as needed
+                yield();
+            }
+            pixelCount++;
+
             int index = iy * asset.width + ix;
             if (index < asset.data.size() && asset.data[index] == 1) { // If asset pixel is 'on' (1)
                 // Calculate the logical position of this asset pixel

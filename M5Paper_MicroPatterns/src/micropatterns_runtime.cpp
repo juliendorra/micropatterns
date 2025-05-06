@@ -1,5 +1,6 @@
 #include "micropatterns_runtime.h"
 #include "esp32-hal-log.h" // For logging errors
+#include <Arduino.h>       // For yield()
 
 // Define colors (consistent with drawing class)
 const uint8_t RUNTIME_COLOR_WHITE = 0;
@@ -521,12 +522,17 @@ void MicroPatternsRuntime::execute()
     _drawing.clearCanvas(); // Start with a clear (white) canvas
 
     // Execute top-level commands
+    int commandCounter = 0;
     for (const auto &cmd : *_commands)
     {
         // Skip VAR commands as they were handled above for initialization
         if (cmd.type != CMD_VAR)
         {
             executeCommand(cmd, -1); // Pass loopIndex = -1 for top-level execution
+            commandCounter++;
+            if (commandCounter > 0 && commandCounter % 20 == 0) { // Yield every 20 top-level commands
+                yield();
+            }
         }
     }
 
@@ -764,6 +770,10 @@ void MicroPatternsRuntime::executeCommand(const MicroPatternsCommand &cmd, int l
                 for (const auto &nestedCmd : cmd.nestedCommands)
                 {
                     executeCommand(nestedCmd, i); // Pass 'i' as loopIndex
+                }
+                // Yield periodically within the REPEAT loop
+                if (i > 0 && i % 10 == 0) { // Yield every 10 iterations (but not the first)
+                    yield();
                 }
             }
 
