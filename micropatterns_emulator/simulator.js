@@ -12,6 +12,10 @@ document.addEventListener('DOMContentLoaded', () => {
     const realTimeSecondSpan = document.getElementById('realTimeSecondSpan');
     const lineWrapToggle = document.getElementById('lineWrapToggle'); // Get the checkbox
 
+    // Display Size UI
+    const displaySizeSelect = document.getElementById('displaySizeSelect');
+    const displayInfoSpan = document.getElementById('displayInfoSpan');
+
     // Script Management UI
     const scriptListSelect = document.getElementById('scriptList');
     const loadScriptButton = document.getElementById('loadScriptButton');
@@ -23,8 +27,8 @@ document.addEventListener('DOMContentLoaded', () => {
     // --- Configuration ---
     // Assume server runs on localhost:8000 during development
     // TODO: Make this configurable or detect environment
-    // let API_BASE_URL = 'http://localhost:8000';
-    API_BASE_URL = "https://micropatterns-api.deno.dev";
+    let API_BASE_URL = 'http://localhost:8000';
+    // API_BASE_URL = "https://micropatterns-api.deno.dev";
     // --- End Configuration ---
 
     // --- Drag Drawing State ---
@@ -38,9 +42,26 @@ document.addEventListener('DOMContentLoaded', () => {
         MINUTE: document.getElementById('envMinute'),
         SECOND: document.getElementById('envSecond'),
         COUNTER: document.getElementById('envCounter'),
-        WIDTH: canvas.width,
-        HEIGHT: canvas.height,
+        WIDTH: 200, // Initial default, will be set by updateCanvasDimensions
+        HEIGHT: 200, // Initial default
     };
+
+    function updateCanvasDimensions(width, height) {
+        env.WIDTH = width;
+        env.HEIGHT = height;
+        
+        canvas.width = width; // Set attribute for drawing buffer
+        canvas.height = height; // Set attribute for drawing buffer
+        
+        canvas.style.width = width + 'px'; // Set CSS style for display size
+        canvas.style.height = height + 'px'; // Set CSS style for display size
+        
+        if (displayInfoSpan) {
+            displayInfoSpan.textContent = `${width}x${height}`;
+        }
+        // Update the comment in the new script template if newScript is called later
+        // This is handled by newScript() itself as it reads env.WIDTH/HEIGHT
+    }
 
     // Initialize CodeMirror
     const codeMirrorEditor = CodeMirror.fromTextArea(scriptInputTextArea, {
@@ -206,6 +227,23 @@ document.addEventListener('DOMContentLoaded', () => {
     setInterval(updateRealTimeDisplay, 1000);
     // --- End Real-Time Display ---
 
+    // Initial setup of canvas dimensions
+    if (displaySizeSelect) {
+        const initialSize = displaySizeSelect.value.split('x').map(Number);
+        updateCanvasDimensions(initialSize[0], initialSize[1]);
+    } else {
+        // Fallback if select element not found, though it should be
+        updateCanvasDimensions(200, 200);
+    }
+
+
+    if (displaySizeSelect) {
+        displaySizeSelect.addEventListener('change', (event) => {
+            const [newWidth, newHeight] = event.target.value.split('x').map(Number);
+            updateCanvasDimensions(newWidth, newHeight);
+            runScript(); // Re-run script with new dimensions
+        });
+    }
 
     function getEnvironmentVariables() {
         const now = new Date();

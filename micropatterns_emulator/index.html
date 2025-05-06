@@ -27,8 +27,9 @@
         #displayCanvas {
             border: 1px solid black;
             image-rendering: pixelated;
-            width: 200px;
-            height: 200px;
+            /* width and height will be set by JS via element.style */
+            max-width: 100%; /* Ensure it doesn't overflow its container visually */
+            /* display: block; /* Optional: if container needs specific layout */
         }
 
         textarea {
@@ -236,6 +237,14 @@ ENDREPEAT
 
     <div class="column">
         <h2>Emulator Display</h2>
+        <div style="margin-bottom: 10px;">
+            <label for="displaySizeSelect" style="margin-right: 5px;">Display Size:</label>
+            <select id="displaySizeSelect">
+                <option value="200x200">200x200 (Default)</option>
+                <option value="540x960">540x960 (M5Paper)</option>
+                <option value="960x540">960x540 (M5Paper Landscape)</option>
+            </select>
+        </div>
         <canvas id="displayCanvas" width="200" height="200"></canvas>
 
         <div class="controls-group">
@@ -266,7 +275,7 @@ ENDREPEAT
                 <button id="incrementCounterButton" title="Increment Counter" style="padding: 2px 8px;">+</button>
             </div>
             <!-- Static Info -->
-            <p style="font-size: 0.8em; margin-top: 10px; margin-bottom: 0; color: #555;">Display: 200x200</p>
+            <p style="font-size: 0.8em; margin-top: 10px; margin-bottom: 0; color: #555;">Display: <span id="displayInfoSpan">200x200</span></p>
         </div>
 
         <div class="controls-group">
