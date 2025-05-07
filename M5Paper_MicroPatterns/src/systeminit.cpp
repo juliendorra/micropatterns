@@ -70,14 +70,14 @@ void SysInit_Start(void)
     // Setup Interrupt Service Routine
     gpio_install_isr_service(0);
 
-    // Configure interrupts for each button
-    gpio_set_intr_type(BUTTON_UP_PIN, GPIO_INTR_LOW_LEVEL);
+    // Configure interrupts for each button to trigger on falling edge (press)
+    gpio_set_intr_type(BUTTON_UP_PIN, GPIO_INTR_NEGEDGE);
     gpio_isr_handler_add(BUTTON_UP_PIN, button_isr, (void *)BUTTON_UP_PIN);
 
-    gpio_set_intr_type(BUTTON_DOWN_PIN, GPIO_INTR_LOW_LEVEL);
+    gpio_set_intr_type(BUTTON_DOWN_PIN, GPIO_INTR_NEGEDGE);
     gpio_isr_handler_add(BUTTON_DOWN_PIN, button_isr, (void *)BUTTON_DOWN_PIN);
 
-    gpio_set_intr_type(BUTTON_PUSH_PIN, GPIO_INTR_LOW_LEVEL);
+    gpio_set_intr_type(BUTTON_PUSH_PIN, GPIO_INTR_NEGEDGE);
     gpio_isr_handler_add(BUTTON_PUSH_PIN, button_isr, (void *)BUTTON_PUSH_PIN);
 
     log_i("System Initialization done");

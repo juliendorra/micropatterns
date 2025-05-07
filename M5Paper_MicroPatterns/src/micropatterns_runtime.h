@@ -6,6 +6,7 @@
 #include <list> // Added for std::list
 #include <map>
 #include <set> // Include set for declared variables check
+#include <esp_task_wdt.h> // For watchdog resets
 #include "micropatterns_command.h"
 #include "micropatterns_drawing.h"
 

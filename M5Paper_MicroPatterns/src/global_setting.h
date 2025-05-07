@@ -26,6 +26,9 @@ extern const char* rootCACertificate;
 
 // Shared variable for wakeup pin tracking
 extern volatile uint8_t wakeup_pin;
+// For button debouncing
+extern volatile uint32_t g_last_button_time;
+extern const uint32_t DEBOUNCE_TIME_MS;
 // ISR for button interrupts
 void IRAM_ATTR button_isr(void* arg);
 

@@ -11,11 +11,24 @@
 volatile uint8_t wakeup_pin = 0;
 volatile bool g_wakeup_handled = false; // Initialize the wakeup handled flag
 
+// Last time a button interrupt was triggered
+volatile uint32_t g_last_button_time = 0;
+// Debounce time in milliseconds
+const uint32_t DEBOUNCE_TIME_MS = 300;
+
 // ISR for button interrupts
 void IRAM_ATTR button_isr(void *arg)
 {
     uint32_t gpio_num = (uint32_t)arg;
-    wakeup_pin = gpio_num;
+    uint32_t current_time = (uint32_t)millis();
+    
+    // Simple debouncing: ignore interrupts that come too quickly after the previous one
+    // Also, if wakeup_pin is still set from a previous interrupt that hasn't been processed,
+    // we keep the original event to ensure it's not lost
+    if (((current_time - g_last_button_time) >= DEBOUNCE_TIME_MS) && (wakeup_pin == 0)) {
+        wakeup_pin = gpio_num;
+        g_last_button_time = current_time;
+    }
 }
 
 // --- Constants ---
@@ -487,6 +500,9 @@ void goToLightSleep()
     delay(100); // Short delay before sleep
 
     esp_light_sleep_start();
+    
+    // Reset wakeup_handled flag after wake to ensure we process the next wakeup event
+    g_wakeup_handled = false;
 
     // After wakeup, check which pin triggered it
     if (wakeup_pin == BUTTON_UP_PIN)

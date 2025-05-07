@@ -1,24 +1,4 @@
-#include <M5EPD.h>
-#include "systeminit.h" // For M5Paper hardware init
-#include "micropatterns_parser.h"
-#include "micropatterns_runtime.h"
-#include "micropatterns_drawing.h" // Drawing depends on runtime state
-#include "global_setting.h"        // For settings, WiFi, SPIFFS, sleep
-#include "driver/rtc_io.h"         // For rtc_gpio functions
-#include "driver/gpio.h"           // For gpio_num_t
-#include <esp_sleep.h>             // Include for sleep functions like esp_sleep_get_gpio_wakeup_status
-#include <HTTPClient.h>            // For fetching scripts
-#include <ArduinoJson.h>           // For parsing JSON
-#include <SPIFFS.h>                // For saving/loading scripts
-#include <WiFi.h>                  // Include WiFi header
-#include <WiFiClientSecure.h>      // For HTTPS client configuration
-#include <set>                     // For std::set
-
-// FreeRTOS includes
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
-#include "freertos/semphr.h"
-#include "freertos/queue.h"
+#include "main.h"
 
 // --- Default Script (if loading from SPIFFS fails) ---
 const char *default_script = R"(
@@ -110,7 +90,7 @@ enum FetchResultStatus
 // Function Prototypes
 bool selectNextScript(bool moveUp);
 bool loadScriptToExecute();
-void displayMessage(const String &msg, int y_offset = 50, uint16_t color = 15);
+void displayMessage(const String &msg, int y_offset, uint16_t color);
 void displayParseErrors();
 void handleWakeupAndScriptExecution();
 void fetchTaskFunction(void *pvParameters);
@@ -181,8 +161,12 @@ void loop()
         }
     }
 
-    // Only process wakeup if it hasn't been handled yet this wake cycle
-    if (!g_wakeup_handled) {
+    // Process wakeup if either:
+    // 1. We haven't handled it yet this wake cycle
+    // 2. We just came out of sleep (g_wakeup_handled is reset in goToLightSleep after waking up)
+    // This ensures we catch button presses even if they happen during fetches
+    uint8_t current_wakeup_pin = wakeup_pin;
+    if (!g_wakeup_handled && current_wakeup_pin != 0) {
         handleWakeupAndScriptExecution();
         g_wakeup_handled = true; // Mark wakeup as handled
     }
@@ -190,7 +174,8 @@ void loop()
     if (g_fetch_task_in_progress) {
         log_i("Loop: Fetch task is in progress, delaying sleep.");
         // Yield for a short period to allow fetch task to run and prevent busy-waiting in main loop.
-        vTaskDelay(pdMS_TO_TICKS(100));
+        // Using shorter delay to be more responsive to button presses
+        vTaskDelay(pdMS_TO_TICKS(50));
     } else {
         goToLightSleep();
     }
@@ -226,10 +211,12 @@ void handleWakeupAndScriptExecution()
     bool signaled_restart_to_existing_fetch_this_cycle = false;
 
     // 1. Determine Wakeup Reason & Intent
+    // Use a local copy and atomic operation to safely read and reset wakeup_pin
     uint8_t current_wakeup_pin_val = wakeup_pin; // Capture volatile read
     if (current_wakeup_pin_val != 0)
     {
-        wakeup_pin = 0; // Consume the event for this cycle of handleWakeupAndScriptExecution
+        // Atomically reset wakeup_pin
+        __atomic_exchange_n(&wakeup_pin, 0, __ATOMIC_SEQ_CST);
         log_i("Wakeup caused by GPIO %d", current_wakeup_pin_val);
 
         if (initial_fetch_task_state_is_progress) // Check against the state at the beginning of this function call
@@ -264,7 +251,16 @@ void handleWakeupAndScriptExecution()
         else if (current_wakeup_pin_val == BUTTON_PUSH_PIN)
         {
             log_i("Button PUSH (GPIO %d) detected.", current_wakeup_pin_val);
+            
+            // Similar to UP/DOWN, check if a fetch is in progress and handle gracefully
+            if (initial_fetch_task_state_is_progress) {
+                log_i("PUSH button pressed during fetch. Signaling fetch task to restart.");
+                g_fetch_restart_pending = true; // Signal a graceful restart
+                signaled_restart_to_existing_fetch_this_cycle = true; // Mark that this cycle signaled a restart
+            }
+            
             // For PUSH, just re-run current script. No fetch by default.
+            // We don't change the script, so no need for selectNextScript()
         }
     }
     else
@@ -317,6 +313,9 @@ void handleWakeupAndScriptExecution()
     // 5. Execute Script (if runtime is valid)
     if (runtime)
     {
+        // Reset watchdog timer before executing script to avoid timeouts
+        esp_task_wdt_reset();
+        
         M5.RTC.getTime(&time_struct);
         executionCounter++;
 
@@ -325,7 +324,13 @@ void handleWakeupAndScriptExecution()
 
         runtime->setTime(time_struct.hour, time_struct.min, time_struct.sec);
         runtime->setCounter(executionCounter);
+        
+        // Execute the script (this might take time for complex scripts)
         runtime->execute(); // This includes drawing and pushing canvas
+        
+        // Reset watchdog timer after execution
+        esp_task_wdt_reset();
+        
         log_i("Finished execution for cycle #%d", executionCounter);
     }
     else
@@ -379,8 +384,15 @@ void fetchTaskFunction(void *pvParameters)
     DisplayMsg msg_to_send;
     log_i("FetchTask started and pinned to core %d", xPortGetCoreID());
 
+    // Initialize watchdog for this task
+    esp_task_wdt_init(30, false); // 30 second timeout, don't panic on timeout
+    esp_task_wdt_add(NULL);       // Add current task to watchdog
+
     for (;;)
     {
+        // Reset watchdog timer
+        esp_task_wdt_reset();
+        
         if (g_fetchRequestSemaphore != NULL && xSemaphoreTake(g_fetchRequestSemaphore, portMAX_DELAY) == pdTRUE)
         {
             g_fetch_task_in_progress = true; // Set flag immediately
@@ -533,8 +545,10 @@ FetchResultStatus perform_fetch_operations()
         return FETCH_GENUINE_ERROR;
     }
 
+    esp_task_wdt_reset(); // Reset watchdog before HTTP GET
     int httpCode = http.GET();
     vTaskDelay(pdMS_TO_TICKS(10));
+    esp_task_wdt_reset(); // Reset watchdog after HTTP GET
 
     if (g_user_interrupt_signal_for_fetch_task) { http.end(); disconnectWiFi(); return FETCH_INTERRUPTED_BY_USER; }
     if (g_fetch_restart_pending) { http.end(); return FETCH_RESTART_REQUESTED; }
@@ -590,6 +604,9 @@ FetchResultStatus perform_fetch_operations()
 
             // Try to find this humanId in the old SPIFFS list to reuse its fileId
             if (oldListLoaded && oldSpiifsListDoc.is<JsonArray>()) {
+                // Reset watchdog timer before potentially long operation
+                esp_task_wdt_reset();
+                
                 for (JsonObject oldScriptInfo : oldSpiifsListDoc.as<JsonArray>()) {
                     const char* oldHumanId = oldScriptInfo["id"];
                     const char* oldFileId = oldScriptInfo["fileId"];
@@ -685,8 +702,11 @@ FetchResultStatus perform_fetch_operations()
         }
     }
 
+    // Reset watchdog timer before file cleanup
+    esp_task_wdt_reset();
+    
     // 3. Cleanup Orphaned Script Content Files
-    log_i("perform_fetch_operations: Cleaning up orphaned script content files...");
+    log_i("perform_fetch_operations(): Cleaning up orphaned script content files...");
     File root = SPIFFS.open("/scripts/content");
     if (root && root.isDirectory()) {
         File entry = root.openNextFile();

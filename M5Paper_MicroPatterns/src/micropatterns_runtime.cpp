@@ -492,6 +492,9 @@ void MicroPatternsRuntime::execute()
     resetState();
     log_d("Runtime execute start - Counter after resetState: %d", _environment["$COUNTER"]);
 
+    // Reset watchdog timer before script execution
+    esp_task_wdt_reset();
+
     // VAR initialization is now handled by executeCommand when CMD_VAR is encountered.
     // This allows VARs inside blocks to be initialized correctly.
 
@@ -504,10 +507,17 @@ void MicroPatternsRuntime::execute()
         // VAR commands will now be handled by executeCommand like any other command.
         executeCommand(cmd, -1); // Pass loopIndex = -1 for top-level execution
         commandCounter++;
-        if (commandCounter > 0 && commandCounter % 20 == 0) { // Yield every 20 top-level commands
+        if (commandCounter > 0 && commandCounter % 20 == 0) {
             yield();
+            // Reset watchdog timer periodically during execution
+            if (commandCounter % 60 == 0) {
+                esp_task_wdt_reset();
+            }
         }
     }
+
+    // Reset watchdog before final canvas push (which can be time-consuming)
+    esp_task_wdt_reset();
 
     // After executing all commands, push the final canvas to the display
     _canvas->pushCanvas(0, 0, UPDATE_MODE_GLD16);
@@ -737,6 +747,11 @@ void MicroPatternsRuntime::executeCommand(const MicroPatternsCommand &cmd, int l
                 break;
             }
 
+            // Reset watchdog for potentially long REPEAT loops
+            if (count > 30) {
+                esp_task_wdt_reset();
+            }
+
             // Store previous $INDEX if nested loops
             int previousIndex = -1;
             bool hadPreviousIndex = _environment.count("$INDEX");
@@ -758,9 +773,15 @@ void MicroPatternsRuntime::executeCommand(const MicroPatternsCommand &cmd, int l
                 {
                     executeCommand(nestedCmd, i); // Pass 'i' as loopIndex
                 }
+                
                 // Yield periodically within the REPEAT loop
                 if (i > 0 && i % 10 == 0) { // Yield every 10 iterations (but not the first)
                     yield();
+                    
+                    // Reset watchdog periodically for long repeat loops
+                    if (i > 0 && i % 50 == 0) {
+                        esp_task_wdt_reset();
+                    }
                 }
             }
 
