@@ -2,6 +2,7 @@
 #define MICROPATTERNS_DRAWING_H
 
 #include <M5EPD.h>
+#include <esp_task_wdt.h> // For watchdog reset functions
 #include "micropatterns_command.h" // For state and asset structures
 
 // Define fixed-point scaling factor (e.g., 2^8 = 256)

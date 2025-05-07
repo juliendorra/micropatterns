@@ -740,18 +740,16 @@ void MicroPatternsRuntime::executeCommand(const MicroPatternsCommand &cmd, int l
         case CMD_REPEAT:
         {
             int count = resolveValue(cmd.count, cmd.lineNumber, loopIndex); // Resolve count using current context
-
+            
             if (count < 0)
             {
                 runtimeError("REPEAT count cannot be negative: " + String(count), cmd.lineNumber);
                 break;
             }
-
+        
             // Reset watchdog for potentially long REPEAT loops
-            if (count > 30) {
-                esp_task_wdt_reset();
-            }
-
+            esp_task_wdt_reset();
+            
             // Store previous $INDEX if nested loops
             int previousIndex = -1;
             bool hadPreviousIndex = _environment.count("$INDEX");
@@ -759,7 +757,7 @@ void MicroPatternsRuntime::executeCommand(const MicroPatternsCommand &cmd, int l
             {
                 previousIndex = _environment.at("$INDEX");
             }
-
+        
             // Execute the nested commands 'count' times
             for (int i = 0; i < count; i++)
             {
@@ -767,7 +765,7 @@ void MicroPatternsRuntime::executeCommand(const MicroPatternsCommand &cmd, int l
                 // This makes $INDEX available both via direct environment lookup
                 // and via the loopIndex parameter in resolveValue
                 _environment["$INDEX"] = i;
-
+        
                 // Execute each command in the nested block, passing current loop index 'i'
                 for (const auto &nestedCmd : cmd.nestedCommands)
                 {
@@ -779,11 +777,12 @@ void MicroPatternsRuntime::executeCommand(const MicroPatternsCommand &cmd, int l
                     yield();
                     
                     // Reset watchdog periodically for long repeat loops
-                    if (i > 0 && i % 50 == 0) {
+                    if (i > 0 && i % 30 == 0) { // Increased frequency from 50 to 30
                         esp_task_wdt_reset();
                     }
                 }
             }
+
 
             // Restore previous $INDEX or remove it
             if (hadPreviousIndex)

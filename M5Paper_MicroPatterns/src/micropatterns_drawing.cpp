@@ -342,6 +342,11 @@ void MicroPatternsDrawing::fillRect(int lx, int ly, int lw, int lh, const MicroP
             // Yield periodically
             if (pixelCount > 0 && pixelCount % 500 == 0) { // Adjust frequency as needed
                 yield();
+                
+                // Reset watchdog periodically during intensive drawing
+                if (pixelCount % 2000 == 0) {
+                    esp_task_wdt_reset();
+                }
             }
             pixelCount++;
 
@@ -426,6 +431,11 @@ void MicroPatternsDrawing::fillCircle(int lcx, int lcy, int lr, const MicroPatte
             // Yield periodically
             if (pixelCount > 0 && pixelCount % 1000 == 0) { // Adjust frequency as needed
                 yield();
+                
+                // Reset watchdog periodically during intensive drawing
+                if (pixelCount % 4000 == 0) {
+                    esp_task_wdt_reset();
+                }
             }
             pixelCount++;
 
@@ -458,6 +468,11 @@ void MicroPatternsDrawing::drawAsset(int lx, int ly, const MicroPatternsAsset& a
             // Yield periodically
             if (pixelCount > 0 && pixelCount % 200 == 0) { // Adjust frequency as needed
                 yield();
+                
+                // Reset watchdog periodically during intensive drawing
+                if (pixelCount % 1000 == 0) {
+                    esp_task_wdt_reset();
+                }
             }
             pixelCount++;
 

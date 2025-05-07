@@ -28,7 +28,7 @@ extern const char* rootCACertificate;
 extern volatile uint8_t wakeup_pin;
 // For button debouncing
 extern volatile uint32_t g_last_button_time;
-extern const uint32_t DEBOUNCE_TIME_MS;
+extern const uint32_t DEBOUNCE_TIME_MS; // Defined as 500ms in global_setting.cpp
 // ISR for button interrupts
 void IRAM_ATTR button_isr(void* arg);
 

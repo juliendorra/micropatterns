@@ -12,6 +12,10 @@ void SysInit_Start(void)
     delay(50);
     Serial.print("M5EPD initializing...");
 
+    // Initialize watchdog early
+    esp_task_wdt_init(30, false); // 30 second timeout, don't panic on timeout
+    esp_task_wdt_add(NULL);       // Add current task to watchdog
+
     // Initialize GPIOs for buttons early
     pinMode(BUTTON_UP_PIN, INPUT_PULLUP);   // GPIO 37 (UP)
     pinMode(BUTTON_DOWN_PIN, INPUT_PULLUP); // GPIO 39 (DOWN)

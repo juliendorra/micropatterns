@@ -22,10 +22,13 @@ void IRAM_ATTR button_isr(void *arg)
     uint32_t gpio_num = (uint32_t)arg;
     uint32_t current_time = (uint32_t)millis();
     
-    // Simple debouncing: ignore interrupts that come too quickly after the previous one
-    // Also, if wakeup_pin is still set from a previous interrupt that hasn't been processed,
-    // we keep the original event to ensure it's not lost
-    if (((current_time - g_last_button_time) >= DEBOUNCE_TIME_MS) && (wakeup_pin == 0)) {
+    // Enhanced debouncing logic:
+    // 1. Check for sufficient time since last button press
+    // 2. Ensure wakeup_pin is clear (previous event has been processed)
+    // 3. Handle special case where a button is held down during wake from sleep
+    //    (current_time might be very small after wake)
+    if (((current_time - g_last_button_time) >= DEBOUNCE_TIME_MS || current_time < g_last_button_time) &&
+        (wakeup_pin == 0)) {
         wakeup_pin = gpio_num;
         g_last_button_time = current_time;
     }
@@ -469,7 +472,13 @@ void goToLightSleep()
 {
     log_i("Preparing for light sleep...");
 
+    // Reset watchdog before potentially expensive operations
+    esp_task_wdt_reset();
+    
     SaveSetting(); // Save any final settings if needed
+    
+    // Reset watchdog after saving settings
+    esp_task_wdt_reset();
 
     // Configure wake-up sources
     // 1. Timer
@@ -485,7 +494,7 @@ void goToLightSleep()
     esp_sleep_enable_gpio_wakeup();
     log_i("Setup ESP32 to wake up on LOW level for GPIOs %d, %d, %d.", BUTTON_UP_PIN, BUTTON_DOWN_PIN, BUTTON_PUSH_PIN);
 
-// Reset wakeup pin and handled flag before sleep
+    // Reset wakeup pin and handled flag before sleep
     wakeup_pin = 0;
     g_wakeup_handled = false;
 
@@ -497,12 +506,19 @@ void goToLightSleep()
     // M5.disableEPDPower(); // Power down EPD before sleep? Test this.
     // M5.disableEXTPower();
 
-    delay(100); // Short delay before sleep
+    // Reset watchdog one last time before sleep
+    esp_task_wdt_reset();
+    
+    // Use vTaskDelay instead of delay
+    vTaskDelay(pdMS_TO_TICKS(10)); // Reduced delay before sleep
 
     esp_light_sleep_start();
     
     // Reset wakeup_handled flag after wake to ensure we process the next wakeup event
     g_wakeup_handled = false;
+    
+    // Reset watchdog immediately after waking up
+    esp_task_wdt_reset();
 
     // After wakeup, check which pin triggered it
     if (wakeup_pin == BUTTON_UP_PIN)
@@ -526,7 +542,7 @@ void goToLightSleep()
     gpio_wakeup_disable(BUTTON_UP_PIN);
     gpio_wakeup_disable(BUTTON_DOWN_PIN);
     gpio_wakeup_disable(BUTTON_PUSH_PIN);
-    // esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_GPIO);
+    esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_GPIO);
 
     // Optional: Release GPIO hold if enabled
     // gpio_hold_dis((gpio_num_t)M5EPD_MAIN_PWR_PIN);

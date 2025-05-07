@@ -56,7 +56,13 @@ M5EPD_Canvas canvas(&M5.EPD);
 MicroPatternsParser parser;
 MicroPatternsRuntime *runtime = nullptr;
 RTC_DATA_ATTR int executionCounter = 0; // Use RTC memory to persist counter across sleep
+RTC_DATA_ATTR int last_fetch_hour = -1; // -1 indicates no previous fetch
+RTC_DATA_ATTR int last_fetch_minute = -1;
+RTC_DATA_ATTR int last_fetch_day = -1;
+RTC_DATA_ATTR int last_fetch_month = -1;
+RTC_DATA_ATTR int last_fetch_year = -1;
 RTC_Time time_struct;                   // To store time from RTC
+RTC_Date date_struct;                   // To store date from RTC
 String currentScriptId = "";            // ID of the script to execute
 String currentScriptContent = "";       // Content of the script to execute
 
@@ -105,6 +111,10 @@ void setup()
 
     log_i("MicroPatterns M5Paper - Wakeup Cycle %d", executionCounter);
 
+    // Initialize watchdog for the main task (Core 1)
+    esp_task_wdt_init(30, false); // 30 second timeout, don't panic on timeout
+    esp_task_wdt_add(NULL);       // Add current task to watchdog
+
     canvas.createCanvas(540, 960);
     if (!canvas.frameBuffer())
     {
@@ -146,6 +156,9 @@ void setup()
 
 void loop()
 {
+    // Reset watchdog at the start of each loop iteration
+    esp_task_wdt_reset();
+
     // Process any messages from the fetch task for display
     DisplayMsg msg;
     if (g_displayMessageQueue != NULL && xQueueReceive(g_displayMessageQueue, &msg, 0) == pdTRUE)
@@ -154,12 +167,21 @@ void loop()
             canvas.fillCanvas(0); // Usually white
         displayMessage(msg.text, msg.y_offset, msg.color);
         canvas.pushCanvas(0, 0, msg.push_full_update ? UPDATE_MODE_GC16 : UPDATE_MODE_DU4);
-        // Brief delay for important messages, helps user see them
+        
+        // Reset watchdog after potentially expensive canvas push
+        esp_task_wdt_reset();
+        
+        // Brief delay for important messages, but use vTaskDelay instead of blocking delay
         if (msg.push_full_update && (strcmp(msg.text, "Fetch OK!") == 0 || strstr(msg.text, "Failed") != NULL || strstr(msg.text, "Interrupted") != NULL))
         {
-            delay(1000);
+            // Use vTaskDelay instead of delay to allow other tasks to run
+            vTaskDelay(pdMS_TO_TICKS(500)); // Reduced from 1000ms to 500ms
+            esp_task_wdt_reset(); // Reset watchdog after delay
         }
     }
+
+    // Reset watchdog before potential wakeup handling (which can be expensive)
+    esp_task_wdt_reset();
 
     // Process wakeup if either:
     // 1. We haven't handled it yet this wake cycle
@@ -169,15 +191,20 @@ void loop()
     if (!g_wakeup_handled && current_wakeup_pin != 0) {
         handleWakeupAndScriptExecution();
         g_wakeup_handled = true; // Mark wakeup as handled
+        // Reset watchdog after potentially expensive wakeup handling
+        esp_task_wdt_reset();
     }
 
     if (g_fetch_task_in_progress) {
         log_i("Loop: Fetch task is in progress, delaying sleep.");
-        // Yield for a short period to allow fetch task to run and prevent busy-waiting in main loop.
-        // Using shorter delay to be more responsive to button presses
+        // Yield for a short period to allow fetch task to run
+        esp_task_wdt_reset(); // Reset watchdog before delay
         vTaskDelay(pdMS_TO_TICKS(50));
     } else {
+        esp_task_wdt_reset(); // Reset watchdog before sleep
         goToLightSleep();
+        // We'll only reach here after waking from sleep
+        esp_task_wdt_reset(); // Reset watchdog after waking up
     }
 }
 
@@ -257,6 +284,7 @@ void handleWakeupAndScriptExecution()
                 log_i("PUSH button pressed during fetch. Signaling fetch task to restart.");
                 g_fetch_restart_pending = true; // Signal a graceful restart
                 signaled_restart_to_existing_fetch_this_cycle = true; // Mark that this cycle signaled a restart
+                esp_task_wdt_reset(); // Reset watchdog after setting flags
             }
             
             // For PUSH, just re-run current script. No fetch by default.
@@ -341,28 +369,73 @@ void handleWakeupAndScriptExecution()
     // 6. Trigger Fetch from Server if Requested
     if (fetchFromServerAfterExecution) // True if UP/DOWN pressed AND no fetch was active at handler start
     {
-        // At this point, we know:
-        // 1. An UP or DOWN button was pressed.
-        // 2. No fetch was in progress when this handler started (initial_fetch_task_state_is_progress was false).
-        // Therefore, signaled_restart_to_existing_fetch_this_cycle is also false.
-        // We are clear to request a new fetch.
-        log_i("Requesting new fetch (button press, no initial fetch active).");
+        // Get current time and date from RTC
+        RTC_Time currentTime;
+        RTC_Date currentDate;
+        M5.RTC.getTime(&currentTime);
+        M5.RTC.getDate(&currentDate);
 
-        // It's still theoretically possible g_fetch_task_in_progress became true due to some other mechanism
-        // between the start of this handler and now, though unlikely with the current single-threaded handler design for wakeups.
-        // A simple check for logging:
-        if (g_fetch_task_in_progress) {
-             log_w("Warning: Queuing new fetch, but g_fetch_task_in_progress is now true. This might lead to overlapping requests if not handled by fetch task.");
-        }
+        bool allowFetch = false;
+        int elapsed_minutes = 0; // Only relevant if date is the same
 
-        if (g_fetchRequestSemaphore != NULL)
-        {
-            xSemaphoreGive(g_fetchRequestSemaphore);
-            log_i("Fetch request semaphore given.");
+        if (last_fetch_year == -1 || last_fetch_month == -1 || last_fetch_day == -1) { // First fetch or old version data
+            log_i("Allowing fetch: No previous full fetch date stored.");
+            allowFetch = true;
+        } else if (currentDate.year != last_fetch_year ||
+                   currentDate.mon != last_fetch_month ||
+                   currentDate.day != last_fetch_day) {
+            log_i("Allowing fetch: Date changed (Last: %d-%02d-%02d, Now: %d-%02d-%02d).",
+                  last_fetch_year, last_fetch_month, last_fetch_day,
+                  currentDate.year, currentDate.mon, currentDate.day);
+            allowFetch = true;
+        } else {
+            // Date is the same, check time interval
+            if (last_fetch_hour != -1) { // Should always be true if date was set
+                if (currentTime.hour < last_fetch_hour) { // Crossed midnight (should be caught by date check, but defensive)
+                    elapsed_minutes = (currentTime.hour + 24 - last_fetch_hour) * 60 + (currentTime.min - last_fetch_minute);
+                } else {
+                    elapsed_minutes = (currentTime.hour - last_fetch_hour) * 60 + (currentTime.min - last_fetch_minute);
+                }
+            } else { // Should not happen if date was set, implies inconsistent RTC_DATA
+                 log_w("Inconsistent RTC data: Date set but hour not. Allowing fetch.");
+                 allowFetch = true;
+            }
+
+            if (elapsed_minutes >= 2) {
+                log_i("Allowing fetch: Same date, but >= 2 minutes passed (elapsed: %d min).", elapsed_minutes);
+                allowFetch = true;
+            } else {
+                log_i("Skipping fetch: Same date and < 2 minutes passed since last successful fetch (Last: %02d:%02d, Now: %02d:%02d, Elapsed: %d min).",
+                      last_fetch_hour, last_fetch_minute, currentTime.hour, currentTime.min, elapsed_minutes);
+                allowFetch = false;
+            }
         }
-        else
-        {
-            log_e("Fetch request semaphore is NULL, cannot trigger fetch.");
+        
+        if (allowFetch) {
+            log_i("Requesting new fetch (button press, no initial fetch active, time/date criteria met).");
+
+            if (g_fetch_task_in_progress) {
+                 log_w("Warning: Queuing new fetch, but g_fetch_task_in_progress is now true. This might lead to overlapping requests if not handled by fetch task.");
+            }
+
+            if (g_fetchRequestSemaphore != NULL) {
+                xSemaphoreGive(g_fetchRequestSemaphore);
+                log_i("Fetch request semaphore given.");
+            } else {
+                log_e("Fetch request semaphore is NULL, cannot trigger fetch.");
+            }
+        } else {
+            // Display a message to inform the user
+            DisplayMsg msg_to_send;
+            snprintf(msg_to_send.text, sizeof(msg_to_send.text) - 1, "Fetch skipped (<2m or same day). Last: %02d:%02d", last_fetch_hour, last_fetch_minute);
+            msg_to_send.text[sizeof(msg_to_send.text) - 1] = '\0';
+            msg_to_send.y_offset = 100;
+            msg_to_send.color = 15;
+            msg_to_send.clear_canvas_first = false;
+            msg_to_send.push_full_update = true; // Use GC16 for better readability
+            if (g_displayMessageQueue != NULL) {
+                xQueueSend(g_displayMessageQueue, &msg_to_send, pdMS_TO_TICKS(100));
+            }
         }
         // UI task no longer displays "Fetching..." directly. Fetch task sends message.
     }
@@ -396,6 +469,10 @@ void fetchTaskFunction(void *pvParameters)
         if (g_fetchRequestSemaphore != NULL && xSemaphoreTake(g_fetchRequestSemaphore, portMAX_DELAY) == pdTRUE)
         {
             g_fetch_task_in_progress = true; // Set flag immediately
+            // Reset watchdog timer
+            esp_task_wdt_reset();
+            // The g_fetch_task_in_progress was set again, which is harmless but redundant.
+            // The main logic starts after this.
             log_i("FetchTask: Semaphore taken, g_fetch_task_in_progress=true. Starting fetch operation.");
             bool restart_fetch_immediately;
             bool first_attempt_in_cycle = true;
@@ -442,6 +519,22 @@ void fetchTaskFunction(void *pvParameters)
                     strncpy(msg_to_send.text, "Fetch OK!", sizeof(msg_to_send.text) - 1);
                     log_i("FetchTask: Completed successfully.");
                     disconnectWiFi(); // Disconnect on final success
+                    
+                    // Update last successful fetch time and date
+                    {
+                        RTC_Time currentTime;
+                        RTC_Date currentDate;
+                        M5.RTC.getTime(&currentTime);
+                        M5.RTC.getDate(&currentDate);
+                        last_fetch_hour = currentTime.hour;
+                        last_fetch_minute = currentTime.min;
+                        last_fetch_day = currentDate.day;
+                        last_fetch_month = currentDate.mon;
+                        last_fetch_year = currentDate.year;
+                        log_i("Updated last fetch timestamp to %d-%02d-%02d %02d:%02d",
+                              last_fetch_year, last_fetch_month, last_fetch_day,
+                              last_fetch_hour, last_fetch_minute);
+                    }
                     break;
                 case FETCH_GENUINE_ERROR:
                     strncpy(msg_to_send.text, "Fetch Failed!", sizeof(msg_to_send.text) - 1);
@@ -464,6 +557,7 @@ void fetchTaskFunction(void *pvParameters)
                     send_final_message = false; // Don't send a "final" message yet
                     g_fetch_restart_pending = false; // Consume the flag
                     restart_fetch_immediately = true;
+                    esp_task_wdt_reset(); // Reset watchdog before delay
                     vTaskDelay(pdMS_TO_TICKS(200)); // Brief pause before restarting
                     break;
                 }
@@ -478,23 +572,24 @@ void fetchTaskFunction(void *pvParameters)
 
             } while (restart_fetch_immediately);
 
+            // Make sure we're truly done with all operations
+            esp_task_wdt_reset();
+            
             g_fetch_task_in_progress = false; // Clear flag after all attempts for this semaphore signal are done
             // g_user_interrupt_signal_for_fetch_task should be false here unless a hard interrupt occurred.
             // g_fetch_restart_pending is false.
             log_i("FetchTask: Operation cycle finished, g_fetch_task_in_progress=false. Waiting for semaphore.");
         }
-        else
-        {
-            // Semaphore not available or timeout (if not portMAX_DELAY)
-            vTaskDelay(pdMS_TO_TICKS(10)); // Small delay if semaphore take fails for some reason
-        }
     }
-}
+} // Closing brace for fetchTaskFunction
 
 FetchResultStatus perform_fetch_operations()
 {
     // Clear hard interrupt signal for this specific attempt. Restart signal is handled differently.
     g_user_interrupt_signal_for_fetch_task = false;
+
+    // Reset watchdog before potentially long WiFi connection
+    esp_task_wdt_reset();
 
     bool wifiConnected = connectToWiFi(); // connectToWiFi checks g_user_interrupt_signal_for_fetch_task
 
@@ -587,7 +682,12 @@ FetchResultStatus perform_fetch_operations()
         JsonArray serverArray = serverListDoc.as<JsonArray>();
         log_i("perform_fetch_operations: Processing %d scripts from server list.", serverArray.size());
 
+        int scriptCounter = 0;
         for (JsonObject serverScriptInfo : serverArray) {
+            // Reset watchdog periodically during script processing
+            if (scriptCounter++ % 3 == 0) {
+                esp_task_wdt_reset();
+            }
             if (g_user_interrupt_signal_for_fetch_task) { disconnectWiFi(); return FETCH_INTERRUPTED_BY_USER; }
             if (g_fetch_restart_pending) { return FETCH_RESTART_REQUESTED; }
 
@@ -657,6 +757,7 @@ FetchResultStatus perform_fetch_operations()
                 
                 int scriptHttpCode = http.GET();
                 vTaskDelay(pdMS_TO_TICKS(10));
+                esp_task_wdt_reset(); // Reset watchdog after HTTP GET
 
                 if (g_user_interrupt_signal_for_fetch_task) { http.end(); disconnectWiFi(); return FETCH_INTERRUPTED_BY_USER; }
                 if (g_fetch_restart_pending) { http.end(); return FETCH_RESTART_REQUESTED; }
