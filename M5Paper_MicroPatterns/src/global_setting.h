@@ -50,7 +50,7 @@ void getNTPTime(); // Keep declaration if used elsewhere, definition moved
 
 // --- SPIFFS Functions ---
 bool initializeSPIFFS();
-bool saveScriptList(const char* jsonContent);
+bool saveScriptList(DynamicJsonDocument& docToSave); // Changed to take DynamicJsonDocument
 bool loadScriptList(DynamicJsonDocument& doc); // Use DynamicJsonDocument for loading
 bool saveScriptContent(const char* id, const char* content);
 bool loadScriptContent(const char* id, String& content);

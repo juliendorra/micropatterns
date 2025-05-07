@@ -12,6 +12,7 @@
 #include <SPIFFS.h>                // For saving/loading scripts
 #include <WiFi.h>                  // Include WiFi header
 #include <WiFiClientSecure.h>      // For HTTPS client configuration
+#include <set>                     // For std::set
 
 // FreeRTOS includes
 #include "freertos/FreeRTOS.h"
@@ -475,187 +476,229 @@ FetchResultStatus perform_fetch_operations()
     HTTPClient http;
     bool overall_fetch_successful = true;
 
-    // 1. Fetch Script List
+    // 0. Load existing SPIFFS list to help preserve fileIds
+    DynamicJsonDocument oldSpiifsListDoc(8192); // Increased size to match finalSpiifsListDoc
+    bool oldListLoaded = loadScriptList(oldSpiifsListDoc);
+    if (oldListLoaded) {
+        log_i("perform_fetch_operations: Successfully loaded existing list.json to help preserve fileIds (%d entries).", oldSpiifsListDoc.as<JsonArray>().size());
+    } else {
+        log_w("perform_fetch_operations: Could not load existing list.json or it was empty/invalid. New fileIds will be generated for all scripts.");
+        // oldSpiifsListDoc will be empty or invalid, checks later will handle this.
+    }
+    vTaskDelay(pdMS_TO_TICKS(10)); // Yield after SPIFFS load
+
+    // 1. Fetch Script List from Server
     String listUrl = String(API_BASE_URL) + "/api/scripts";
     log_i("perform_fetch_operations: Fetching script list from: %s", listUrl.c_str());
 
-    // Check for hard interrupt or soft restart before beginning HTTP transaction
     if (g_user_interrupt_signal_for_fetch_task) { http.end(); disconnectWiFi(); return FETCH_INTERRUPTED_BY_USER; }
     if (g_fetch_restart_pending) { http.end(); return FETCH_RESTART_REQUESTED; }
 
-    if (!http.begin(httpsClient, listUrl))
-    {
+    if (!http.begin(httpsClient, listUrl)) {
         log_e("perform_fetch_operations: HTTPClient begin failed for list URL!");
-        // disconnectWiFi(); // WiFi will be disconnected by caller task if this is a final error
         return FETCH_GENUINE_ERROR;
     }
 
     int httpCode = http.GET();
-    vTaskDelay(pdMS_TO_TICKS(10)); // Small yield after blocking call
+    vTaskDelay(pdMS_TO_TICKS(10));
 
-    // Check for hard interrupt or soft restart after HTTP GET
     if (g_user_interrupt_signal_for_fetch_task) { http.end(); disconnectWiFi(); return FETCH_INTERRUPTED_BY_USER; }
     if (g_fetch_restart_pending) { http.end(); return FETCH_RESTART_REQUESTED; }
 
-    if (httpCode == HTTP_CODE_OK)
-    {
-        String payload = http.getString(); // This is the raw JSON string of the script list from API
-        // Check for hard interrupt or soft restart after getting string
+    DynamicJsonDocument serverListDoc(4096); // To store the list fetched from server
+    if (httpCode == HTTP_CODE_OK) {
+        String serverJsonPayload = http.getString();
         if (g_user_interrupt_signal_for_fetch_task) { http.end(); disconnectWiFi(); return FETCH_INTERRUPTED_BY_USER; }
         if (g_fetch_restart_pending) { http.end(); return FETCH_RESTART_REQUESTED; }
 
-        log_d("perform_fetch_operations: Script list payload from API: %s", payload.c_str());
-
-        // saveScriptList now parses payload, generates fileIds, and saves the augmented list to SPIFFS
-        if (!saveScriptList(payload.c_str()))
-        {
-            log_e("perform_fetch_operations: Failed to save augmented script list to SPIFFS.");
-            overall_fetch_successful = false; // Mark as partial failure
+        DeserializationError error = deserializeJson(serverListDoc, serverJsonPayload);
+        if (error) {
+            log_e("perform_fetch_operations: Failed to parse server script list JSON: %s", error.c_str());
+            overall_fetch_successful = false;
+        } else if (!serverListDoc.is<JsonArray>()) {
+            log_e("perform_fetch_operations: Server script list JSON is not an array.");
+            overall_fetch_successful = false;
         }
-
-        // Check for hard interrupt or soft restart after saving list
-        if (g_user_interrupt_signal_for_fetch_task) { http.end(); disconnectWiFi(); return FETCH_INTERRUPTED_BY_USER; }
-        if (g_fetch_restart_pending) { http.end(); return FETCH_RESTART_REQUESTED; }
-
-        if (overall_fetch_successful)
-        {
-            // Now load the augmented list from SPIFFS to get fileIds for fetching content
-            DynamicJsonDocument augmentedListDoc(4096); // Doc to hold the list from SPIFFS
-            if (!loadScriptList(augmentedListDoc)) { // loadScriptList loads from /scripts/list.json
-                log_e("perform_fetch_operations: Failed to load augmented script list from SPIFFS after saving.");
-                overall_fetch_successful = false;
-            }
-            // Check for hard interrupt or soft restart after loading augmented list
-            if (g_user_interrupt_signal_for_fetch_task) { http.end(); disconnectWiFi(); return FETCH_INTERRUPTED_BY_USER; }
-            if (g_fetch_restart_pending) { http.end(); return FETCH_RESTART_REQUESTED; }
-
-            if (overall_fetch_successful && augmentedListDoc.is<JsonArray>())
-            {
-                JsonArray scriptListFromSpiffs = augmentedListDoc.as<JsonArray>();
-                log_i("perform_fetch_operations: Loaded %d scripts from augmented list. Fetching content...", scriptListFromSpiffs.size());
-
-                for (JsonObject scriptInfo : scriptListFromSpiffs)
-                {
-                    // Check for hard interrupt or soft restart at the start of each script fetch iteration
-                    if (g_user_interrupt_signal_for_fetch_task) { overall_fetch_successful = false; http.end(); disconnectWiFi(); return FETCH_INTERRUPTED_BY_USER; }
-                    if (g_fetch_restart_pending) { overall_fetch_successful = false; http.end(); return FETCH_RESTART_REQUESTED; }
-
-                    const char *humanId = scriptInfo["id"];
-                    const char *fileId = scriptInfo["fileId"]; // Get the generated fileId
-
-                    if (!humanId || !fileId)
-                    {
-                        log_w("perform_fetch_operations: Skipping script with missing 'id' or 'fileId' in augmented list.");
-                        continue;
-                    }
-
-                    String scriptUrl = String(API_BASE_URL) + "/api/scripts/" + humanId; // Fetch API using humanId
-                    log_d("perform_fetch_operations: Fetching script content for humanId '%s' (fileId '%s') from: %s", humanId, fileId, scriptUrl.c_str());
-
-                    http.end(); // End previous connection before starting new one
-                    // Check for hard interrupt or soft restart before new http.begin
-                    if (g_user_interrupt_signal_for_fetch_task) { overall_fetch_successful = false; http.end(); disconnectWiFi(); return FETCH_INTERRUPTED_BY_USER; }
-                    if (g_fetch_restart_pending) { overall_fetch_successful = false; http.end(); return FETCH_RESTART_REQUESTED; }
-
-                    if (!http.begin(httpsClient, scriptUrl))
-                    {
-                        log_e("perform_fetch_operations: HTTPClient begin failed for script URL: %s", scriptUrl.c_str());
-                        overall_fetch_successful = false;
-                        continue;
-                    }
-
-                    int scriptHttpCode = http.GET();
-                    vTaskDelay(pdMS_TO_TICKS(10));
-
-                    // Check for hard interrupt or soft restart after script GET
-                    if (g_user_interrupt_signal_for_fetch_task) { overall_fetch_successful = false; http.end(); disconnectWiFi(); return FETCH_INTERRUPTED_BY_USER; }
-                    if (g_fetch_restart_pending) { overall_fetch_successful = false; http.end(); return FETCH_RESTART_REQUESTED; }
-
-                    if (scriptHttpCode == HTTP_CODE_OK)
-                    {
-                        String scriptPayload = http.getString();
-                        // Check for hard interrupt or soft restart after script getString
-                        if (g_user_interrupt_signal_for_fetch_task) { overall_fetch_successful = false; http.end(); disconnectWiFi(); return FETCH_INTERRUPTED_BY_USER; }
-                        if (g_fetch_restart_pending) { overall_fetch_successful = false; http.end(); return FETCH_RESTART_REQUESTED; }
-
-                        DynamicJsonDocument scriptDoc(8192); // Increased size for script content
-                        DeserializationError scriptError = deserializeJson(scriptDoc, scriptPayload);
-                        // Check for hard interrupt or soft restart after script deserialize
-                        if (g_user_interrupt_signal_for_fetch_task) { overall_fetch_successful = false; http.end(); disconnectWiFi(); return FETCH_INTERRUPTED_BY_USER; }
-                        if (g_fetch_restart_pending) { overall_fetch_successful = false; http.end(); return FETCH_RESTART_REQUESTED; }
-
-                        if (scriptError)
-                        {
-                            log_e("perform_fetch_operations: Failed to parse script content JSON for humanId %s: %s", humanId, scriptError.c_str());
-                            overall_fetch_successful = false;
-                        }
-                        else
-                        {
-                            const char *scriptContentFetched = scriptDoc["content"];
-                            if (scriptContentFetched)
-                            {
-                                // Save content using fileId
-                                if (!saveScriptContent(fileId, scriptContentFetched))
-                                {
-                                    log_e("perform_fetch_operations: Failed to save script content for fileId %s (humanId %s).", fileId, humanId);
-                                    overall_fetch_successful = false;
-                                }
-                                vTaskDelay(pdMS_TO_TICKS(5));
-                                // Check for hard interrupt or soft restart after saving script content
-                                if (g_user_interrupt_signal_for_fetch_task) { overall_fetch_successful = false; http.end(); disconnectWiFi(); return FETCH_INTERRUPTED_BY_USER; }
-                                if (g_fetch_restart_pending) { overall_fetch_successful = false; http.end(); return FETCH_RESTART_REQUESTED; }
-                            }
-                            else
-                            {
-                                log_e("perform_fetch_operations: Missing 'content' field for humanId %s.", humanId);
-                                overall_fetch_successful = false;
-                            }
-                        }
-                    }
-                    else
-                    {
-                        log_e("perform_fetch_operations: HTTP error fetching script humanId %s: %d", humanId, scriptHttpCode);
-                        overall_fetch_successful = false;
-                    }
-                    http.end(); // End connection for this script
-                    vTaskDelay(pdMS_TO_TICKS(50));
-                }
-            } else if (overall_fetch_successful) { // If overall_fetch_successful is true but augmentedListDoc is not array
-                 log_e("perform_fetch_operations: Augmented script list from SPIFFS is not an array or failed to load.");
-                 overall_fetch_successful = false;
-            }
-        }
-    }
-    else
-    {
+    } else {
         log_e("perform_fetch_operations: HTTP error fetching script list: %d", httpCode);
         overall_fetch_successful = false;
     }
+    http.end(); // End connection for list fetch
 
-    http.end(); // Final cleanup of HTTP client
+    if (!overall_fetch_successful) {
+        // No need to disconnectWiFi here, caller task will handle it for GENUINE_ERROR
+        return FETCH_GENUINE_ERROR;
+    }
+
+    // 2. Reconcile with Local State, Fetch Content, and Build Final SPIFFS List
+    DynamicJsonDocument finalSpiifsListDoc(8192); // Increased size for safety
+    JsonArray finalSpiifsArray = finalSpiifsListDoc.to<JsonArray>();
+    std::set<String> assignedFileIdsThisFetch; // Track fileIds used in this fetch to ensure uniqueness
+
+    if (serverListDoc.is<JsonArray>()) {
+        JsonArray serverArray = serverListDoc.as<JsonArray>();
+        log_i("perform_fetch_operations: Processing %d scripts from server list.", serverArray.size());
+
+        for (JsonObject serverScriptInfo : serverArray) {
+            if (g_user_interrupt_signal_for_fetch_task) { disconnectWiFi(); return FETCH_INTERRUPTED_BY_USER; }
+            if (g_fetch_restart_pending) { return FETCH_RESTART_REQUESTED; }
+
+            const char *humanId = serverScriptInfo["id"];
+            const char *humanName = serverScriptInfo["name"];
+
+            if (!humanId || strlen(humanId) == 0) {
+                log_w("perform_fetch_operations: Skipping script from server with missing 'id'.");
+                continue;
+            }
+
+            String determinedFileId = "";
+            bool foundInOldList = false;
+
+            // Try to find this humanId in the old SPIFFS list to reuse its fileId
+            if (oldListLoaded && oldSpiifsListDoc.is<JsonArray>()) {
+                for (JsonObject oldScriptInfo : oldSpiifsListDoc.as<JsonArray>()) {
+                    const char* oldHumanId = oldScriptInfo["id"];
+                    const char* oldFileId = oldScriptInfo["fileId"];
+                    if (oldHumanId && oldFileId && strcmp(oldHumanId, humanId) == 0 && strlen(oldFileId) > 0) {
+                        // Check if this oldFileId is already taken by another humanId in this new fetch (e.g. if old list had duplicates)
+                        if (assignedFileIdsThisFetch.count(oldFileId)) {
+                            log_w("perform_fetch_operations: fileId '%s' for humanId '%s' from old list is already assigned in this fetch. Will generate new ID.", oldFileId, humanId);
+                            // Fall through to generate new ID
+                        } else {
+                            determinedFileId = oldFileId;
+                            foundInOldList = true;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if (foundInOldList) {
+                log_i("perform_fetch_operations: Reusing fileId '%s' for humanId '%s'.", determinedFileId.c_str(), humanId);
+                assignedFileIdsThisFetch.insert(determinedFileId);
+            } else {
+                // Generate a new fileId, ensuring it's unique for this fetch cycle
+                int tempIdCounter = 0;
+                do {
+                    determinedFileId = "s" + String(tempIdCounter++);
+                } while (assignedFileIdsThisFetch.count(determinedFileId));
+                log_i("perform_fetch_operations: Assigning new fileId '%s' for humanId '%s'.", determinedFileId.c_str(), humanId);
+                assignedFileIdsThisFetch.insert(determinedFileId);
+            }
+
+            String contentPath = "/scripts/content/" + determinedFileId;
+            bool contentAvailableOrFetched = false;
+
+            if (SPIFFS.exists(contentPath.c_str())) {
+                log_d("perform_fetch_operations: Content for humanId '%s' (fileId '%s') already exists locally at %s.", humanId, determinedFileId.c_str(), contentPath.c_str());
+                contentAvailableOrFetched = true;
+            } else {
+                log_i("perform_fetch_operations: Content for humanId '%s' (fileId '%s') missing locally at %s, fetching from server.", humanId, determinedFileId.c_str(), contentPath.c_str());
+                String scriptUrl = String(API_BASE_URL) + "/api/scripts/" + humanId;
+
+                if (g_user_interrupt_signal_for_fetch_task) { http.end(); disconnectWiFi(); return FETCH_INTERRUPTED_BY_USER; }
+                if (g_fetch_restart_pending) { http.end(); return FETCH_RESTART_REQUESTED; }
+                if (!http.begin(httpsClient, scriptUrl)) {
+                    log_e("perform_fetch_operations: HTTPClient begin failed for script content URL: %s", scriptUrl.c_str());
+                    assignedFileIdsThisFetch.erase(determinedFileId); // Release ID if fetch setup fails
+                    continue; // Skip this script
+                }
+                
+                int scriptHttpCode = http.GET();
+                vTaskDelay(pdMS_TO_TICKS(10));
+
+                if (g_user_interrupt_signal_for_fetch_task) { http.end(); disconnectWiFi(); return FETCH_INTERRUPTED_BY_USER; }
+                if (g_fetch_restart_pending) { http.end(); return FETCH_RESTART_REQUESTED; }
+
+                if (scriptHttpCode == HTTP_CODE_OK) {
+                    String scriptPayload = http.getString();
+                    if (g_user_interrupt_signal_for_fetch_task) { http.end(); disconnectWiFi(); return FETCH_INTERRUPTED_BY_USER; }
+                    if (g_fetch_restart_pending) { http.end(); return FETCH_RESTART_REQUESTED; }
+
+                    DynamicJsonDocument scriptDoc(8192); // Ensure large enough for script content
+                    DeserializationError scriptError = deserializeJson(scriptDoc, scriptPayload);
+                    if (scriptError) {
+                        log_e("perform_fetch_operations: Failed to parse script content JSON for humanId %s: %s", humanId, scriptError.c_str());
+                    } else {
+                        const char *scriptContentFetched = scriptDoc["content"];
+                        if (scriptContentFetched) {
+                            if (saveScriptContent(determinedFileId.c_str(), scriptContentFetched)) {
+                                contentAvailableOrFetched = true;
+                            } else {
+                                log_e("perform_fetch_operations: Failed to save script content for fileId %s (humanId %s).", determinedFileId.c_str(), humanId);
+                            }
+                        } else {
+                            log_e("perform_fetch_operations: Missing 'content' field for humanId %s.", humanId);
+                        }
+                    }
+                } else {
+                    log_w("perform_fetch_operations: HTTP error %d fetching script content for humanId %s. Script will be excluded.", scriptHttpCode, humanId);
+                }
+                http.end(); // End connection for this script content fetch
+            }
+
+            if (contentAvailableOrFetched) {
+                JsonObject newEntry = finalSpiifsArray.createNestedObject();
+                newEntry["id"] = humanId;
+                newEntry["name"] = humanName ? humanName : humanId; // Fallback for name
+                newEntry["fileId"] = determinedFileId;
+                // No validScriptIndex++ here, assignedFileIdsThisFetch tracks used IDs.
+            } else {
+                log_w("perform_fetch_operations: Script humanId '%s' (intended fileId '%s') excluded from final list as content is unavailable or save failed.", humanId, determinedFileId.c_str());
+                assignedFileIdsThisFetch.erase(determinedFileId); // Release the fileId if script is not included
+            }
+            vTaskDelay(pdMS_TO_TICKS(50)); // Small delay between script processing
+        }
+    }
+
+    // 3. Cleanup Orphaned Script Content Files
+    log_i("perform_fetch_operations: Cleaning up orphaned script content files...");
+    File root = SPIFFS.open("/scripts/content");
+    if (root && root.isDirectory()) {
+        File entry = root.openNextFile();
+        while(entry) {
+            if (g_user_interrupt_signal_for_fetch_task) { root.close(); entry.close(); disconnectWiFi(); return FETCH_INTERRUPTED_BY_USER; }
+            if (g_fetch_restart_pending) { root.close(); entry.close(); return FETCH_RESTART_REQUESTED; }
+
+            if (!entry.isDirectory()) {
+                String fullPath = entry.name(); // e.g., /scripts/content/s0
+                String fileIdFromPath = fullPath.substring(fullPath.lastIndexOf('/') + 1);
+                
+                bool foundInFinalList = false;
+                for (JsonObject scriptInFinalList : finalSpiifsArray) {
+                    if (fileIdFromPath == scriptInFinalList["fileId"].as<String>()) {
+                        foundInFinalList = true;
+                        break;
+                    }
+                }
+                if (!foundInFinalList) {
+                    log_i("perform_fetch_operations: Removing orphaned script content: %s", fullPath.c_str());
+                    SPIFFS.remove(fullPath);
+                }
+            }
+            entry.close(); // Close current entry
+            entry = root.openNextFile(); // Open next
+        }
+        root.close(); // Close root directory
+    } else {
+        log_w("perform_fetch_operations: Could not open /scripts/content directory for cleanup or it's not a directory.");
+    }
+    vTaskDelay(pdMS_TO_TICKS(10));
+
+
+    // 4. Save the New list.json
+    if (!saveScriptList(finalSpiifsListDoc)) { // Uses the new saveScriptList(DynamicJsonDocument&)
+        log_e("perform_fetch_operations: Failed to save final script list to SPIFFS.");
+        overall_fetch_successful = false;
+    }
 
     // Final checks before returning success/error
-    // If a hard interrupt occurred at any point and wasn't caught by an earlier return:
     if (g_user_interrupt_signal_for_fetch_task) { disconnectWiFi(); return FETCH_INTERRUPTED_BY_USER; }
-    // If a restart was requested and wasn't caught:
     if (g_fetch_restart_pending) { return FETCH_RESTART_REQUESTED; }
 
-
-    // If we reach here, the operation completed (or failed genuinely) without interrupts/restarts
-    // WiFi is disconnected by the caller task (fetchTaskFunction) for final states like SUCCESS or GENUINE_ERROR.
-    // However, if an error occurred and WiFi is still on, it's good to turn it off here.
-    // But for FETCH_SUCCESS, we want the caller to handle disconnect.
-    // Let's ensure WiFi is disconnected only on GENUINE_ERROR here if it wasn't a restart/interrupt.
-    if (!overall_fetch_successful && !g_fetch_restart_pending && !g_user_interrupt_signal_for_fetch_task) {
-         // disconnectWiFi(); // Caller will handle disconnect for GENUINE_ERROR
-    }
-
-
-    if (overall_fetch_successful)
-    {
+    if (overall_fetch_successful) {
         return FETCH_SUCCESS;
     }
-    // If not success, and not interrupted or restart_pending, it's a genuine error.
     return FETCH_GENUINE_ERROR;
 }
 
@@ -672,6 +715,11 @@ bool selectNextScript(bool moveUp)
     if (!listDoc.is<JsonArray>() || listDoc.as<JsonArray>().size() == 0)
     {
         log_e("Cannot select next script, list is empty or not an array after loading.");
+        // Attempt to trigger a fetch if list is empty/invalid, as it might be recoverable
+        log_w("selectNextScript: Triggering fetch due to empty/invalid script list.");
+        if (g_fetchRequestSemaphore != NULL) {
+            xSemaphoreGive(g_fetchRequestSemaphore);
+        }
         return false;
     }
 
@@ -736,6 +784,7 @@ bool selectNextScript(bool moveUp)
     }
     else
     {
+        // This case should be caught by the earlier check, but defensive.
         log_e("Script list is empty, cannot select.");
         return false;
     }
@@ -760,30 +809,28 @@ bool loadScriptToExecute()
 
     // 2. Load the script list
     DynamicJsonDocument listDoc(4096);
-    bool listIsPotentiallyCorrupt = false; // Flag if list.json seems to have issues with fileIds
-    JsonArray scriptList; // Will be assigned if list loads successfully
+    bool listIsProblematic = false; // Flag if list.json seems to have issues
+    JsonArray scriptList;
 
     if (loadScriptList(listDoc) && listDoc.is<JsonArray>() && listDoc.as<JsonArray>().size() > 0) {
         scriptList = listDoc.as<JsonArray>();
         log_i("loadScriptToExecute: Script list loaded with %d entries.", scriptList.size());
-        // Initial check: does the first item have a fileId? If not, list is likely bad.
         JsonObject firstEntryTest = scriptList[0];
         const char* testId = firstEntryTest["id"];
         const char* testFileId = firstEntryTest["fileId"];
         if (!testId || strlen(testId) == 0 || !testFileId || strlen(testFileId) == 0) {
-            log_w("loadScriptToExecute: First script in list.json is missing 'id' or 'fileId'. List may be corrupted.");
-            listIsPotentiallyCorrupt = true;
+            log_w("loadScriptToExecute: First script in list.json is missing 'id' or 'fileId'. List may be problematic.");
+            listIsProblematic = true;
         }
     } else {
-        log_e("loadScriptToExecute: Failed to load script list, or list is empty/invalid. Marking as potentially corrupt.");
-        listIsPotentiallyCorrupt = true; // Mark list as corrupt if loading failed or list is unusable
-        // scriptList remains unassigned or empty. Logic will proceed to fallback.
+        log_e("loadScriptToExecute: Failed to load script list, or list is empty/invalid. Marking as problematic.");
+        listIsProblematic = true;
     }
     vTaskDelay(pdMS_TO_TICKS(10));
 
-    // 3. Try to use humanReadableScriptIdFromSpiffs if it was loaded
+    // 3. Try to use humanReadableScriptIdFromSpiffs if it was loaded and list is not problematic
     bool foundAndMappedSpiffsId = false;
-    if (spiffsIdLoaded) {
+    if (spiffsIdLoaded && !listIsProblematic) {
         bool idExistsInList = false;
         for (JsonObject scriptInfo : scriptList) {
             const char *hId = scriptInfo["id"];
@@ -797,75 +844,78 @@ bool loadScriptToExecute()
                     log_i("loadScriptToExecute: Found fileId '%s' for humanId '%s' (from SPIFFS preference).", determinedFileId.c_str(), finalHumanIdForExecution.c_str());
                 } else {
                     log_w("loadScriptToExecute: HumanId '%s' (from SPIFFS preference) found in list but has no valid fileId.", humanReadableScriptIdFromSpiffs.c_str());
-                    listIsPotentiallyCorrupt = true; // Mark list as problematic
+                    listIsProblematic = true; // Mark list as problematic
                 }
-                break; // Found the entry for humanReadableScriptIdFromSpiffs
+                break;
             }
         }
         if (!idExistsInList) {
             log_w("loadScriptToExecute: HumanId '%s' (from SPIFFS preference) not found in the script list. Will try first from list.", humanReadableScriptIdFromSpiffs.c_str());
         }
-        // If ID existed but fileId was invalid, foundAndMappedSpiffsId remains false.
     }
 
-    // 4. If spiffsId wasn't used (not loaded, not found, or no fileId for it), try first script from list
-    if (!foundAndMappedSpiffsId && scriptList.size() > 0) {
+    // 4. If spiffsId wasn't used or list is problematic, try first script from list (if list is usable)
+    if (!foundAndMappedSpiffsId && !listIsProblematic && scriptList.size() > 0) {
         log_i("loadScriptToExecute: Attempting to use first script from the list.");
-        JsonObject firstScript = scriptList[0];
+        JsonObject firstScript = scriptList[0]; // Already checked firstEntryTest for validity
         const char *firstHumanId = firstScript["id"];
         const char *firstFileId = firstScript["fileId"];
 
+        // This check is redundant if listIsProblematic is false, but good for safety
         if (firstHumanId && strlen(firstHumanId) > 0 && firstFileId && strlen(firstFileId) > 0) {
             finalHumanIdForExecution = firstHumanId;
             determinedFileId = firstFileId;
             log_i("loadScriptToExecute: Using first script: humanId '%s', fileId '%s'", finalHumanIdForExecution.c_str(), determinedFileId.c_str());
-            // Save this first script's humanId as the current one for next boot
             if (!saveCurrentScriptId(finalHumanIdForExecution.c_str())) {
                 log_w("loadScriptToExecute: Failed to save the first script's humanId ('%s') as current to SPIFFS.", finalHumanIdForExecution.c_str());
             }
         } else {
-            log_e("loadScriptToExecute: First script in list has no valid humanId or fileId. List is confirmed problematic.");
-            listIsPotentiallyCorrupt = true; // Confirm list is problematic
-            // finalHumanIdForExecution and determinedFileId remain empty
+            // This case implies listIsProblematic should have been true.
+            log_e("loadScriptToExecute: First script in list has no valid humanId or fileId, despite earlier checks. List is problematic.");
+            listIsProblematic = true;
         }
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 
-    // 5. If we still don't have a fileId, list.json is bad or empty. Fallback to default.
+    // 5. If we still don't have a fileId (due to list problems or empty list), fallback to default.
     if (determinedFileId.length() == 0) {
         log_e("loadScriptToExecute: Could not determine a valid script/fileId from list.json or list was unusable.");
-        // Set currentScriptId for handleWakeupAndScriptExecution to use for logging/default script context
         currentScriptId = spiffsIdLoaded ? humanReadableScriptIdFromSpiffs : "default";
-        currentScriptContent = ""; // Signal to use default_script
+        currentScriptContent = "";
         
-        if (listIsPotentiallyCorrupt) {
+        if (listIsProblematic) { // This covers empty, corrupt, or unreadable list.json
             if (spiffsIdLoaded) {
-                // If current_script.id was loaded and list is corrupt, clear current_script.id
-                log_w("loadScriptToExecute: List.json seems corrupted. Clearing current_script.id ('%s') to avoid getting stuck.", humanReadableScriptIdFromSpiffs.c_str());
-                saveCurrentScriptId(""); // Clear it
+                log_w("loadScriptToExecute: List.json seems problematic. Clearing current_script.id ('%s') to avoid getting stuck.", humanReadableScriptIdFromSpiffs.c_str());
+                saveCurrentScriptId("");
             } else {
-                log_w("loadScriptToExecute: List.json seems corrupted. No specific current_script.id was loaded to clear.");
+                log_w("loadScriptToExecute: List.json seems problematic. No specific current_script.id was loaded to clear.");
             }
-
-            // Trigger a fetch operation to try and rebuild the list
-            log_w("loadScriptToExecute: Triggering a fetch operation to rebuild corrupted/missing list.json.");
+            log_w("loadScriptToExecute: Triggering a fetch operation to rebuild problematic list.json.");
             if (g_fetchRequestSemaphore != NULL) {
                 xSemaphoreGive(g_fetchRequestSemaphore);
-                log_i("loadScriptToExecute: Fetch request semaphore given due to corrupted/missing list.");
+                log_i("loadScriptToExecute: Fetch request semaphore given due to problematic list.");
             } else {
-                log_e("loadScriptToExecute: Fetch request semaphore is NULL, cannot trigger fetch for corrupted list.");
+                log_e("loadScriptToExecute: Fetch request semaphore is NULL, cannot trigger fetch for problematic list.");
             }
         }
-        return false; // Fallback to default script
+        return false;
     }
 
     // 6. Load script content using the determined fileId
-    currentScriptId = finalHumanIdForExecution; // Set global currentScriptId for execution context
+    currentScriptId = finalHumanIdForExecution;
     log_i("loadScriptToExecute: Attempting to load content for humanId '%s' using fileId '%s'", currentScriptId.c_str(), determinedFileId.c_str());
     if (!loadScriptContent(determinedFileId.c_str(), currentScriptContent)) {
-        log_e("loadScriptToExecute: Failed to load script content for fileId '%s' (humanId '%s'). Using default.", determinedFileId.c_str(), currentScriptId.c_str());
-        currentScriptContent = ""; // Signal to use default_script
-        return false; // Content load failed, fallback to default
+        log_e("loadScriptToExecute: Failed to load script content for fileId '%s' (humanId '%s'). This file should exist according to list.json.", determinedFileId.c_str(), currentScriptId.c_str());
+        currentScriptContent = "";
+        // Trigger fetch to repair missing content
+        log_w("loadScriptToExecute: Triggering a fetch operation to attempt to download missing content for '%s'.", currentScriptId.c_str());
+        if (g_fetchRequestSemaphore != NULL) {
+            xSemaphoreGive(g_fetchRequestSemaphore);
+            log_i("loadScriptToExecute: Fetch request semaphore given for missing content file.");
+        } else {
+            log_e("loadScriptToExecute: Fetch request semaphore is NULL, cannot trigger fetch for missing content.");
+        }
+        return false;
     }
     vTaskDelay(pdMS_TO_TICKS(10));
 

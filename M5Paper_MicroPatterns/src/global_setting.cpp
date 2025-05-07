@@ -259,75 +259,42 @@ bool initializeSPIFFS()
     }
     if (!SPIFFS.exists("/scripts/content"))
     {
-        SPIFFS.mkdir("/scripts/content");
+        if (!SPIFFS.mkdir("/scripts/content")) {
+            log_e("Failed to create /scripts/content directory!");
+            return false;
+        }
         log_i("Created /scripts/content directory");
     }
     return true;
 }
 
-bool saveScriptList(const char *jsonContent)
+// Saves the provided DynamicJsonDocument (expected to be an array of script metadata) to /scripts/list.json
+bool saveScriptList(DynamicJsonDocument& docToSave)
 {
-    DynamicJsonDocument fetchedListDoc(4096);
-    DeserializationError error = deserializeJson(fetchedListDoc, jsonContent);
-    if (error)
-    {
-        log_e("saveScriptList: Failed to parse fetched script list JSON: %s", error.c_str());
+    if (!docToSave.is<JsonArray>()) {
+        log_e("saveScriptList (doc): Provided document is not a JSON array. Cannot save.");
         return false;
-    }
-    if (!fetchedListDoc.is<JsonArray>())
-    {
-        log_e("saveScriptList: Fetched script list JSON is not an array.");
-        return false;
-    }
-
-    JsonArray fetchedArray = fetchedListDoc.as<JsonArray>();
-    DynamicJsonDocument augmentedListDoc(4096); // Potentially larger if names are long
-    JsonArray augmentedArray = augmentedListDoc.to<JsonArray>();
-
-    int scriptIndex = 0;
-    for (JsonObject scriptInfo : fetchedArray)
-    {
-        const char *humanId = scriptInfo["id"];
-        const char *humanName = scriptInfo["name"];
-
-        if (!humanId)
-        {
-            log_w("saveScriptList: Skipping script with missing 'id' in fetched list.");
-            continue;
-        }
-
-        String fileId = "s" + String(scriptIndex);
-        scriptIndex++;
-
-        JsonObject newEntry = augmentedArray.createNestedObject();
-        newEntry["id"] = humanId;
-        if (humanName) {
-            newEntry["name"] = humanName;
-        } else {
-            newEntry["name"] = humanId; // Fallback if name is missing
-        }
-        newEntry["fileId"] = fileId;
     }
 
     File file = SPIFFS.open("/scripts/list.json", FILE_WRITE);
     if (!file)
     {
-        log_e("saveScriptList: Failed to open /scripts/list.json for writing");
+        log_e("saveScriptList (doc): Failed to open /scripts/list.json for writing");
         return false;
     }
 
     String outputJson;
-    serializeJson(augmentedListDoc, outputJson);
+    serializeJson(docToSave, outputJson); // Serialize the provided document
 
     if (file.print(outputJson))
     {
-        log_i("Augmented script list saved successfully to SPIFFS (%d scripts).", augmentedArray.size());
+        log_i("Script list (from doc) saved successfully to SPIFFS. (%d entries)", docToSave.as<JsonArray>().size());
         file.close();
         return true;
     }
     else
     {
-        log_e("saveScriptList: Failed to write augmented script list to SPIFFS.");
+        log_e("saveScriptList (doc): Failed to write script list to SPIFFS.");
         file.close();
         return false;
     }
