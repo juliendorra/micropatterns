@@ -197,10 +197,6 @@ void loop()
         handleWakeupAndScriptExecution(pin_val_from_isr);
         g_wakeup_handled = true; // Mark wakeup as handled for this cycle
         esp_task_wdt_reset();    // Reset watchdog after potentially expensive wakeup handling
-        // handleWakeupAndScriptExecution will perform debouncing and clear the pin if handled.
-        handleWakeupAndScriptExecution(pin_val_from_isr);
-        g_wakeup_handled = true; // Mark wakeup as handled for this cycle
-        esp_task_wdt_reset();    // Reset watchdog after potentially expensive wakeup handling
     }
 
     if (g_fetch_task_in_progress)
