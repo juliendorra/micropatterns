@@ -181,8 +181,19 @@ void loop()
         }
     }
 
-    handleWakeupAndScriptExecution();
-    goToLightSleep();
+    // Only process wakeup if it hasn't been handled yet this wake cycle
+    if (!g_wakeup_handled) {
+        handleWakeupAndScriptExecution();
+        g_wakeup_handled = true; // Mark wakeup as handled
+    }
+
+    if (g_fetch_task_in_progress) {
+        log_i("Loop: Fetch task is in progress, delaying sleep.");
+        // Yield for a short period to allow fetch task to run and prevent busy-waiting in main loop.
+        vTaskDelay(pdMS_TO_TICKS(100));
+    } else {
+        goToLightSleep();
+    }
 }
 
 void displayParseErrors()
@@ -206,7 +217,13 @@ void handleWakeupAndScriptExecution()
 {
     bool scriptChangeRequest = false;
     bool moveUpDirection = false;
+    // Initialize fetchFromServerAfterExecution to false.
+    // It will only be set true if a button requests it AND no fetch is currently active/being restarted.
     bool fetchFromServerAfterExecution = false;
+
+    // Capture initial fetch task state to make decisions based on state at entry
+    bool initial_fetch_task_state_is_progress = g_fetch_task_in_progress;
+    bool signaled_restart_to_existing_fetch_this_cycle = false;
 
     // 1. Determine Wakeup Reason & Intent
     uint8_t current_wakeup_pin_val = wakeup_pin; // Capture volatile read
@@ -215,10 +232,11 @@ void handleWakeupAndScriptExecution()
         wakeup_pin = 0; // Consume the event for this cycle of handleWakeupAndScriptExecution
         log_i("Wakeup caused by GPIO %d", current_wakeup_pin_val);
 
-        if (g_fetch_task_in_progress)
+        if (initial_fetch_task_state_is_progress) // Check against the state at the beginning of this function call
         {
             log_i("User action during fetch. Signaling fetch task to restart.");
             g_fetch_restart_pending = true; // Signal a graceful restart
+            signaled_restart_to_existing_fetch_this_cycle = true; // Mark that this cycle signaled a restart
             // g_user_interrupt_signal_for_fetch_task = true; // This would be for a hard stop
             // No delay here, fetch task will check the flag. UI continues immediately.
         }
@@ -228,14 +246,20 @@ void handleWakeupAndScriptExecution()
             log_i("Button UP (GPIO %d) detected.", current_wakeup_pin_val);
             scriptChangeRequest = true;
             moveUpDirection = true;
-            fetchFromServerAfterExecution = true;
+            // Only set fetchFromServerAfterExecution if no fetch was initially in progress.
+            if (!initial_fetch_task_state_is_progress) {
+                fetchFromServerAfterExecution = true;
+            }
         }
         else if (current_wakeup_pin_val == BUTTON_DOWN_PIN)
         {
             log_i("Button DOWN (GPIO %d) detected.", current_wakeup_pin_val);
             scriptChangeRequest = true;
             moveUpDirection = false;
-            fetchFromServerAfterExecution = true;
+            // Only set fetchFromServerAfterExecution if no fetch was initially in progress.
+            if (!initial_fetch_task_state_is_progress) {
+                fetchFromServerAfterExecution = true;
+            }
         }
         else if (current_wakeup_pin_val == BUTTON_PUSH_PIN)
         {
@@ -310,14 +334,22 @@ void handleWakeupAndScriptExecution()
     }
 
     // 6. Trigger Fetch from Server if Requested
-    if (fetchFromServerAfterExecution)
+    if (fetchFromServerAfterExecution) // True if UP/DOWN pressed AND no fetch was active at handler start
     {
-        if (g_fetch_task_in_progress)
-        {
-            log_i("Requesting new fetch while one is in progress. Current fetch will be signaled to interrupt if not already.");
-            // The g_user_interrupt_signal_for_fetch_task might have already been set above.
-            // The fetch task will clear this signal at the beginning of its new operation.
+        // At this point, we know:
+        // 1. An UP or DOWN button was pressed.
+        // 2. No fetch was in progress when this handler started (initial_fetch_task_state_is_progress was false).
+        // Therefore, signaled_restart_to_existing_fetch_this_cycle is also false.
+        // We are clear to request a new fetch.
+        log_i("Requesting new fetch (button press, no initial fetch active).");
+
+        // It's still theoretically possible g_fetch_task_in_progress became true due to some other mechanism
+        // between the start of this handler and now, though unlikely with the current single-threaded handler design for wakeups.
+        // A simple check for logging:
+        if (g_fetch_task_in_progress) {
+             log_w("Warning: Queuing new fetch, but g_fetch_task_in_progress is now true. This might lead to overlapping requests if not handled by fetch task.");
         }
+
         if (g_fetchRequestSemaphore != NULL)
         {
             xSemaphoreGive(g_fetchRequestSemaphore);
@@ -351,14 +383,15 @@ void fetchTaskFunction(void *pvParameters)
     {
         if (g_fetchRequestSemaphore != NULL && xSemaphoreTake(g_fetchRequestSemaphore, portMAX_DELAY) == pdTRUE)
         {
-            log_i("FetchTask: Semaphore taken, starting fetch operation.");
+            g_fetch_task_in_progress = true; // Set flag immediately
+            log_i("FetchTask: Semaphore taken, g_fetch_task_in_progress=true. Starting fetch operation.");
             bool restart_fetch_immediately;
             bool first_attempt_in_cycle = true;
 
             do
             {
                 restart_fetch_immediately = false;
-                g_fetch_task_in_progress = true;
+                // g_fetch_task_in_progress = true; // Moved up
                 // g_user_interrupt_signal_for_fetch_task is for hard stop, cleared by perform_fetch_operations or if it triggers
                 // g_fetch_restart_pending is for soft restart, cleared when acted upon below or by perform_fetch_operations
 
@@ -429,13 +462,14 @@ void fetchTaskFunction(void *pvParameters)
                     xQueueSend(g_displayMessageQueue, &msg_to_send, pdMS_TO_TICKS(100));
                 }
 
-                g_fetch_task_in_progress = false;
+                // g_fetch_task_in_progress = false; // Moved to after the do...while loop
 
             } while (restart_fetch_immediately);
 
+            g_fetch_task_in_progress = false; // Clear flag after all attempts for this semaphore signal are done
             // g_user_interrupt_signal_for_fetch_task should be false here unless a hard interrupt occurred.
             // g_fetch_restart_pending is false.
-            log_i("FetchTask: Operation cycle finished, going back to wait for semaphore.");
+            log_i("FetchTask: Operation cycle finished, g_fetch_task_in_progress=false. Waiting for semaphore.");
         }
         else
         {
@@ -661,8 +695,16 @@ FetchResultStatus perform_fetch_operations()
             if (g_fetch_restart_pending) { root.close(); entry.close(); return FETCH_RESTART_REQUESTED; }
 
             if (!entry.isDirectory()) {
-                String fullPath = entry.name(); // e.g., /scripts/content/s0
-                String fileIdFromPath = fullPath.substring(fullPath.lastIndexOf('/') + 1);
+                String entryName = entry.name(); // This might be relative or absolute depending on SPIFFS lib version
+                String pathToRemove;
+                String fileIdFromPath;
+
+                if (entryName.startsWith("/")) { // Already an absolute path
+                    pathToRemove = entryName;
+                } else { // Relative path, construct absolute
+                    pathToRemove = "/scripts/content/" + entryName;
+                }
+                fileIdFromPath = pathToRemove.substring(pathToRemove.lastIndexOf('/') + 1);
                 
                 bool foundInFinalList = false;
                 for (JsonObject scriptInFinalList : finalSpiifsArray) {
@@ -672,8 +714,10 @@ FetchResultStatus perform_fetch_operations()
                     }
                 }
                 if (!foundInFinalList) {
-                    log_i("perform_fetch_operations: Removing orphaned script content: %s", fullPath.c_str());
-                    SPIFFS.remove(fullPath);
+                    log_i("perform_fetch_operations: Removing orphaned script content: %s", pathToRemove.c_str());
+                    if (!SPIFFS.remove(pathToRemove)) {
+                        log_e("perform_fetch_operations: Failed to remove %s", pathToRemove.c_str());
+                    }
                 }
             }
             entry.close(); // Close current entry

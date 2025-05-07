@@ -31,6 +31,7 @@ void IRAM_ATTR button_isr(void* arg);
 
 // Forward declaration for the global interrupt flag from main.cpp
 extern volatile bool g_user_interrupt_signal_for_fetch_task;
+extern volatile bool g_wakeup_handled; // Flag to track if wakeup event has been handled in this wake cycle
 
 // Basic settings placeholder - can be expanded later
 // Example: Timezone might still be relevant

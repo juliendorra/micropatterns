@@ -9,6 +9,7 @@
 
 // Define the shared wakeup_pin variable
 volatile uint8_t wakeup_pin = 0;
+volatile bool g_wakeup_handled = false; // Initialize the wakeup handled flag
 
 // ISR for button interrupts
 void IRAM_ATTR button_isr(void *arg)
@@ -471,8 +472,9 @@ void goToLightSleep()
     esp_sleep_enable_gpio_wakeup();
     log_i("Setup ESP32 to wake up on LOW level for GPIOs %d, %d, %d.", BUTTON_UP_PIN, BUTTON_DOWN_PIN, BUTTON_PUSH_PIN);
 
-    // Reset wakeup pin before sleep
+// Reset wakeup pin and handled flag before sleep
     wakeup_pin = 0;
+    g_wakeup_handled = false;
 
     // Optional: Hold GPIO states during sleep if needed (e.g., keep power pin high)
     // gpio_hold_en((gpio_num_t)M5EPD_MAIN_PWR_PIN);
