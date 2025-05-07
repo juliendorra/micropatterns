@@ -27,9 +27,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // --- Configuration ---
     // Assume server runs on localhost:8000 during development
-    // TODO: Make this configurable or detect environment
-    let API_BASE_URL = 'http://localhost:8000';
-    // API_BASE_URL = "https://micropatterns-api.deno.dev";
+    // basic detect environment
+    let API_BASE_URL;
+    if (window.location.hostname === 'localhost') {
+        API_BASE_URL = 'http://localhost:8000';
+    } else {
+        API_BASE_URL = 'https://micropatterns-api.deno.dev';
+    }
     // --- End Configuration ---
 
     // --- Drag Drawing State ---
@@ -60,10 +64,10 @@ document.addEventListener('DOMContentLoaded', () => {
     function updateCanvasDimensions(actualWidth, actualHeight) {
         env.WIDTH = actualWidth;
         env.HEIGHT = actualHeight;
-        
+
         canvas.width = actualWidth; // Set attribute for drawing buffer
         canvas.height = actualHeight; // Set attribute for drawing buffer
-        
+
         if (actualWidth === 540 && actualHeight === 960) {
             // For M5Paper, apply the current zoom factor for display
             // m5PaperZoomFactor is initialized to 0.5
@@ -76,7 +80,7 @@ document.addEventListener('DOMContentLoaded', () => {
             zoomToggleButton.disabled = true;
             zoomToggleButton.textContent = "Zoom"; // Reset button text
         }
-        
+
         if (displayInfoSpan) {
             displayInfoSpan.textContent = `${actualWidth}x${actualHeight}`;
         }
