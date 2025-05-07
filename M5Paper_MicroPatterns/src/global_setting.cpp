@@ -17,21 +17,17 @@ volatile uint32_t g_last_button_time = 0;
 const uint32_t DEBOUNCE_TIME_MS = 300;
 
 // ISR for button interrupts
-void IRAM_ATTR button_isr(void *arg)
-{
-    uint32_t gpio_num = (uint32_t)arg;
-    uint32_t current_time = (uint32_t)millis();
-    
-    // Enhanced debouncing logic:
-    // 1. Check for sufficient time since last button press
-    // 2. Ensure wakeup_pin is clear (previous event has been processed)
-    // 3. Handle special case where a button is held down during wake from sleep
-    //    (current_time might be very small after wake)
-    if (((current_time - g_last_button_time) >= DEBOUNCE_TIME_MS || current_time < g_last_button_time) &&
-        (wakeup_pin == 0)) {
-        wakeup_pin = gpio_num;
-        g_last_button_time = current_time;
-    }
+void IRAM_ATTR button_isr(void *arg) {
+    uint32_t gpio_num_val = (uint32_t)arg;
+    uint8_t expected_wakeup_pin_val = 0; // We only want to set wakeup_pin if it's currently 0
+    uint8_t desired_wakeup_pin_val = (uint8_t)gpio_num_val;
+
+    // Atomically set wakeup_pin to gpio_num_val ONLY if wakeup_pin is currently 0.
+    // This prevents a rapid second interrupt from overwriting the first if it hasn't been processed yet
+    // by the main loop, and ensures the ISR is very fast.
+    // The 'false' means this is a "weak" compare-exchange, which is fine here.
+    // __ATOMIC_SEQ_CST provides the strongest memory ordering guarantees.
+    __atomic_compare_exchange_n(&wakeup_pin, &expected_wakeup_pin_val, desired_wakeup_pin_val, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
 }
 
 // --- Constants ---

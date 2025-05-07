@@ -29,7 +29,7 @@ void setup();
 void loop();
 void displayMessage(const String &msg, int y_offset = 50, uint16_t color = 15);
 void displayParseErrors();
-void handleWakeupAndScriptExecution();
+void handleWakeupAndScriptExecution(uint8_t raw_gpio_from_isr); // Modified signature
 void fetchTaskFunction(void *pvParameters);
 bool selectNextScript(bool moveUp);
 bool loadScriptToExecute();

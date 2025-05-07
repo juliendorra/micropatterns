@@ -98,7 +98,7 @@ bool selectNextScript(bool moveUp);
 bool loadScriptToExecute();
 void displayMessage(const String &msg, int y_offset, uint16_t color);
 void displayParseErrors();
-void handleWakeupAndScriptExecution();
+void handleWakeupAndScriptExecution(uint8_t raw_gpio_from_isr); // Modified signature
 void fetchTaskFunction(void *pvParameters);
 FetchResultStatus perform_fetch_operations(); // Renamed and modified fetchAndStoreScripts
 
@@ -187,12 +187,20 @@ void loop()
     // 1. We haven't handled it yet this wake cycle
     // 2. We just came out of sleep (g_wakeup_handled is reset in goToLightSleep after waking up)
     // This ensures we catch button presses even if they happen during fetches
-    uint8_t current_wakeup_pin = wakeup_pin;
-    if (!g_wakeup_handled && current_wakeup_pin != 0) {
-        handleWakeupAndScriptExecution();
-        g_wakeup_handled = true; // Mark wakeup as handled
-        // Reset watchdog after potentially expensive wakeup handling
-        esp_task_wdt_reset();
+    
+    // Atomically load the current value of wakeup_pin set by ISR
+    uint8_t pin_val_from_isr = __atomic_load_n(&wakeup_pin, __ATOMIC_SEQ_CST);
+
+    if (!g_wakeup_handled) { // Process wakeup only once per cycle
+        // Pass the pin_val_from_isr (could be 0 if timer wakeup or ISR didn't set)
+        // handleWakeupAndScriptExecution will perform debouncing and clear the pin if handled.
+        handleWakeupAndScriptExecution(pin_val_from_isr);
+        g_wakeup_handled = true; // Mark wakeup as handled for this cycle
+        esp_task_wdt_reset();    // Reset watchdog after potentially expensive wakeup handling
+        // handleWakeupAndScriptExecution will perform debouncing and clear the pin if handled.
+        handleWakeupAndScriptExecution(pin_val_from_isr);
+        g_wakeup_handled = true; // Mark wakeup as handled for this cycle
+        esp_task_wdt_reset();    // Reset watchdog after potentially expensive wakeup handling
     }
 
     if (g_fetch_task_in_progress) {
@@ -225,7 +233,7 @@ void displayParseErrors()
     canvas.pushCanvas(0, 0, UPDATE_MODE_GC16);
 }
 
-void handleWakeupAndScriptExecution()
+void handleWakeupAndScriptExecution(uint8_t raw_gpio_from_isr) // Modified signature
 {
     bool scriptChangeRequest = false;
     bool moveUpDirection = false;
@@ -237,63 +245,83 @@ void handleWakeupAndScriptExecution()
     bool initial_fetch_task_state_is_progress = g_fetch_task_in_progress;
     bool signaled_restart_to_existing_fetch_this_cycle = false;
 
-    // 1. Determine Wakeup Reason & Intent
-    // Use a local copy and atomic operation to safely read and reset wakeup_pin
-    uint8_t current_wakeup_pin_val = wakeup_pin; // Capture volatile read
-    if (current_wakeup_pin_val != 0)
+    uint8_t processed_gpio_event = 0; // Will hold the pin if it's a valid, debounced button event
+
+    // 1. Determine Wakeup Reason & Intent (includes debouncing)
+    if (raw_gpio_from_isr != 0) {
+        // Attempt to "claim" this specific pin event from the ISR.
+        // We try to change wakeup_pin from raw_gpio_from_isr to 0.
+        // If successful, we own this event for debouncing.
+        uint8_t expected_pin_val = raw_gpio_from_isr;
+        if (__atomic_compare_exchange_n(&wakeup_pin, &expected_pin_val, (uint8_t)0, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)) {
+            // Successfully claimed and cleared the global wakeup_pin. Now debounce.
+            uint32_t current_time = millis(); // Safe to call millis() in task context
+            // Check debounce time OR handle millis() overflow
+            if (((current_time - g_last_button_time) >= DEBOUNCE_TIME_MS || current_time < g_last_button_time)) {
+                g_last_button_time = current_time; // Update time of last valid press
+                processed_gpio_event = raw_gpio_from_isr; // This is a valid, debounced button event
+                log_i("Wakeup: Button event for GPIO %d accepted (debounced).", processed_gpio_event);
+            } else {
+                log_i("Wakeup: Debounced out GPIO %d event.", raw_gpio_from_isr);
+                // Event is debounced out, processed_gpio_event remains 0.
+            }
+        } else {
+            // wakeup_pin was not raw_gpio_from_isr when we tried to clear it.
+            // This means it might have been cleared by another call to this function (if g_wakeup_handled was false),
+            // or changed by another ISR if the first ISR was slow to be processed by loop().
+            // Given current ISR logic (only sets if wakeup_pin is 0), this case should be rare.
+            // Treat as no valid button event for *this specific call*.
+            log_w("Wakeup: Button event for GPIO %d was stale or changed during processing, ignoring.", raw_gpio_from_isr);
+            // processed_gpio_event remains 0.
+        }
+    }
+
+    // Proceed with logic based on processed_gpio_event
+    if (processed_gpio_event != 0)
     {
-        // Atomically reset wakeup_pin
-        __atomic_exchange_n(&wakeup_pin, 0, __ATOMIC_SEQ_CST);
-        log_i("Wakeup caused by GPIO %d", current_wakeup_pin_val);
+        // This log is slightly redundant if the one above fired, but confirms it's being handled.
+        log_i("Handling action for debounced GPIO %d.", processed_gpio_event);
 
         if (initial_fetch_task_state_is_progress) // Check against the state at the beginning of this function call
         {
             log_i("User action during fetch. Signaling fetch task to restart.");
             g_fetch_restart_pending = true; // Signal a graceful restart
             signaled_restart_to_existing_fetch_this_cycle = true; // Mark that this cycle signaled a restart
-            // g_user_interrupt_signal_for_fetch_task = true; // This would be for a hard stop
-            // No delay here, fetch task will check the flag. UI continues immediately.
         }
 
-        if (current_wakeup_pin_val == BUTTON_UP_PIN)
+        if (processed_gpio_event == BUTTON_UP_PIN)
         {
-            log_i("Button UP (GPIO %d) detected.", current_wakeup_pin_val);
+            log_i("Button UP (GPIO %d) detected.", processed_gpio_event);
             scriptChangeRequest = true;
             moveUpDirection = true;
-            // Only set fetchFromServerAfterExecution if no fetch was initially in progress.
             if (!initial_fetch_task_state_is_progress) {
                 fetchFromServerAfterExecution = true;
             }
         }
-        else if (current_wakeup_pin_val == BUTTON_DOWN_PIN)
+        else if (processed_gpio_event == BUTTON_DOWN_PIN)
         {
-            log_i("Button DOWN (GPIO %d) detected.", current_wakeup_pin_val);
+            log_i("Button DOWN (GPIO %d) detected.", processed_gpio_event);
             scriptChangeRequest = true;
             moveUpDirection = false;
-            // Only set fetchFromServerAfterExecution if no fetch was initially in progress.
             if (!initial_fetch_task_state_is_progress) {
                 fetchFromServerAfterExecution = true;
             }
         }
-        else if (current_wakeup_pin_val == BUTTON_PUSH_PIN)
+        else if (processed_gpio_event == BUTTON_PUSH_PIN)
         {
-            log_i("Button PUSH (GPIO %d) detected.", current_wakeup_pin_val);
-            
-            // Similar to UP/DOWN, check if a fetch is in progress and handle gracefully
+            log_i("Button PUSH (GPIO %d) detected.", processed_gpio_event);
             if (initial_fetch_task_state_is_progress) {
                 log_i("PUSH button pressed during fetch. Signaling fetch task to restart.");
-                g_fetch_restart_pending = true; // Signal a graceful restart
-                signaled_restart_to_existing_fetch_this_cycle = true; // Mark that this cycle signaled a restart
-                esp_task_wdt_reset(); // Reset watchdog after setting flags
+                g_fetch_restart_pending = true;
+                signaled_restart_to_existing_fetch_this_cycle = true;
+                esp_task_wdt_reset();
             }
-            
             // For PUSH, just re-run current script. No fetch by default.
-            // We don't change the script, so no need for selectNextScript()
         }
     }
     else
     {
-        log_i("Wakeup caused by timer or unknown source.");
+        log_i("Wakeup: Timer, or button event was debounced/stale.");
     }
 
     // 2. Handle Script Selection if Requested (for UP/DOWN)
@@ -463,16 +491,31 @@ void fetchTaskFunction(void *pvParameters)
 
     for (;;)
     {
-        // Reset watchdog timer
+        // Reset watchdog timer at the start of each cycle of the main loop of FetchTask
         esp_task_wdt_reset();
         
-        if (g_fetchRequestSemaphore != NULL && xSemaphoreTake(g_fetchRequestSemaphore, portMAX_DELAY) == pdTRUE)
+        // Explicitly unsubscribe FetchTask from WDT before blocking
+        esp_err_t wdt_del_err = esp_task_wdt_delete(NULL);
+        if (wdt_del_err != ESP_OK && wdt_del_err != ESP_ERR_NOT_FOUND) { // ESP_ERR_NOT_FOUND is okay.
+            log_e("FetchTask: Failed to delete WDT for self before semaphore, error %d (%s)", wdt_del_err, esp_err_to_name(wdt_del_err));
+        }
+
+        BaseType_t semTakeResult = xSemaphoreTake(g_fetchRequestSemaphore, portMAX_DELAY);
+        
+        // Re-subscribe FetchTask to WDT immediately after unblocking
+        esp_err_t wdt_add_err = esp_task_wdt_add(NULL);
+        if (wdt_add_err != ESP_OK) {
+            log_e("FetchTask: CRITICAL - Failed to re-add WDT for self after semaphore, error %d (%s). Task may not be WDT monitored.", wdt_add_err, esp_err_to_name(wdt_add_err));
+            // Consider recovery or panic if this happens, e.g., esp_restart();
+        }
+        // Reset WDT immediately after re-subscribing. This is also critical.
+        esp_task_wdt_reset();
+
+        if (g_fetchRequestSemaphore != NULL && semTakeResult == pdTRUE)
         {
             g_fetch_task_in_progress = true; // Set flag immediately
-            // Reset watchdog timer
+            // Reset watchdog timer again after setting flag and before heavy operations
             esp_task_wdt_reset();
-            // The g_fetch_task_in_progress was set again, which is harmless but redundant.
-            // The main logic starts after this.
             log_i("FetchTask: Semaphore taken, g_fetch_task_in_progress=true. Starting fetch operation.");
             bool restart_fetch_immediately;
             bool first_attempt_in_cycle = true;
