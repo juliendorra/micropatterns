@@ -6,6 +6,9 @@
 
 void SysInit_Start(void)
 {
+    pinMode(M5EPD_MAIN_PWR_PIN, OUTPUT);
+    M5.enableMainPower();
+
     bool ret = false;
     Serial.begin(115200);
     Serial.flush();
@@ -29,7 +32,6 @@ void SysInit_Start(void)
     // pinMode(M5EPD_KEY_LEFT_PIN, INPUT);
     delay(100);
 
-    M5.enableMainPower(); // Ensure main power is enabled
     M5.enableEXTPower();
     M5.enableEPDPower();
     delay(1000); // Wait for power stabilization
