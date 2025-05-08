@@ -114,6 +114,21 @@ MicroPatterns is a mini-language designed for creating generative pixel art, pri
    COLOR NAME=WHITE
    ```
    *   Sets the current drawing color for subsequent primitives, fills, and drawn patterns. Default is `BLACK`. `NAME` value is case-insensitive.
+   *   **Behavior with Patterns:**
+       *   **When `COLOR NAME=BLACK` (Normal Mode):**
+           *   **`DRAW NAME="pattern"`:**
+               *   Pattern '1's (foreground pixels) are drawn `BLACK`.
+               *   Pattern '0's (background pixels) are **transparent** (nothing is drawn, underlying content shows).
+           *   **`FILL_RECT`, `FILL_CIRCLE`, `FILL_PIXEL` (with `FILL NAME="pattern"`):**
+               *   Pattern '1's are drawn `BLACK`.
+               *   Pattern '0's are drawn `WHITE` (filling the background of the shape with white where the pattern is '0').
+       *   **When `COLOR NAME=WHITE` (Inverted/Special Mode):**
+           *   **`DRAW NAME="pattern"`:**
+               *   Pattern '1's are drawn `WHITE`.
+               *   Pattern '0's remain **transparent**.
+           *   **`FILL_RECT`, `FILL_CIRCLE`, `FILL_PIXEL` (with `FILL NAME="pattern"`):**
+               *   Pattern '1's are drawn `WHITE`.
+               *   Pattern '0's are drawn `BLACK` (fully inverting the pattern fill).
 
 *   **Fill Pattern:**
    ```micropatterns

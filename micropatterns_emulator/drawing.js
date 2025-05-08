@@ -110,9 +110,17 @@ class MicroPatternsDrawing {
         if (index < 0 || index >= fillAsset.data.length) {
             // This should ideally not happen with correct modulo.
             // console.warn(`Fill asset index out of bounds: (${assetX}, ${assetY}) for screen (${screenPixelCenterX}, ${screenPixelCenterY}) from logical (${logicalX}, ${logicalY})`);
-            return 'white'; // Default to white/transparent on error
+            // Default to white on error if normal, black if inverted
+            return stateColor === 'white' ? 'black' : 'white';
         }
-        return fillAsset.data[index] === 1 ? stateColor : 'white';
+
+        const patternBit = fillAsset.data[index]; // 0 or 1
+
+        if (stateColor === 'white') { // Inverted mode for FILL
+            return patternBit === 1 ? 'white' : 'black';
+        } else { // Normal mode (stateColor is 'black') for FILL
+            return patternBit === 1 ? 'black' : 'white';
+        }
     }
 
     // Helper function to set a single "logical pixel" block on the canvas, considering scale.
@@ -185,10 +193,10 @@ class MicroPatternsDrawing {
                     scaled_logical_pixel.y >= sl_rect_y && scaled_logical_pixel.y < (sl_rect_y + sl_rect_h)) {
                     
                     const fillColor = this._getFillAssetPixelColor(screen_pixel_center_x, screen_pixel_center_y, state);
-                    if (fillColor !== 'white') {
-                        this.ctx.fillStyle = fillColor;
-                        this.ctx.fillRect(sx_iter, sy_iter, 1, 1); // Draw 1x1 screen pixel
-                    }
+                    // Removed: if (fillColor !== 'white')
+                    this.ctx.fillStyle = fillColor;
+                    this.ctx.fillRect(sx_iter, sy_iter, 1, 1); // Draw 1x1 screen pixel
+                    // Removed: }
                 }
             }
         }
@@ -294,10 +302,10 @@ class MicroPatternsDrawing {
 
                 if (dist_sq <= scaled_logical_radius_sq) {
                     const fillColor = this._getFillAssetPixelColor(screen_pixel_center_x, screen_pixel_center_y, state);
-                    if (fillColor !== 'white') {
-                        this.ctx.fillStyle = fillColor;
-                        this.ctx.fillRect(sx_iter, sy_iter, 1, 1); // Draw 1x1 screen pixel
-                    }
+                    // Removed: if (fillColor !== 'white')
+                    this.ctx.fillStyle = fillColor;
+                    this.ctx.fillRect(sx_iter, sy_iter, 1, 1); // Draw 1x1 screen pixel
+                    // Removed: }
                 }
             }
         }
@@ -333,10 +341,10 @@ class MicroPatternsDrawing {
                     slp.y >= scaled_ly && slp.y < next_scaled_ly) {
                     
                     const effectiveColor = this._getFillAssetPixelColor(screen_pixel_center_x, screen_pixel_center_y, state);
-                    if (effectiveColor !== 'white') {
-                        this.ctx.fillStyle = effectiveColor;
-                        this.ctx.fillRect(sx_iter, sy_iter, 1, 1); // Draw 1x1 screen pixel
-                    }
+                    // Removed: if (effectiveColor !== 'white')
+                    this.ctx.fillStyle = effectiveColor;
+                    this.ctx.fillRect(sx_iter, sy_iter, 1, 1); // Draw 1x1 screen pixel
+                    // Removed: }
                 }
             }
         }

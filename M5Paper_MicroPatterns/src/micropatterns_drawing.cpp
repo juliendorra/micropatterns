@@ -111,11 +111,17 @@ uint8_t MicroPatternsDrawing::getFillColor(float screen_pixel_center_x, float sc
         if (assetY < 0) assetY += asset.height;
 
         int index = assetY * asset.width + assetX;
-        if (index >= 0 && index < asset.data.size()) {
-            return asset.data[index] == 1 ? state.color : DRAWING_COLOR_WHITE;
+        if (index >= 0 && index < (int)asset.data.size()) { // Explicit cast for comparison
+            uint8_t patternBit = asset.data[index]; // 0 or 1
+            if (state.color == DRAWING_COLOR_WHITE) { // Inverted mode for FILL
+                return patternBit == 1 ? DRAWING_COLOR_WHITE : DRAWING_COLOR_BLACK;
+            } else { // Normal mode (state.color is DRAWING_COLOR_BLACK) for FILL
+                return patternBit == 1 ? DRAWING_COLOR_BLACK : DRAWING_COLOR_WHITE;
+            }
         }
         // log_e("Fill asset index out of bounds: base_lx=%.2f, base_ly=%.2f -> asset (%d, %d) -> index %d. Screen (%.2f, %.2f)", base_lx, base_ly, assetX, assetY, index, screen_pixel_center_x, screen_pixel_center_y);
-        return DRAWING_COLOR_WHITE; // Default to white on error
+        // Default to white on error if normal, black if inverted
+        return state.color == DRAWING_COLOR_WHITE ? DRAWING_COLOR_BLACK : DRAWING_COLOR_WHITE;
     }
 }
 
@@ -202,9 +208,9 @@ void MicroPatternsDrawing::drawFilledPixel(int lx, int ly, const MicroPatternsSt
             if (scaled_logical_x >= logical_pixel_start_x_scaled && scaled_logical_x < logical_pixel_end_x_scaled &&
                 scaled_logical_y >= logical_pixel_start_y_scaled && scaled_logical_y < logical_pixel_end_y_scaled) {
                 uint8_t fillColor = getFillColor(screen_center_x, screen_center_y, state);
-                if (fillColor != DRAWING_COLOR_WHITE) {
-                    rawPixel(sx_iter, sy_iter, fillColor);
-                }
+                // Removed: if (fillColor != DRAWING_COLOR_WHITE)
+                rawPixel(sx_iter, sy_iter, fillColor);
+                // Removed: }
             }
         }
     }
@@ -386,9 +392,9 @@ void MicroPatternsDrawing::fillCircle(int lcx, int lcy, int lr, const MicroPatte
 
             if (dx * dx + dy * dy <= logical_radius_sq) {
                 uint8_t fillColor = getFillColor(screen_center_x, screen_center_y, state);
-                if (fillColor != DRAWING_COLOR_WHITE) {
-                    rawPixel(sx_iter, sy_iter, fillColor);
-                }
+                // Removed: if (fillColor != DRAWING_COLOR_WHITE)
+                rawPixel(sx_iter, sy_iter, fillColor);
+                // Removed: }
             }
         }
     }
