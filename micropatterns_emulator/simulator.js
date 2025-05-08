@@ -29,7 +29,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // Assume server runs on localhost:8000 during development
     // basic detect environment
     let API_BASE_URL;
-    if (window.location.hostname === 'localhost') {
+    if (window.location.hostname === 'localhost' || window.location.hostname.startsWith("127")) {
         API_BASE_URL = 'http://localhost:8000';
     } else {
         API_BASE_URL = 'https://micropatterns-api.deno.dev';
