@@ -83,25 +83,33 @@ struct MicroPatternsAsset {
     std::vector<uint8_t> data; // 0 or 1
 };
 
-// Structure for transformation operations (used in state)
-struct TransformOp {
-    enum OpType { TRANSLATE, ROTATE } type;
-    float value1; // dx or degrees
-    float value2; // dy (only for translate)
-
-    TransformOp(OpType t, float v1, float v2 = 0) : type(t), value1(v1), value2(v2) {}
-};
-
-
 // Structure for drawing state
 struct MicroPatternsState {
     uint8_t color = 15; // 0=white, 15=black (M5EPD uses 4bpp)
     const MicroPatternsAsset* fillAsset = nullptr; // Pointer to current fill pattern, null for SOLID
-    float scale = 1.0; // Absolute scale factor set by last SCALE command
-    std::vector<TransformOp> transformations; // Sequence of translate/rotate ops applied after scale
+    
+    // Absolute scale factor, applied BEFORE the matrix transformation.
+    float scale = 1.0f;
+    
+    // Affine transformation matrix representing cumulative TRANSLATE and ROTATE operations.
+    // Applied AFTER 'scale'.
+    // Format: [m0, m1, m2, m3, m4, m5] => | m0 m2 m4 |
+    //                                     | m1 m3 m5 |
+    //                                     |  0  0  1 |
+    // (x', y') = (m0*x + m2*y + m4, m1*x + m3*y + m5)
+    float matrix[6];
+    
+    // Inverse of 'matrix'. Used for transforming screen coordinates back.
+    float inverseMatrix[6];
 
     // Default constructor initializes state
-    MicroPatternsState() : color(15), fillAsset(nullptr), scale(1.0) {}
+    MicroPatternsState() : color(15), fillAsset(nullptr), scale(1.0f) {
+        // Initialize matrix and inverseMatrix to identity
+        matrix[0] = 1.0f; matrix[1] = 0.0f;
+        matrix[2] = 0.0f; matrix[3] = 1.0f;
+        matrix[4] = 0.0f; matrix[5] = 0.0f;
+        memcpy(inverseMatrix, matrix, sizeof(float) * 6);
+    }
 };
 
 #endif // MICROPATTERNS_COMMAND_H

@@ -1,10 +1,7 @@
 #include "micropatterns_drawing.h"
-#include <cmath> // For round, floor, ceil in some places, but avoid for core transforms
+#include <cmath> // For round, floor, ceil, sinf, cosf, fabs, sqrtf
 #include <Arduino.h> // For yield()
-
-// Define colors (assuming 0=white, 15=black for M5EPD 4bpp buffer)
-const uint8_t COLOR_WHITE = 0;
-const uint8_t COLOR_BLACK = 15;
+#include <algorithm> // For std::min, std::max
 
 MicroPatternsDrawing::MicroPatternsDrawing(M5EPD_Canvas* canvas) : _canvas(canvas) {
     if (_canvas) {
@@ -14,7 +11,7 @@ MicroPatternsDrawing::MicroPatternsDrawing(M5EPD_Canvas* canvas) : _canvas(canva
         _canvasWidth = 0;
         _canvasHeight = 0;
     }
-    precomputeTrigTables();
+    // precomputeTrigTables(); // Removed, matrix_make_rotation uses sinf/cosf directly
 }
 
 void MicroPatternsDrawing::setCanvas(M5EPD_Canvas* canvas) {
@@ -30,367 +27,296 @@ void MicroPatternsDrawing::setCanvas(M5EPD_Canvas* canvas) {
 
 void MicroPatternsDrawing::clearCanvas() {
     if (_canvas) {
-        _canvas->fillCanvas(COLOR_WHITE);
+        _canvas->fillCanvas(DRAWING_COLOR_WHITE);
     }
 }
-
-void MicroPatternsDrawing::precomputeTrigTables() {
-    _sinTable.resize(360);
-    _cosTable.resize(360);
-    for (int i = 0; i < 360; ++i) {
-        float angleRad = i * DEG_TO_RAD;
-        // Store as fixed-point integers scaled by FIXED_POINT_SCALE
-        _sinTable[i] = static_cast<int>(round(sin(angleRad) * FIXED_POINT_SCALE));
-        _cosTable[i] = static_cast<int>(round(cos(angleRad) * FIXED_POINT_SCALE));
-    }
-}
-
 
 // --- Transformation ---
-// Applies scale, then the sequence of translate/rotate operations using integer math.
-// Converts logical (lx, ly) to screen (sx, sy).
-void MicroPatternsDrawing::transformPoint(int lx, int ly, const MicroPatternsState& state, int& sx, int& sy) {
-    // 1. Apply final scale factor first (relative to original 0,0)
-    // Use float for scale factor itself, but keep coords integer for now.
-    // Intermediate calculations might need larger types (int32_t) if scale is large.
-    int32_t currentX = round(lx * state.scale);
-    int32_t currentY = round(ly * state.scale);
+void MicroPatternsDrawing::transformPoint(float logical_x, float logical_y, const MicroPatternsState& state, float& screen_x, float& screen_y) {
+    // 1. Apply absolute scale factor first
+    float scaled_lx = logical_x * state.scale;
+    float scaled_ly = logical_y * state.scale;
 
-    // Track the accumulated rotation and the origin's offset from global (0,0) due to translations
-    int currentAngle = 0; // Angle in degrees (0-359)
-    int32_t originOffsetX = 0; // Global X offset of the current origin
-    int32_t originOffsetY = 0; // Global Y offset of the current origin
+    // 2. Apply the cumulative transformation matrix
+    matrix_apply_to_point(state.matrix, scaled_lx, scaled_ly, screen_x, screen_y);
+}
 
-    // 2. Apply Translate and Rotate sequentially from the state's list
-    for (const auto& op : state.transformations) {
-        if (op.type == TransformOp::ROTATE) {
-            int degrees = static_cast<int>(round(op.value1)) % 360;
-            if (degrees < 0) degrees += 360;
+void MicroPatternsDrawing::screenToLogicalBase(float screen_x, float screen_y, const MicroPatternsState& state, float& base_logical_x, float& base_logical_y) {
+    // 1. Apply inverse of the cumulative transformation matrix
+    float scaled_logical_x, scaled_logical_y;
+    matrix_apply_to_point(state.inverseMatrix, screen_x, screen_y, scaled_logical_x, scaled_logical_y);
 
-            // Rotate the current point around the current origin offset (originOffsetX, originOffsetY)
-            int32_t relX = currentX - originOffsetX;
-            int32_t relY = currentY - originOffsetY;
-
-            // Use precomputed tables (already scaled by FIXED_POINT_SCALE)
-            int sinD = _sinTable[degrees];
-            int cosD = _cosTable[degrees];
-
-            // Perform rotation using fixed-point multiplication
-            // (relX * cosD - relY * sinD) / FIXED_POINT_SCALE
-            // (relX * sinD + relY * cosD) / FIXED_POINT_SCALE
-            int32_t rotatedRelX = FIXED_TO_INT(relX * cosD - relY * sinD);
-            int32_t rotatedRelY = FIXED_TO_INT(relX * sinD + relY * cosD);
-
-            // Update the global point position
-            currentX = rotatedRelX + originOffsetX;
-            currentY = rotatedRelY + originOffsetY;
-
-            // Update the total accumulated angle for subsequent translations.
-            // To match the JS emulator's apparent cumulative behavior for currentAngle:
-            currentAngle = (currentAngle + degrees) % 360;
-            if (currentAngle < 0) currentAngle += 360;
-            // If ROTATE were strictly absolute as per one interpretation of the spec,
-            // this would be: currentAngle = degrees;
-
-        } else if (op.type == TransformOp::TRANSLATE) {
-            int32_t dx = round(op.value1); // Translation along current (rotated) X axis
-            int32_t dy = round(op.value2); // Translation along current (rotated) Y axis
-
-            // Calculate the global displacement based on the *accumulated* currentAngle
-            int sinA = _sinTable[currentAngle];
-            int cosA = _cosTable[currentAngle];
-
-            // Calculate global delta using fixed-point math:
-            // globalDX = (dx * cosA - dy * sinA) / FIXED_POINT_SCALE
-            // globalDY = (dx * sinA + dy * cosA) / FIXED_POINT_SCALE
-            int32_t globalDX = FIXED_TO_INT(dx * cosA - dy * sinA);
-            int32_t globalDY = FIXED_TO_INT(dx * sinA + dy * cosA);
-
-            // Shift the point globally
-            currentX += globalDX;
-            currentY += globalDY;
-
-            // Update the origin's global offset as well
-            originOffsetX += globalDX;
-            originOffsetY += globalDY;
-        }
+    // 2. Undo the absolute scale factor
+    if (state.scale == 0.0f) { // Avoid division by zero
+        base_logical_x = scaled_logical_x; // Or handle as an error/default
+        base_logical_y = scaled_logical_y;
+    } else {
+        base_logical_x = scaled_logical_x / state.scale;
+        base_logical_y = scaled_logical_y / state.scale;
     }
-
-    // Final conversion to integer screen coordinates
-    sx = static_cast<int>(currentX);
-    sy = static_cast<int>(currentY);
 }
 
 
 // --- Raw Drawing ---
-// Draws a single pixel on the canvas at screen coordinates
 void MicroPatternsDrawing::rawPixel(int sx, int sy, uint8_t color) {
     if (!_canvas) return;
-    // Basic bounds check
     if (sx >= 0 && sx < _canvasWidth && sy >= 0 && sy < _canvasHeight) {
         _canvas->drawPixel(sx, sy, color);
     }
 }
 
-// Basic Bresenham line algorithm on screen coordinates, calls rawPixel
 void MicroPatternsDrawing::rawLine(int sx1, int sy1, int sx2, int sy2, uint8_t color) {
     if (!_canvas) return;
 
-    int dx = abs(sx2 - sx1);
-    int dy = -abs(sy2 - sy1);
-    int sx = sx1;
-    int sy = sy1;
-    int stepX = sx1 < sx2 ? 1 : -1;
-    int stepY = sy1 < sy2 ? 1 : -1;
-    int err = dx + dy;
+    int dx_abs = abs(sx2 - sx1);
+    int dy_abs = -abs(sy2 - sy1); // dy is negative for typical algorithm
+    int current_sx = sx1;
+    int current_sy = sy1;
+    int stepX = (sx1 < sx2) ? 1 : -1;
+    int stepY = (sy1 < sy2) ? 1 : -1;
+    int err = dx_abs + dy_abs; // Error term
 
     while (true) {
-        rawPixel(sx, sy, color);
-        if (sx == sx2 && sy == sy2) break;
+        rawPixel(current_sx, current_sy, color);
+        if (current_sx == sx2 && current_sy == sy2) break;
         int e2 = 2 * err;
-        if (e2 >= dy) {
-            if (sx == sx2) break;
-            err += dy;
-            sx += stepX;
+        if (e2 >= dy_abs) { // Favor X step
+            if (current_sx == sx2) break; // Reached end in X
+            err += dy_abs;
+            current_sx += stepX;
         }
-        if (e2 <= dx) {
-            if (sy == sy2) break;
-            err += dx;
-            sy += stepY;
+        if (e2 <= dx_abs) { // Favor Y step
+            if (current_sy == sy2) break; // Reached end in Y
+            err += dx_abs;
+            current_sy += stepY;
         }
     }
 }
-
-// Draws a logical pixel, conditionally based on the current fill pattern.
-void MicroPatternsDrawing::drawFilledPixel(int lx, int ly, const MicroPatternsState& state) {
-    if (!_canvas) return;
-    int sx, sy;
-    // Transform the logical coordinate (top-left corner)
-    transformPoint(lx, ly, state, sx, sy);
-
-    // Determine fill color based on the *screen* coordinate (top-left of block)
-    uint8_t fillColor = getFillColor(sx, sy, state);
-
-    if (fillColor != COLOR_WHITE) {
-         // Draw the scaled block if the fill color isn't transparent
-         int scale = round(state.scale);
-         if (scale < 1) scale = 1;
-         drawScaledBlock(sx, sy, scale, fillColor);
-    }
-}
-
-// Helper to draw a scaled block using fillRect for efficiency
-void MicroPatternsDrawing::drawScaledBlock(int screenX, int screenY, int scale, uint8_t color) {
-     if (!_canvas || scale <= 0) return;
-     // Ensure scale is at least 1
-     int drawScale = (scale < 1) ? 1 : scale;
-
-     // Basic bounds check for the rectangle
-     // Check if any part of the rectangle is within bounds
-     if (screenX + drawScale > 0 && screenX < _canvasWidth && screenY + drawScale > 0 && screenY < _canvasHeight) {
-          _canvas->fillRect(screenX, screenY, drawScale, drawScale, color);
-     }
-}
-
 
 // --- Fill Pattern Helper ---
-uint8_t MicroPatternsDrawing::getFillColor(int screenX, int screenY, const MicroPatternsState& state) {
+uint8_t MicroPatternsDrawing::getFillColor(float screen_pixel_center_x, float screen_pixel_center_y, const MicroPatternsState& state) {
     if (!state.fillAsset) {
-        // Solid fill
-        return state.color;
+        return state.color; // Solid fill
     } else {
-        // Pattern fill
         const MicroPatternsAsset& asset = *state.fillAsset;
-        if (asset.width <= 0 || asset.height <= 0 || asset.data.empty()) return COLOR_WHITE; // Invalid asset
+        if (asset.width <= 0 || asset.height <= 0 || asset.data.empty()) return DRAWING_COLOR_WHITE;
 
-        // Apply scaling to pattern coordinates
-        // Divide screen coordinates by scale factor to get the corresponding pattern coordinate
-        // This makes the pattern appear larger when scale factor increases
-        int scale = round(state.scale);
-        if (scale < 1) scale = 1;
-        
-        // IMPORTANT: We need to apply inverse transformations to get the correct pattern coordinates
-        // This ensures pattern rotation works for both FILL_RECT and FILL_CIRCLE
-        
-        // Start with the current screen position
-        int logicalX = screenX;
-        int logicalY = screenY;
-        
-        // Apply inverse transformations in reverse order
-        if (!state.transformations.empty()) {
-            // Track the accumulated rotation and origin offset (in reverse)
-            int currentAngle = 0;
-            int32_t originOffsetX = 0;
-            int32_t originOffsetY = 0;
-            
-            // Process transformations in forward order to calculate total angle and offset
-            for (const auto& transform : state.transformations) {
-                if (transform.type == TransformOp::ROTATE) {
-                    int degrees = static_cast<int>(round(transform.value1)) % 360;
-                    if (degrees < 0) degrees += 360;
-                    currentAngle = (currentAngle + degrees) % 360;
-                } else if (transform.type == TransformOp::TRANSLATE) {
-                    int32_t dx = round(transform.value1);
-                    int32_t dy = round(transform.value2);
-                    
-                    // Calculate global displacement based on current angle
-                    int sinA = _sinTable[currentAngle];
-                    int cosA = _cosTable[currentAngle];
-                    
-                    int32_t globalDX = FIXED_TO_INT(dx * cosA - dy * sinA);
-                    int32_t globalDY = FIXED_TO_INT(dx * sinA + dy * cosA);
-                    
-                    originOffsetX += globalDX;
-                    originOffsetY += globalDY;
-                }
-            }
-            
-            // Now apply inverse transformations
-            // 1. Undo translation
-            logicalX -= originOffsetX;
-            logicalY -= originOffsetY;
-            
-            // 2. Undo rotation (apply negative angle)
-            if (currentAngle != 0) {
-                int inverseAngle = (360 - currentAngle) % 360;
-                int sinD = _sinTable[inverseAngle];
-                int cosD = _cosTable[inverseAngle];
-                
-                int32_t rotatedX = FIXED_TO_INT(logicalX * cosD - logicalY * sinD);
-                int32_t rotatedY = FIXED_TO_INT(logicalX * sinD + logicalY * cosD);
-                
-                logicalX = rotatedX;
-                logicalY = rotatedY;
-            }
-        }
-        
-        // 3. Undo scaling
-        int scaledX = logicalX / scale;
-        int scaledY = logicalY / scale;
+        float base_lx, base_ly;
+        screenToLogicalBase(screen_pixel_center_x, screen_pixel_center_y, state, base_lx, base_ly);
 
-        // Tiling logic using logical coordinates
-        // Use floorDiv/floorMod style logic for correct negative coordinate handling
-        int assetX = scaledX % asset.width;
-        int assetY = scaledY % asset.height;
+        // Tiling logic using base logical coordinates
+        int assetX = static_cast<int>(floor(base_lx)) % asset.width;
+        int assetY = static_cast<int>(floor(base_ly)) % asset.height;
         if (assetX < 0) assetX += asset.width;
         if (assetY < 0) assetY += asset.height;
 
         int index = assetY * asset.width + assetX;
         if (index >= 0 && index < asset.data.size()) {
-            // Return state color if pattern bit is 1, otherwise white (transparent)
-            return asset.data[index] == 1 ? state.color : COLOR_WHITE;
-        } else {
-            // Should not happen with correct modulo logic, but safety check
-            log_e("Fill asset index out of bounds: (%d, %d) -> %d for screen (%d, %d)", assetX, assetY, index, screenX, screenY);
-            return COLOR_WHITE;
+            return asset.data[index] == 1 ? state.color : DRAWING_COLOR_WHITE;
+        }
+        // log_e("Fill asset index out of bounds: base_lx=%.2f, base_ly=%.2f -> asset (%d, %d) -> index %d. Screen (%.2f, %.2f)", base_lx, base_ly, assetX, assetY, index, screen_pixel_center_x, screen_pixel_center_y);
+        return DRAWING_COLOR_WHITE; // Default to white on error
+    }
+}
+
+// --- Drawing Primitives ---
+
+void MicroPatternsDrawing::drawPixel(int lx, int ly, const MicroPatternsState& state) {
+    if (!_canvas) return;
+
+    // A logical pixel (lx,ly) covers the area [lx, lx+1) x [ly, ly+1) in logical space.
+    // Transform its 4 corners to screen space.
+    float s_tl_x, s_tl_y, s_tr_x, s_tr_y, s_bl_x, s_bl_y, s_br_x, s_br_y;
+    transformPoint(static_cast<float>(lx), static_cast<float>(ly), state, s_tl_x, s_tl_y);
+    transformPoint(static_cast<float>(lx + 1), static_cast<float>(ly), state, s_tr_x, s_tr_y);
+    transformPoint(static_cast<float>(lx), static_cast<float>(ly + 1), state, s_bl_x, s_bl_y);
+    transformPoint(static_cast<float>(lx + 1), static_cast<float>(ly + 1), state, s_br_x, s_br_y);
+
+    // Determine screen-space bounding box (rounded to int for iteration)
+    int min_sx = static_cast<int>(floor(std::min({s_tl_x, s_tr_x, s_bl_x, s_br_x})));
+    int max_sx = static_cast<int>(ceil(std::max({s_tl_x, s_tr_x, s_bl_x, s_br_x})));
+    int min_sy = static_cast<int>(floor(std::min({s_tl_y, s_tr_y, s_bl_y, s_br_y})));
+    int max_sy = static_cast<int>(ceil(std::max({s_tl_y, s_tr_y, s_bl_y, s_br_y})));
+
+    // Clip to canvas
+    min_sx = std::max(0, min_sx);
+    min_sy = std::max(0, min_sy);
+    max_sx = std::min(_canvasWidth, max_sx);
+    max_sy = std::min(_canvasHeight, max_sy);
+
+    for (int sy_iter = min_sy; sy_iter < max_sy; ++sy_iter) {
+        for (int sx_iter = min_sx; sx_iter < max_sx; ++sx_iter) {
+            float screen_center_x = static_cast<float>(sx_iter) + 0.5f;
+            float screen_center_y = static_cast<float>(sy_iter) + 0.5f;
+
+            // Transform screen pixel center back to scaled logical coordinates
+            float scaled_logical_x, scaled_logical_y;
+            matrix_apply_to_point(state.inverseMatrix, screen_center_x, screen_center_y, scaled_logical_x, scaled_logical_y);
+
+            // Check if this scaled logical point is within the original logical pixel's scaled boundaries
+            float logical_pixel_start_x_scaled = static_cast<float>(lx) * state.scale;
+            float logical_pixel_end_x_scaled = static_cast<float>(lx + 1) * state.scale;
+            float logical_pixel_start_y_scaled = static_cast<float>(ly) * state.scale;
+            float logical_pixel_end_y_scaled = static_cast<float>(ly + 1) * state.scale;
+            
+            if (scaled_logical_x >= logical_pixel_start_x_scaled && scaled_logical_x < logical_pixel_end_x_scaled &&
+                scaled_logical_y >= logical_pixel_start_y_scaled && scaled_logical_y < logical_pixel_end_y_scaled) {
+                rawPixel(sx_iter, sy_iter, state.color);
+            }
+        }
+    }
+}
+
+void MicroPatternsDrawing::drawFilledPixel(int lx, int ly, const MicroPatternsState& state) {
+    if (!_canvas) return;
+    // Similar to drawPixel, but uses getFillColor
+    float s_tl_x, s_tl_y, s_tr_x, s_tr_y, s_bl_x, s_bl_y, s_br_x, s_br_y;
+    transformPoint(static_cast<float>(lx), static_cast<float>(ly), state, s_tl_x, s_tl_y);
+    transformPoint(static_cast<float>(lx + 1), static_cast<float>(ly), state, s_tr_x, s_tr_y);
+    transformPoint(static_cast<float>(lx), static_cast<float>(ly + 1), state, s_bl_x, s_bl_y);
+    transformPoint(static_cast<float>(lx + 1), static_cast<float>(ly + 1), state, s_br_x, s_br_y);
+
+    int min_sx = static_cast<int>(floor(std::min({s_tl_x, s_tr_x, s_bl_x, s_br_x})));
+    int max_sx = static_cast<int>(ceil(std::max({s_tl_x, s_tr_x, s_bl_x, s_br_x})));
+    int min_sy = static_cast<int>(floor(std::min({s_tl_y, s_tr_y, s_bl_y, s_br_y})));
+    int max_sy = static_cast<int>(ceil(std::max({s_tl_y, s_tr_y, s_bl_y, s_br_y})));
+
+    min_sx = std::max(0, min_sx);
+    min_sy = std::max(0, min_sy);
+    max_sx = std::min(_canvasWidth, max_sx);
+    max_sy = std::min(_canvasHeight, max_sy);
+
+    for (int sy_iter = min_sy; sy_iter < max_sy; ++sy_iter) {
+        for (int sx_iter = min_sx; sx_iter < max_sx; ++sx_iter) {
+            float screen_center_x = static_cast<float>(sx_iter) + 0.5f;
+            float screen_center_y = static_cast<float>(sy_iter) + 0.5f;
+
+            float scaled_logical_x, scaled_logical_y;
+            matrix_apply_to_point(state.inverseMatrix, screen_center_x, screen_center_y, scaled_logical_x, scaled_logical_y);
+            
+            float logical_pixel_start_x_scaled = static_cast<float>(lx) * state.scale;
+            float logical_pixel_end_x_scaled = static_cast<float>(lx + 1) * state.scale;
+            float logical_pixel_start_y_scaled = static_cast<float>(ly) * state.scale;
+            float logical_pixel_end_y_scaled = static_cast<float>(ly + 1) * state.scale;
+
+            if (scaled_logical_x >= logical_pixel_start_x_scaled && scaled_logical_x < logical_pixel_end_x_scaled &&
+                scaled_logical_y >= logical_pixel_start_y_scaled && scaled_logical_y < logical_pixel_end_y_scaled) {
+                uint8_t fillColor = getFillColor(screen_center_x, screen_center_y, state);
+                if (fillColor != DRAWING_COLOR_WHITE) {
+                    rawPixel(sx_iter, sy_iter, fillColor);
+                }
+            }
         }
     }
 }
 
 
-// --- Drawing Primitives ---
-
-// Draws a logical pixel as a scaled block
-void MicroPatternsDrawing::drawPixel(int lx, int ly, const MicroPatternsState& state) {
-    if (!_canvas) return;
-    int sx, sy;
-    // Transform the logical coordinate (center of the pixel?)
-    // Let's transform the top-left corner for consistency with fillRect etc.
-    transformPoint(lx, ly, state, sx, sy);
-
-    // Draw a scaled block at the transformed screen coordinate
-    int scale = round(state.scale);
-    drawScaledBlock(sx, sy, scale, state.color);
-}
-
 void MicroPatternsDrawing::drawLine(int lx1, int ly1, int lx2, int ly2, const MicroPatternsState& state) {
     if (!_canvas) return;
-    int sx1, sy1, sx2, sy2;
-    transformPoint(lx1, ly1, state, sx1, sy1);
-    transformPoint(lx2, ly2, state, sx2, sy2);
-    // Draw line between transformed screen points using raw pixels
-    rawLine(sx1, sy1, sx2, sy2, state.color);
+    float sx1_f, sy1_f, sx2_f, sy2_f;
+    transformPoint(static_cast<float>(lx1), static_cast<float>(ly1), state, sx1_f, sy1_f);
+    transformPoint(static_cast<float>(lx2), static_cast<float>(ly2), state, sx2_f, sy2_f);
+    rawLine(static_cast<int>(round(sx1_f)), static_cast<int>(round(sy1_f)),
+            static_cast<int>(round(sx2_f)), static_cast<int>(round(sy2_f)), state.color);
 }
 
 void MicroPatternsDrawing::drawRect(int lx, int ly, int lw, int lh, const MicroPatternsState& state) {
     if (!_canvas || lw <= 0 || lh <= 0) return;
-    // Transform corners
-    int sx1, sy1, sx2, sy2, sx3, sy3, sx4, sy4;
-    // Transform corners relative to logical origin (lx, ly)
-    transformPoint(lx, ly, state, sx1, sy1);             // Top-left
-    transformPoint(lx + lw -1, ly, state, sx2, sy2);         // Top-right
-    transformPoint(lx + lw -1, ly + lh -1, state, sx3, sy3); // Bottom-right
-    transformPoint(lx, ly + lh -1, state, sx4, sy4);         // Bottom-left
+    float s_tl_x, s_tl_y, s_tr_x, s_tr_y, s_bl_x, s_bl_y, s_br_x, s_br_y;
+    transformPoint(static_cast<float>(lx), static_cast<float>(ly), state, s_tl_x, s_tl_y);
+    transformPoint(static_cast<float>(lx + lw), static_cast<float>(ly), state, s_tr_x, s_tr_y); // Use lw, not lw-1 for rect "edge"
+    transformPoint(static_cast<float>(lx), static_cast<float>(ly + lh), state, s_bl_x, s_bl_y);
+    transformPoint(static_cast<float>(lx + lw), static_cast<float>(ly + lh), state, s_br_x, s_br_y);
 
-    // Draw sides using raw pixels between transformed screen coordinates
-    rawLine(sx1, sy1, sx2, sy2, state.color); // Top
-    rawLine(sx2, sy2, sx3, sy3, state.color); // Right
-    rawLine(sx3, sy3, sx4, sy4, state.color); // Bottom
-    rawLine(sx4, sy4, sx1, sy1, state.color); // Left
+    rawLine(round(s_tl_x), round(s_tl_y), round(s_tr_x), round(s_tr_y), state.color); // Top
+    rawLine(round(s_tr_x), round(s_tr_y), round(s_br_x), round(s_br_y), state.color); // Right
+    rawLine(round(s_br_x), round(s_br_y), round(s_bl_x), round(s_bl_y), state.color); // Bottom
+    rawLine(round(s_bl_x), round(s_bl_y), round(s_tl_x), round(s_tl_y), state.color); // Left
 }
 
-// Fills a rectangle by iterating through logical pixels, transforming, and drawing scaled blocks.
 void MicroPatternsDrawing::fillRect(int lx, int ly, int lw, int lh, const MicroPatternsState& state) {
     if (!_canvas || lw <= 0 || lh <= 0) return;
-    int scale = round(state.scale);
-    if (scale < 1) scale = 1;
+
+    float s_tl_x, s_tl_y, s_tr_x, s_tr_y, s_bl_x, s_bl_y, s_br_x, s_br_y;
+    transformPoint(static_cast<float>(lx), static_cast<float>(ly), state, s_tl_x, s_tl_y);
+    transformPoint(static_cast<float>(lx + lw), static_cast<float>(ly), state, s_tr_x, s_tr_y);
+    transformPoint(static_cast<float>(lx), static_cast<float>(ly + lh), state, s_bl_x, s_bl_y);
+    transformPoint(static_cast<float>(lx + lw), static_cast<float>(ly + lh), state, s_br_x, s_br_y);
+
+    int min_sx = static_cast<int>(floor(std::min({s_tl_x, s_tr_x, s_bl_x, s_br_x})));
+    int max_sx = static_cast<int>(ceil(std::max({s_tl_x, s_tr_x, s_bl_x, s_br_x})));
+    int min_sy = static_cast<int>(floor(std::min({s_tl_y, s_tr_y, s_bl_y, s_br_y})));
+    int max_sy = static_cast<int>(ceil(std::max({s_tl_y, s_tr_y, s_bl_y, s_br_y})));
+
+    min_sx = std::max(0, min_sx);
+    min_sy = std::max(0, min_sy);
+    max_sx = std::min(_canvasWidth, max_sx);
+    max_sy = std::min(_canvasHeight, max_sy);
 
     int pixelCount = 0;
-    // Iterate through logical grid within the rectangle
-    for (int iy = 0; iy < lh; ++iy) {
-        for (int ix = 0; ix < lw; ++ix) {
-            // Yield periodically
-            if (pixelCount > 0 && pixelCount % 500 == 0) { // Adjust frequency as needed
+    for (int sy_iter = min_sy; sy_iter < max_sy; ++sy_iter) {
+        for (int sx_iter = min_sx; sx_iter < max_sx; ++sx_iter) {
+            if (pixelCount > 0 && pixelCount % 2000 == 0) { // Yield less frequently for fillRect
                 yield();
-                
-                // Reset watchdog periodically during intensive drawing
-                if (pixelCount % 2000 == 0) {
+                if (pixelCount % 8000 == 0) {
                     esp_task_wdt_reset();
                 }
             }
             pixelCount++;
 
-            // Transform the top-left corner of this logical pixel
-            int sx, sy;
-            transformPoint(lx + ix, ly + iy, state, sx, sy);
+            float screen_center_x = static_cast<float>(sx_iter) + 0.5f;
+            float screen_center_y = static_cast<float>(sy_iter) + 0.5f;
 
-            // Determine fill color based on the *screen* coordinate (top-left of block)
-            uint8_t fillColor = getFillColor(sx, sy, state);
+            float scaled_logical_x, scaled_logical_y;
+            matrix_apply_to_point(state.inverseMatrix, screen_center_x, screen_center_y, scaled_logical_x, scaled_logical_y);
 
-            if (fillColor != COLOR_WHITE) {
-                 // Draw the scaled block
-                 drawScaledBlock(sx, sy, scale, fillColor);
+            float logical_rect_start_x_scaled = static_cast<float>(lx) * state.scale;
+            float logical_rect_end_x_scaled = static_cast<float>(lx + lw) * state.scale;
+            float logical_rect_start_y_scaled = static_cast<float>(ly) * state.scale;
+            float logical_rect_end_y_scaled = static_cast<float>(ly + lh) * state.scale;
+
+            if (scaled_logical_x >= logical_rect_start_x_scaled && scaled_logical_x < logical_rect_end_x_scaled &&
+                scaled_logical_y >= logical_rect_start_y_scaled && scaled_logical_y < logical_rect_end_y_scaled) {
+                uint8_t fillColor = getFillColor(screen_center_x, screen_center_y, state);
+                if (fillColor != DRAWING_COLOR_WHITE) {
+                    rawPixel(sx_iter, sy_iter, fillColor);
+                }
             }
         }
     }
+    esp_task_wdt_reset(); // Ensure WDT is reset after the loop
 }
 
-// Draws circle outline using Midpoint algorithm on screen coordinates.
 void MicroPatternsDrawing::drawCircle(int lcx, int lcy, int lr, const MicroPatternsState& state) {
      if (!_canvas || lr <= 0) return;
-     int scx, scy;
-     // Transform the logical center
-     transformPoint(lcx, lcy, state, scx, scy);
-     // Scale the logical radius
-     int scaledRadius = round(lr * state.scale);
+     
+     // For outline, we can approximate by transforming many points on the circle's circumference
+     // or by transforming the center and scaling the radius (less accurate for non-uniform scale/shear).
+     // A simpler approach for now: transform center, scale radius, draw screen-space circle.
+     float scx_f, scy_f;
+     transformPoint(static_cast<float>(lcx), static_cast<float>(lcy), state, scx_f, scy_f);
+     
+     // Estimate screen radius. This is an approximation.
+     // Consider the maximum scaling effect of the matrix part.
+     float mat_scale_x = sqrtf(state.matrix[0]*state.matrix[0] + state.matrix[1]*state.matrix[1]);
+     float mat_scale_y = sqrtf(state.matrix[2]*state.matrix[2] + state.matrix[3]*state.matrix[3]);
+     float screen_radius_approx = static_cast<float>(lr) * state.scale * std::max(mat_scale_x, mat_scale_y);
+     
+     int scx = static_cast<int>(round(scx_f));
+     int scy = static_cast<int>(round(scy_f));
+     int scaledRadius = static_cast<int>(round(screen_radius_approx));
      if (scaledRadius < 1) scaledRadius = 1;
 
-     // Basic Midpoint circle algorithm (operating on screen coordinates)
+     // Basic Midpoint circle algorithm
      int x = scaledRadius;
      int y = 0;
-     int err = 1 - scaledRadius; // Initial error term
+     int err = 1 - scaledRadius;
 
      while (x >= y) {
-         // Draw 8 octants using raw pixels
-         rawPixel(scx + x, scy + y, state.color);
-         rawPixel(scx + y, scy + x, state.color);
-         rawPixel(scx - y, scy + x, state.color);
-         rawPixel(scx - x, scy + y, state.color);
-         rawPixel(scx - x, scy - y, state.color);
-         rawPixel(scx - y, scy - x, state.color);
-         rawPixel(scx + y, scy - x, state.color);
-         rawPixel(scx + x, scy - y, state.color);
-
+         rawPixel(scx + x, scy + y, state.color); rawPixel(scx + y, scy + x, state.color);
+         rawPixel(scx - y, scy + x, state.color); rawPixel(scx - x, scy + y, state.color);
+         rawPixel(scx - x, scy - y, state.color); rawPixel(scx - y, scy - x, state.color);
+         rawPixel(scx + y, scy - x, state.color); rawPixel(scx + x, scy - y, state.color);
          y++;
          if (err <= 0) {
              err += 2 * y + 1;
@@ -401,94 +327,126 @@ void MicroPatternsDrawing::drawCircle(int lcx, int lcy, int lr, const MicroPatte
      }
 }
 
-// Fills circle by iterating bounding box on screen, checking distance, uses fill color.
 void MicroPatternsDrawing::fillCircle(int lcx, int lcy, int lr, const MicroPatternsState& state) {
     if (!_canvas || lr <= 0) return;
-    int scx, scy;
-    // Transform logical center
-    transformPoint(lcx, lcy, state, scx, scy);
-    // Scale logical radius
-    float scaledRadius = lr * state.scale;
-    if (scaledRadius < 0.5f) return; // Don't draw if radius is too small
-    float rSquared = scaledRadius * scaledRadius;
 
-    // Calculate screen bounding box (integer coords)
-    int minX = floor(scx - scaledRadius);
-    int minY = floor(scy - scaledRadius);
-    int maxX = ceil(scx + scaledRadius);
-    int maxY = ceil(scy + scaledRadius);
+    // Transform the 8 points on the bounding box of the logical circle to find screen bounding box
+    // This is more robust than just transforming center and scaling radius for arbitrary transforms.
+    float logical_radius = static_cast<float>(lr);
+    float s_pts_x[8], s_pts_y[8];
+    transformPoint(static_cast<float>(lcx), static_cast<float>(lcy - logical_radius), state, s_pts_x[0], s_pts_y[0]); // Top
+    transformPoint(static_cast<float>(lcx + logical_radius), static_cast<float>(lcy), state, s_pts_x[1], s_pts_y[1]); // Right
+    transformPoint(static_cast<float>(lcx), static_cast<float>(lcy + logical_radius), state, s_pts_x[2], s_pts_y[2]); // Bottom
+    transformPoint(static_cast<float>(lcx - logical_radius), static_cast<float>(lcy), state, s_pts_x[3], s_pts_y[3]); // Left
+    // Diagonal points for better bounding box with rotation
+    float diag_offset = logical_radius * 0.7071f; // approx 1/sqrt(2)
+    transformPoint(static_cast<float>(lcx + diag_offset), static_cast<float>(lcy - diag_offset), state, s_pts_x[4], s_pts_y[4]);
+    transformPoint(static_cast<float>(lcx + diag_offset), static_cast<float>(lcy + diag_offset), state, s_pts_x[5], s_pts_y[5]);
+    transformPoint(static_cast<float>(lcx - diag_offset), static_cast<float>(lcy + diag_offset), state, s_pts_x[6], s_pts_y[6]);
+    transformPoint(static_cast<float>(lcx - diag_offset), static_cast<float>(lcy - diag_offset), state, s_pts_x[7], s_pts_y[7]);
 
-     // Clip bounding box to canvas
-     minX = max(0, minX);
-     minY = max(0, minY);
-     maxX = min(_canvasWidth, maxX);
-     maxY = min(_canvasHeight, maxY);
+    float min_sx_f = s_pts_x[0], max_sx_f = s_pts_x[0];
+    float min_sy_f = s_pts_y[0], max_sy_f = s_pts_y[0];
+    for(int i=1; i<8; ++i) {
+        min_sx_f = std::min(min_sx_f, s_pts_x[i]); max_sx_f = std::max(max_sx_f, s_pts_x[i]);
+        min_sy_f = std::min(min_sy_f, s_pts_y[i]); max_sy_f = std::max(max_sy_f, s_pts_y[i]);
+    }
 
-     int pixelCount = 0;
-     // Iterate through screen pixels in the bounding box
-    for (int sy = minY; sy < maxY; ++sy) {
-        for (int sx = minX; sx < maxX; ++sx) {
-            // Yield periodically
-            if (pixelCount > 0 && pixelCount % 1000 == 0) { // Adjust frequency as needed
+    int min_sx = static_cast<int>(floor(min_sx_f));
+    int max_sx = static_cast<int>(ceil(max_sx_f));
+    int min_sy = static_cast<int>(floor(min_sy_f));
+    int max_sy = static_cast<int>(ceil(max_sy_f));
+    
+    min_sx = std::max(0, min_sx);
+    min_sy = std::max(0, min_sy);
+    max_sx = std::min(_canvasWidth, max_sx);
+    max_sy = std::min(_canvasHeight, max_sy);
+
+    float logical_radius_sq = logical_radius * logical_radius;
+    int pixelCount = 0;
+
+    for (int sy_iter = min_sy; sy_iter < max_sy; ++sy_iter) {
+        for (int sx_iter = min_sx; sx_iter < max_sx; ++sx_iter) {
+            if (pixelCount > 0 && pixelCount % 2000 == 0) {
                 yield();
-                
-                // Reset watchdog periodically during intensive drawing
-                if (pixelCount % 4000 == 0) {
+                if (pixelCount % 8000 == 0) {
                     esp_task_wdt_reset();
                 }
             }
             pixelCount++;
 
-            // Check if the center of the screen pixel is inside the circle
-            float dx = (float)sx + 0.5f - scx;
-            float dy = (float)sy + 0.5f - scy;
-            if (dx * dx + dy * dy <= rSquared) {
-                // Get fill color for this screen pixel
-                uint8_t fillColor = getFillColor(sx, sy, state);
-                if (fillColor != COLOR_WHITE) {
-                    // Draw a single raw pixel
-                    rawPixel(sx, sy, fillColor);
+            float screen_center_x = static_cast<float>(sx_iter) + 0.5f;
+            float screen_center_y = static_cast<float>(sy_iter) + 0.5f;
+
+            float base_logical_x, base_logical_y; // Use base logical for distance check
+            screenToLogicalBase(screen_center_x, screen_center_y, state, base_logical_x, base_logical_y);
+
+            float dx = base_logical_x - lcx;
+            float dy = base_logical_y - lcy;
+
+            if (dx * dx + dy * dy <= logical_radius_sq) {
+                uint8_t fillColor = getFillColor(screen_center_x, screen_center_y, state);
+                if (fillColor != DRAWING_COLOR_WHITE) {
+                    rawPixel(sx_iter, sy_iter, fillColor);
                 }
             }
         }
     }
+    esp_task_wdt_reset();
 }
 
-// Draws a defined pattern asset by transforming each of its 'on' pixels.
-void MicroPatternsDrawing::drawAsset(int lx, int ly, const MicroPatternsAsset& asset, const MicroPatternsState& state) {
+void MicroPatternsDrawing::drawAsset(int lx_asset_origin, int ly_asset_origin, const MicroPatternsAsset& asset, const MicroPatternsState& state) {
     if (!_canvas || asset.width <= 0 || asset.height <= 0 || asset.data.empty()) return;
 
-    int scale = round(state.scale);
-    if (scale < 1) scale = 1;
+    float s_tl_x, s_tl_y, s_tr_x, s_tr_y, s_bl_x, s_bl_y, s_br_x, s_br_y;
+    transformPoint(static_cast<float>(lx_asset_origin), static_cast<float>(ly_asset_origin), state, s_tl_x, s_tl_y);
+    transformPoint(static_cast<float>(lx_asset_origin + asset.width), static_cast<float>(ly_asset_origin), state, s_tr_x, s_tr_y);
+    transformPoint(static_cast<float>(lx_asset_origin), static_cast<float>(ly_asset_origin + asset.height), state, s_bl_x, s_bl_y);
+    transformPoint(static_cast<float>(lx_asset_origin + asset.width), static_cast<float>(ly_asset_origin + asset.height), state, s_br_x, s_br_y);
+
+    int min_sx = static_cast<int>(floor(std::min({s_tl_x, s_tr_x, s_bl_x, s_br_x})));
+    int max_sx = static_cast<int>(ceil(std::max({s_tl_x, s_tr_x, s_bl_x, s_br_x})));
+    int min_sy = static_cast<int>(floor(std::min({s_tl_y, s_tr_y, s_bl_y, s_br_y})));
+    int max_sy = static_cast<int>(ceil(std::max({s_tl_y, s_tr_y, s_bl_y, s_br_y})));
+
+    min_sx = std::max(0, min_sx);
+    min_sy = std::max(0, min_sy);
+    max_sx = std::min(_canvasWidth, max_sx);
+    max_sy = std::min(_canvasHeight, max_sy);
 
     int pixelCount = 0;
-    // Iterate through the asset's logical pixels
-    for (int iy = 0; iy < asset.height; ++iy) {
-        for (int ix = 0; ix < asset.width; ++ix) {
-            // Yield periodically
-            if (pixelCount > 0 && pixelCount % 200 == 0) { // Adjust frequency as needed
+    for (int sy_iter = min_sy; sy_iter < max_sy; ++sy_iter) {
+        for (int sx_iter = min_sx; sx_iter < max_sx; ++sx_iter) {
+             if (pixelCount > 0 && pixelCount % 1000 == 0) {
                 yield();
-                
-                // Reset watchdog periodically during intensive drawing
-                if (pixelCount % 1000 == 0) {
+                 if (pixelCount % 4000 == 0) {
                     esp_task_wdt_reset();
                 }
             }
             pixelCount++;
 
-            int index = iy * asset.width + ix;
-            if (index < asset.data.size() && asset.data[index] == 1) { // If asset pixel is 'on' (1)
-                // Calculate the logical position of this asset pixel
-                int logicalPixelX = lx + ix;
-                int logicalPixelY = ly + iy;
+            float screen_center_x = static_cast<float>(sx_iter) + 0.5f;
+            float screen_center_y = static_cast<float>(sy_iter) + 0.5f;
 
-                // Transform this logical point to screen space (top-left of the block)
-                int screenX, screenY;
-                transformPoint(logicalPixelX, logicalPixelY, state, screenX, screenY);
+            float base_logical_x, base_logical_y;
+            screenToLogicalBase(screen_center_x, screen_center_y, state, base_logical_x, base_logical_y);
 
-                // Draw a scaled block at the transformed position using the current state color
-                drawScaledBlock(screenX, screenY, scale, state.color);
+            // Convert base_logical_x/y to asset's local coordinates
+            float asset_local_x = base_logical_x - lx_asset_origin;
+            float asset_local_y = base_logical_y - ly_asset_origin;
+
+            if (asset_local_x >= 0 && asset_local_x < asset.width &&
+                asset_local_y >= 0 && asset_local_y < asset.height) {
+                
+                int asset_ix = static_cast<int>(floor(asset_local_x));
+                int asset_iy = static_cast<int>(floor(asset_local_y));
+                int asset_data_index = asset_iy * asset.width + asset_ix;
+
+                if (asset_data_index >= 0 && asset_data_index < asset.data.size() && asset.data[asset_data_index] == 1) {
+                    rawPixel(sx_iter, sy_iter, state.color); // DRAW uses current state.color
+                }
             }
         }
     }
+    esp_task_wdt_reset();
 }

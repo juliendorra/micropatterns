@@ -1,6 +1,7 @@
 #include "micropatterns_runtime.h"
 #include "esp32-hal-log.h" // For logging errors
 #include <Arduino.h>       // For yield()
+#include "matrix_utils.h"  // For matrix operations
 
 // Define colors (consistent with drawing class)
 const uint8_t RUNTIME_COLOR_WHITE = 0;
@@ -622,21 +623,42 @@ void MicroPatternsRuntime::executeCommand(const MicroPatternsCommand &cmd, int l
             break;
         }
         case CMD_RESET_TRANSFORMS:
-            _currentState.scale = 1.0;
-            _currentState.transformations.clear();
+            _currentState.scale = 1.0f;
+            matrix_identity(_currentState.matrix);
+            matrix_identity(_currentState.inverseMatrix);
             break;
         case CMD_TRANSLATE:
         {
-            int dx = resolveIntParam("DX", cmd.params, 0, cmd.lineNumber, loopIndex);
-            int dy = resolveIntParam("DY", cmd.params, 0, cmd.lineNumber, loopIndex);
-            _currentState.transformations.emplace_back(TransformOp::TRANSLATE, dx, dy);
+            float dx = static_cast<float>(resolveIntParam("DX", cmd.params, 0, cmd.lineNumber, loopIndex));
+            float dy = static_cast<float>(resolveIntParam("DY", cmd.params, 0, cmd.lineNumber, loopIndex));
+            
+            float T_op[6];
+            matrix_make_translation(T_op, dx, dy);
+
+            // M_new = M_current * T_op
+            matrix_multiply(_currentState.matrix, _currentState.matrix, T_op); // Multiply in place is fine if matrix_multiply handles it (it does via temp)
+            
+            if (!matrix_invert(_currentState.inverseMatrix, _currentState.matrix)) {
+                runtimeError("Matrix became non-invertible after TRANSLATE.", cmd.lineNumber);
+                // Optionally reset to identity to prevent further issues
+                // matrix_identity(_currentState.matrix);
+                // matrix_identity(_currentState.inverseMatrix);
+            }
             break;
         }
         case CMD_ROTATE:
         {
-            int degrees = resolveIntParam("DEGREES", cmd.params, 0, cmd.lineNumber, loopIndex);
-            // Store the absolute rotation degrees for this operation
-            _currentState.transformations.emplace_back(TransformOp::ROTATE, degrees);
+            float degrees = static_cast<float>(resolveIntParam("DEGREES", cmd.params, 0, cmd.lineNumber, loopIndex));
+
+            float R_op[6];
+            matrix_make_rotation(R_op, degrees);
+
+            // M_new = M_current * R_op
+            matrix_multiply(_currentState.matrix, _currentState.matrix, R_op);
+
+            if (!matrix_invert(_currentState.inverseMatrix, _currentState.matrix)) {
+                 runtimeError("Matrix became non-invertible after ROTATE.", cmd.lineNumber);
+            }
             break;
         }
         case CMD_SCALE:
