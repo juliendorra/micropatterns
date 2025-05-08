@@ -1,0 +1,42 @@
+without optimizations
+
+[196325][D][micropatterns_runtime.cpp:107] resolveValue(): Runtime resolveValue accessing $SECOND: 21
+[196326][D][micropatterns_runtime.cpp:102] resolveValue(): Runtime resolveValue accessing $COUNTER: 4
+[243409][I][main.cpp:527] handleWakeupAndScriptExecution(): Script 'art-deco-3' execution and rendering took 48072 ms.
+
+[270065][D][micropatterns_runtime.cpp:107] resolveValue(): Runtime resolveValue accessing $SECOND: 34
+[270066][D][micropatterns_runtime.cpp:102] resolveValue(): Runtime resolveValue accessing $COUNTER: 5
+[312381][V][WiFiGeneric.cpp:372] _arduino_event_cb(): STA IP Lost
+[312381][D][WiFiGeneric.cpp:929] _eventCallback(): Arduino Event: 9 - STA_LOST_IP
+[318754][I][main.cpp:527] handleWakeupAndScriptExecution(): Script 'art-deco-3' execution and rendering took 49677 ms.
+
+[361361][D][micropatterns_runtime.cpp:107] resolveValue(): Runtime resolveValue accessing $SECOND: 5
+[361362][D][micropatterns_runtime.cpp:102] resolveValue(): Runtime resolveValue accessing $COUNTER: 6
+[391113][I][main.cpp:527] handleWakeupAndScriptExecution(): Script 'art-deco-3' execution and rendering took 30741 ms.
+
+With optimizations
+
+[105340][D][micropatterns_runtime.cpp:108] resolveValue(): Runtime resolveValue accessing $SECOND: 56
+[105341][D][micropatterns_runtime.cpp:103] resolveValue(): Runtime resolveValue accessing $COUNTER: 3
+[123449][I][main.cpp:527] handleWakeupAndScriptExecution(): Script 'art-deco-3' execution and rendering took 18724 ms.
+
+[138486][D][micropatterns_runtime.cpp:108] resolveValue(): Runtime resolveValue accessing $SECOND: 29
+[138487][D][micropatterns_runtime.cpp:103] resolveValue(): Runtime resolveValue accessing $COUNTER: 4
+[152901][I][main.cpp:527] handleWakeupAndScriptExecution(): Script 'art-deco-3' execution and rendering took 15031 ms.
+
+[230326][D][micropatterns_runtime.cpp:494] execute(): Runtime execute start - Counter after resetState: 5
+[230941][D][micropatterns_runtime.cpp:108] resolveValue(): Runtime resolveValue accessing $SECOND: 1
+[230942][D][micropatterns_runtime.cpp:103] resolveValue(): Runtime resolveValue accessing $COUNTER: 5
+[240428][I][main.cpp:527] handleWakeupAndScriptExecution(): Script 'art-deco-3' execution and rendering took 10102 ms.
+
+[271534][D][micropatterns_runtime.cpp:108] resolveValue(): Runtime resolveValue accessing $SECOND: 41
+[271535][D][micropatterns_runtime.cpp:103] resolveValue(): Runtime resolveValue accessing $COUNTER: 6
+[285288][I][main.cpp:527] handleWakeupAndScriptExecution(): Script 'art-deco-3' execution and rendering took 14370 ms.
+
+[297546][D][micropatterns_runtime.cpp:108] resolveValue(): Runtime resolveValue accessing $SECOND: 7
+[297547][D][micropatterns_runtime.cpp:103] resolveValue(): Runtime resolveValue accessing $COUNTER: 7
+[308428][I][main.cpp:527] handleWakeupAndScriptExecution(): Script 'art-deco-3' execution and rendering took 11497 ms.
+
+[320736][D][micropatterns_runtime.cpp:108] resolveValue(): Runtime resolveValue accessing $SECOND: 30
+[320737][D][micropatterns_runtime.cpp:103] resolveValue(): Runtime resolveValue accessing $COUNTER: 8
+[334188][I][main.cpp:527] handleWakeupAndScriptExecution(): Script 'art-deco-3' execution and rendering took 14067 ms.

@@ -578,12 +578,12 @@ void handleWakeupAndScriptExecution(uint8_t raw_gpio_from_isr) // Modified signa
 
             if (elapsed_minutes >= 120)
             {
-                log_i("Allowing fetch: Same date, but >= 2 minutes passed (elapsed: %d min).", elapsed_minutes);
+                log_i("Allowing fetch: Same date, but >= 120 minutes passed (elapsed: %d min).", elapsed_minutes);
                 allowFetch = true;
             }
             else
             {
-                log_i("Skipping fetch: Same date and < 2 minutes passed since last successful fetch (Last: %02d:%02d, Now: %02d:%02d, Elapsed: %d min).",
+                log_i("Skipping fetch: Same date and < 120 minutes passed since last successful fetch (Last: %02d:%02d, Now: %02d:%02d, Elapsed: %d min).",
                       last_fetch_hour, last_fetch_minute, currentTime.hour, currentTime.min, elapsed_minutes);
                 allowFetch = false;
             }
