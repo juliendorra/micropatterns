@@ -47,6 +47,7 @@ const s3client = new S3Client({
 });
 
 const SCRIPTS_INDEX_KEY = "scripts.json";
+const DEVICE_SCRIPTS_INDEX_KEY = "scripts-device.json"; // New key for device-specific list
 const SCRIPT_PREFIX = "scripts/"; // Folder for individual scripts
 
 // --- Script Index Operations ---
@@ -84,6 +85,41 @@ export async function saveScriptsIndex(indexData: any[]): Promise<boolean> {
     }
 }
 
+// --- Device-Specific Script Index Operations ---
+
+export async function getDeviceScriptsIndex(): Promise<any[]> {
+    try {
+        const response = await s3client.getObject(DEVICE_SCRIPTS_INDEX_KEY);
+        if (!response) return []; // Index doesn't exist yet
+        const content = await response.text();
+        return JSON.parse(content || "[]");
+    } catch (error) {
+        if (error.message.includes("NoSuchKey") || error.message.includes("Object not found") || error.message.includes("404")) {
+            console.log(`[S3] Device scripts index ('${DEVICE_SCRIPTS_INDEX_KEY}') not found, returning empty list.`);
+            return [];
+        }
+        console.error(`[S3] Error getting device scripts index ('${DEVICE_SCRIPTS_INDEX_KEY}'):`, error.message);
+        return [];
+    }
+}
+
+export async function saveDeviceScriptsIndex(indexData: any[]): Promise<boolean> {
+    try {
+        const dataString = JSON.stringify(indexData, null, 2);
+        await s3client.putObject(
+            DEVICE_SCRIPTS_INDEX_KEY,
+            new TextEncoder().encode(dataString),
+            { metadata: { "Content-Type": "application/json; charset=utf-8" } }
+        );
+        console.log("[S3] Device scripts index saved successfully.");
+        return true;
+    } catch (error) {
+        console.error("[S3] Error saving device scripts index:", error.message);
+        return false;
+    }
+}
+
+
 // --- Individual Script Operations ---
 
 function getScriptKey(scriptId: string): string {
@@ -101,11 +137,11 @@ export async function getScript(scriptId: string): Promise<any | null> {
         const content = await response.text();
         return JSON.parse(content);
     } catch (error) {
-         if (error.message.includes("NoSuchKey") || error.message.includes("Object not found")) {
-            console.log(`[S3] Script '${scriptId}' not found.`);
+         if (error.message.includes("NoSuchKey") || error.message.includes("Object not found") || error.message.includes("404")) {
+            console.log(`[S3] Script '${scriptId}' (key: '${key}') not found.`);
             return null;
         }
-        console.error(`[S3] Error getting script '${scriptId}':`, error.message);
+        console.error(`[S3] Error getting script '${scriptId}' (key: '${key}'):`, error.message);
         return null;
     }
 }

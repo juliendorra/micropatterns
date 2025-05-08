@@ -844,7 +844,7 @@ FetchResultStatus perform_fetch_operations()
     vTaskDelay(pdMS_TO_TICKS(10)); // Yield after SPIFFS load
 
     // 1. Fetch Script List from Server
-    String listUrl = String(API_BASE_URL) + "/api/scripts";
+    String listUrl = String(API_BASE_URL) + "/api/device/scripts";
     log_i("perform_fetch_operations: Fetching script list from: %s", listUrl.c_str());
 
     if (g_user_interrupt_signal_for_fetch_task)

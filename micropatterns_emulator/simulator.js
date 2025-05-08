@@ -24,6 +24,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const saveScriptButton = document.getElementById('saveScriptButton');
     const newScriptButton = document.getElementById('newScriptButton');
     const scriptMgmtStatus = document.getElementById('scriptMgmtStatus');
+    const deviceScriptListContainer = document.getElementById('deviceScriptListContainer');
 
     // --- Configuration ---
     // Assume server runs on localhost:8000 during development
@@ -816,7 +817,7 @@ document.addEventListener('DOMContentLoaded', () => {
             // Clear existing options (except the default)
             scriptListSelect.options.length = 1;
 
-            // Populate dropdown
+            // Populate dropdown for editor loading
             scripts.forEach(script => {
                 const option = document.createElement('option');
                 option.value = script.id;
@@ -826,10 +827,97 @@ document.addEventListener('DOMContentLoaded', () => {
             setStatusMessage("Script list loaded.", false);
             console.log("Script list loaded:", scripts);
 
+            // Fetch device-specific script list to populate checkboxes
+            try {
+                const deviceScriptsResponse = await fetch(`${API_BASE_URL}/api/device/scripts`);
+                if (!deviceScriptsResponse.ok) {
+                    // If 404, it means no device scripts are selected yet, which is fine.
+                    if (deviceScriptsResponse.status === 404) {
+                        console.log("No device-specific script list found (scripts-device.json). Assuming empty.");
+                        populateDeviceScriptList(scripts, []);
+                        return; // Exit after populating with all scripts unchecked
+                    }
+                    throw new Error(`Failed to fetch device script list: ${deviceScriptsResponse.status} ${deviceScriptsResponse.statusText}`);
+                }
+                const deviceScriptsArray = await deviceScriptsResponse.json();
+                const deviceScriptIds = deviceScriptsArray.map(s => s.id);
+                populateDeviceScriptList(scripts, deviceScriptIds);
+            } catch (deviceError) {
+                setStatusMessage(`Error loading device script selection: ${deviceError.message}`, true);
+                // Populate with all scripts unchecked if device list fails to load
+                populateDeviceScriptList(scripts, []);
+            }
+
         } catch (error) {
             setStatusMessage(`Error loading script list: ${error.message}`, true);
+            // Clear device script list on error too
+            if (deviceScriptListContainer) deviceScriptListContainer.innerHTML = '<p style="color: red; font-style: italic;">Error loading script list.</p>';
         }
     }
+
+    function populateDeviceScriptList(allScripts, deviceScriptIds) {
+        if (!deviceScriptListContainer) return;
+        deviceScriptListContainer.innerHTML = ''; // Clear previous
+
+        if (allScripts.length === 0) {
+            deviceScriptListContainer.innerHTML = '<p style="color: #777; font-style: italic;">No scripts available.</p>';
+            return;
+        }
+
+        allScripts.forEach(script => {
+            const itemDiv = document.createElement('div');
+            itemDiv.style.marginBottom = '3px';
+
+            const checkbox = document.createElement('input');
+            checkbox.type = 'checkbox';
+            checkbox.id = `device-script-${script.id}`;
+            checkbox.value = script.id;
+            checkbox.checked = deviceScriptIds.includes(script.id);
+            checkbox.addEventListener('change', updateDeviceSelection);
+
+            const label = document.createElement('label');
+            label.htmlFor = checkbox.id;
+            label.textContent = script.name;
+            label.style.marginLeft = '5px';
+            label.style.cursor = 'pointer';
+
+
+            itemDiv.appendChild(checkbox);
+            itemDiv.appendChild(label);
+            deviceScriptListContainer.appendChild(itemDiv);
+        });
+    }
+
+    async function updateDeviceSelection() {
+        if (!deviceScriptListContainer) return;
+        const selectedIds = [];
+        const checkboxes = deviceScriptListContainer.querySelectorAll('input[type="checkbox"]');
+        checkboxes.forEach(cb => {
+            if (cb.checked) {
+                selectedIds.push(cb.value);
+            }
+        });
+
+        console.log("Updating device selection with IDs:", selectedIds);
+        setStatusMessage("Updating device selection...");
+
+        try {
+            const response = await fetch(`${API_BASE_URL}/api/device/scripts`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ selectedIds: selectedIds })
+            });
+
+            if (!response.ok) {
+                const errorData = await response.json().catch(() => ({ error: 'Unknown error updating device selection' }));
+                throw new Error(`Failed: ${response.status} ${response.statusText} - ${errorData.error || ''}`);
+            }
+            setStatusMessage("Device script selection updated.", false);
+        } catch (error) {
+            setStatusMessage(`Error updating device selection: ${error.message}`, true);
+        }
+    }
+
 
     async function loadScript(scriptId) {
         if (!scriptId) {

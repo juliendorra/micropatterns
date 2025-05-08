@@ -24,8 +24,9 @@ async function handler(req: Request): Promise<Response> {
 
     try {
         // --- API Routes ---
+
+        // GET /api/scripts - Get full script index
         if (path === "/api/scripts" && method === "GET") {
-            // Get script index
             const index = await s3.getScriptsIndex();
             return new Response(JSON.stringify(index), {
                 status: 200,
@@ -33,6 +34,56 @@ async function handler(req: Request): Promise<Response> {
             });
         }
 
+        // GET /api/device/scripts - Returns the list of scripts selected for device sync
+        if (path === "/api/device/scripts" && method === "GET") {
+            const deviceIndex = await s3.getDeviceScriptsIndex();
+            return new Response(JSON.stringify(deviceIndex), {
+                status: 200,
+                headers: { ...corsHeaders, "Content-Type": "application/json" },
+            });
+        }
+
+        // PUT /api/device/scripts - Updates the list of scripts for device sync
+        if (path === "/api/device/scripts" && method === "PUT") {
+            let requestBody;
+            try {
+                requestBody = await req.json();
+            } catch (e) {
+                return new Response(JSON.stringify({ error: "Invalid JSON body" }), {
+                    status: 400,
+                    headers: { ...corsHeaders, "Content-Type": "application/json" },
+                });
+            }
+
+            if (!requestBody || !Array.isArray(requestBody.selectedIds)) {
+                return new Response(JSON.stringify({ error: "Missing 'selectedIds' array in request body" }), {
+                    status: 400,
+                    headers: { ...corsHeaders, "Content-Type": "application/json" },
+                });
+            }
+            const selectedIds: string[] = requestBody.selectedIds;
+
+            // Fetch all scripts to ensure we only add existing ones
+            const allScripts = await s3.getScriptsIndex();
+            const deviceScripts = allScripts.filter(script => selectedIds.includes(script.id));
+            
+            // The deviceScripts array now contains objects like {id, name} for selected scripts
+
+            const saveSuccess = await s3.saveDeviceScriptsIndex(deviceScripts);
+            if (saveSuccess) {
+                return new Response(JSON.stringify({ success: true, count: deviceScripts.length }), {
+                    status: 200,
+                    headers: { ...corsHeaders, "Content-Type": "application/json" },
+                });
+            } else {
+                return new Response(JSON.stringify({ error: "Failed to save device script selection" }), {
+                    status: 500,
+                    headers: { ...corsHeaders, "Content-Type": "application/json" },
+                });
+            }
+        }
+
+        // Matches /api/scripts/:scriptId
         const scriptMatch = path.match(/^\/api\/scripts\/([a-zA-Z0-9-_]+)$/);
         if (scriptMatch && method === "GET") {
             // Get single script
@@ -63,7 +114,6 @@ async function handler(req: Request): Promise<Response> {
                     headers: { ...corsHeaders, "Content-Type": "application/json" },
                 });
             }
-
 
             if (!requestBody || typeof requestBody.name !== 'string' || typeof requestBody.content !== 'string') {
                 return new Response(JSON.stringify({ error: "Missing 'name' or 'content' in request body" }), {
@@ -104,14 +154,11 @@ async function handler(req: Request): Promise<Response> {
 
             const indexSaveSuccess = await s3.saveScriptsIndex(index);
             if (!indexSaveSuccess) {
-                 // Log error, but maybe still return success for script save?
                  console.error(`[Server] Script ${scriptId} saved, but failed to update index.`);
-                 // Decide on response - let's return success but maybe with a warning?
-                 // For now, return success as the script itself is saved.
             }
 
             return new Response(JSON.stringify({ success: true, script: scriptData }), {
-                status: 200, // Or 201 if newly created? PUT is idempotent, so 200 is fine.
+                status: 200,
                 headers: { ...corsHeaders, "Content-Type": "application/json" },
             });
         }
