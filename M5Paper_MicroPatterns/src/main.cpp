@@ -63,8 +63,11 @@ RTC_DATA_ATTR int last_fetch_month = -1;
 RTC_DATA_ATTR int last_fetch_year = -1;
 RTC_Time time_struct;             // To store time from RTC
 RTC_Date date_struct;             // To store date from RTC
+RTC_DATA_ATTR int freshStartCounter = 0; // Counter for triggering full data refresh
 String currentScriptId = "";      // ID of the script to execute
 String currentScriptContent = ""; // Content of the script to execute
+
+#define FRESH_START_THRESHOLD 10 // Perform full refresh every 10 reboots (approx)
 
 // --- Tasking Globals ---
 TaskHandle_t g_fetchTaskHandle = NULL;
@@ -101,14 +104,94 @@ void displayParseErrors();
 void handleWakeupAndScriptExecution(uint8_t raw_gpio_from_isr); // Modified signature
 void fetchTaskFunction(void *pvParameters);
 FetchResultStatus perform_fetch_operations(); // Renamed and modified fetchAndStoreScripts
+void performFullDataRefresh(); // Declaration already in main.h, actual implementation below
 
 // Interrupt handling for wakeup pin is defined in global_setting.cpp
+
+void performFullDataRefresh() {
+    log_w("Performing full data refresh (deleting list.json, current_script.id, and content files).");
+
+    // Display message on screen - ensure canvas is ready
+    if (canvas.frameBuffer()) { // Check if canvas framebuffer is created
+        canvas.fillCanvas(0); // Clear screen
+        displayMessage("Full Data Refresh...", 100, 15);
+        canvas.pushCanvas(0, 0, UPDATE_MODE_GC16);
+        vTaskDelay(pdMS_TO_TICKS(1000)); // Show message for a bit
+    } else {
+        log_e("performFullDataRefresh: Canvas not ready for displaying message.");
+    }
+
+
+    // Delete list.json
+    if (SPIFFS.exists("/scripts/list.json")) {
+        if (SPIFFS.remove("/scripts/list.json")) {
+            log_i("performFullDataRefresh: Deleted /scripts/list.json");
+        } else {
+            log_e("performFullDataRefresh: Failed to delete /scripts/list.json");
+        }
+    } else {
+        log_i("performFullDataRefresh: /scripts/list.json not found, no need to delete.");
+    }
+
+    // Delete current_script.id
+    if (SPIFFS.exists("/current_script.id")) {
+        if (SPIFFS.remove("/current_script.id")) {
+            log_i("performFullDataRefresh: Deleted /current_script.id");
+        } else {
+            log_e("performFullDataRefresh: Failed to delete /current_script.id");
+        }
+    } else {
+        log_i("performFullDataRefresh: /current_script.id not found, no need to delete.");
+    }
+
+    // Delete all files in /scripts/content/
+    File root = SPIFFS.open("/scripts/content");
+    if (root) {
+        if (root.isDirectory()) {
+            File entry = root.openNextFile();
+            while (entry) {
+                if (!entry.isDirectory()) {
+                    String pathComponent = entry.name(); // Based on logs, this might be "s0", "s1", etc.
+                    String fullPathToDelete;
+
+                    if (pathComponent.startsWith("/")) {
+                        // If entry.name() somehow returned a full path, use it directly
+                        fullPathToDelete = pathComponent;
+                    } else {
+                        // Construct the full path using the known directory "/scripts/content/"
+                        fullPathToDelete = String("/scripts/content/") + pathComponent;
+                    }
+
+                    log_i("performFullDataRefresh: Attempting to delete: %s (derived from component: %s)",
+                          fullPathToDelete.c_str(), pathComponent.c_str());
+
+                    if (!SPIFFS.remove(fullPathToDelete.c_str())) {
+                        log_e("performFullDataRefresh: Failed to delete %s", fullPathToDelete.c_str());
+                    }
+                }
+                entry.close();
+                entry = root.openNextFile();
+            }
+        } else {
+             log_w("performFullDataRefresh: /scripts/content is not a directory.");
+        }
+        root.close();
+    } else {
+        log_w("performFullDataRefresh: Could not open /scripts/content directory.");
+    }
+    log_i("Full data refresh completed.");
+    // The system will now proceed to loadScriptToExecute, which will find nothing
+    // and trigger a fetch operation via its existing logic.
+}
 
 void setup()
 {
     SysInit_Start();
 
-    log_i("MicroPatterns M5Paper - Wakeup Cycle %d", executionCounter);
+    // Increment freshStartCounter early, but actual refresh happens after canvas init
+    freshStartCounter++;
+    log_i("MicroPatterns M5Paper - Wakeup Cycle %d. Fresh Start Counter: %d (Threshold: %d)",
+          executionCounter, freshStartCounter, FRESH_START_THRESHOLD);
 
     // Initialize watchdog for the main task (Core 1)
     esp_task_wdt_init(30, false); // 30 second timeout, don't panic on timeout
@@ -124,6 +207,21 @@ void setup()
             delay(1000); // Halt
     }
     log_i("Canvas created: %d x %d", canvas.width(), canvas.height());
+
+    // Perform full data refresh if conditions are met
+    // Condition 1: First boot after RTC_DATA_ATTR variable is initialized (e.g., after full power cycle or new flash where counter is 0)
+    // Condition 2: Counter reaches or exceeds the defined threshold
+    if (freshStartCounter == 1) {
+        log_i("Fresh Start: Counter is 1 (first boot cycle or reset). Performing full data refresh.");
+        performFullDataRefresh();
+        // Counter remains 1, will increment on next boot.
+    } else if (freshStartCounter >= FRESH_START_THRESHOLD) {
+        log_i("Fresh Start: Threshold (%d) reached. Performing full data refresh.", FRESH_START_THRESHOLD);
+        performFullDataRefresh();
+        freshStartCounter = 1; // Reset counter to 1 to restart the cycle towards threshold
+        log_i("Fresh Start: Counter reset to 1.");
+    }
+
 
     // Create FreeRTOS objects
     g_displayMessageQueue = xQueueCreate(5, sizeof(DisplayMsg));
@@ -1148,7 +1246,7 @@ bool selectNextScript(bool moveUp)
                 displayMessage((nextName ? nextName : nextId), 150, 15);
                 canvas.pushCanvas(0, 0, UPDATE_MODE_GC16);
                 vTaskDelay(pdMS_TO_TICKS(10)); // Yield after push
-                delay(1500);
+                vTaskDelay(pdMS_TO_TICKS(1500)); // Changed from delay()
                 return true;
             }
             else
