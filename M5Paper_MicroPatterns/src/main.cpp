@@ -517,8 +517,14 @@ void handleWakeupAndScriptExecution(uint8_t raw_gpio_from_isr) // Modified signa
         runtime->setTime(time_struct.hour, time_struct.min, time_struct.sec);
         runtime->setCounter(executionCounter);
 
+        unsigned long executionStartTime = millis();
+
         // Execute the script (this might take time for complex scripts)
         runtime->execute(); // This includes drawing and pushing canvas
+
+        unsigned long executionEndTime = millis();
+        unsigned long executionDuration = executionEndTime - executionStartTime;
+        log_i("Script '%s' execution and rendering took %lu ms.", currentScriptId.c_str(), executionDuration);
 
         // Reset watchdog timer after execution
         esp_task_wdt_reset();
