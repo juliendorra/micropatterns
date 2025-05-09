@@ -26,6 +26,10 @@ document.addEventListener('DOMContentLoaded', () => {
     const scriptMgmtStatus = document.getElementById('scriptMgmtStatus');
     const deviceScriptListContainer = document.getElementById('deviceScriptListContainer');
 
+    // --- Local Storage Keys ---
+    const LOCAL_STORAGE_SCRIPT_CONTENT_KEY = 'micropatterns_editor_content';
+    const LOCAL_STORAGE_SCRIPT_NAME_KEY = 'micropatterns_editor_script_name';
+
     // --- Configuration ---
     // Assume server runs on localhost:8000 during development
     // basic detect environment
@@ -103,6 +107,39 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     console.log("CodeMirror editor initialized:", codeMirrorEditor); // Check if editor object exists
+
+    // --- Load from Local Storage ---
+    const savedScriptContent = localStorage.getItem(LOCAL_STORAGE_SCRIPT_CONTENT_KEY);
+    if (savedScriptContent !== null) {
+        codeMirrorEditor.setValue(savedScriptContent);
+        console.log("Loaded script content from local storage.");
+    } else {
+        console.log("No script content found in local storage, using default from textarea.");
+    }
+
+    const savedScriptName = localStorage.getItem(LOCAL_STORAGE_SCRIPT_NAME_KEY);
+    if (savedScriptName !== null && scriptNameInput) {
+        scriptNameInput.value = savedScriptName;
+        console.log("Loaded script name from local storage.");
+    } else {
+        console.log("No script name found in local storage.");
+    }
+
+    // --- Save to Local Storage on Change ---
+    if (codeMirrorEditor) {
+        codeMirrorEditor.on('change', () => {
+            localStorage.setItem(LOCAL_STORAGE_SCRIPT_CONTENT_KEY, codeMirrorEditor.getValue());
+            // console.log("Saved script content to local storage."); // Can be noisy
+        });
+    }
+
+    if (scriptNameInput) {
+        scriptNameInput.addEventListener('input', () => {
+            localStorage.setItem(LOCAL_STORAGE_SCRIPT_NAME_KEY, scriptNameInput.value);
+            // console.log("Saved script name to local storage."); // Can be noisy
+        });
+    }
+
 
     // --- Line Wrap Toggle Logic ---
     if (lineWrapToggle && codeMirrorEditor) {
