@@ -11,154 +11,319 @@
     <!-- CodeMirror show-hint addon CSS -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.15/addon/hint/show-hint.min.css">
     <style>
+        :root {
+            --primary-color: #007bff;
+            --secondary-color: #6c757d;
+            --light-gray: #f8f9fa;
+            --medium-gray: #e9ecef;
+            --dark-gray: #343a40;
+            --border-color: #ced4da;
+            --error-color: #dc3545;
+            --success-color: #28a745;
+            --font-family-sans-serif: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            --font-family-monospace: SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+        }
+
         body {
-            font-family: sans-serif;
+            font-family: var(--font-family-sans-serif);
             display: flex;
-            gap: 20px;
-            padding: 10px;
+            gap: 25px;
+            padding: 20px;
+            background-color: var(--light-gray);
+            color: var(--dark-gray);
+            margin: 0;
+            line-height: 1.6;
         }
 
         .column {
             display: flex;
             flex-direction: column;
-            gap: 10px;
+            gap: 20px;
         }
+        .column:first-child {
+            flex: 2; /* Give more space to script editor column */
+        }
+        .column:last-child {
+            flex: 1; /* Less space for controls/display column */
+            max-width: 600px; /* Max width for the display column */
+        }
+
+
+        h2, h3 {
+            color: var(--dark-gray);
+            margin-top: 0;
+            margin-bottom: 0.75rem;
+        }
+        h2 { font-size: 1.75rem; }
+        h3 { font-size: 1.25rem; }
 
         #displayCanvas {
-            border: 1px solid black;
+            border: 1px solid var(--border-color);
             image-rendering: pixelated;
-            /* width and height will be set by JS via element.style */
             max-width: 100%;
-            /* Ensure it doesn't overflow its container visually */
-            /* display: block; /* Optional: if container needs specific layout */
-        }
-
-        textarea {
-            width: 400px;
-            height: 400px;
-            font-family: monospace;
-            font-size: 12px;
+            background-color: white; /* Ensure canvas background is white */
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
         }
 
         label {
-            /* display: block; Removed to allow inline alignment */
-            margin-bottom: 5px;
+            font-weight: 500;
+            margin-bottom: 0.3rem;
+            display: inline-block; /* Allows margin-bottom and better alignment */
         }
 
-        input[type=number] {
-            width: 60px;
+        input[type="number"],
+        input[type="text"],
+        select {
+            padding: 0.5rem 0.75rem;
+            font-size: 0.9rem;
+            border: 1px solid var(--border-color);
+            border-radius: 0.25rem;
+            transition: border-color 0.15s ease-in-out, box-shadow 0.15s ease-in-out;
+            box-sizing: border-box; /* Include padding and border in the element's total width and height */
         }
+        input[type="number"]:focus,
+        input[type="text"]:focus,
+        select:focus {
+            border-color: var(--primary-color);
+            outline: 0;
+            box-shadow: 0 0 0 0.2rem rgba(0, 123, 255, 0.25);
+        }
+        input[type="number"] {
+            width: 70px;
+        }
+        select {
+            appearance: none; /* Modern look for select */
+            background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3e%3cpath fill='none' stroke='%23343a40' stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M2 5l6 6 6-6'/%3e%3c/svg%3e");
+            background-repeat: no-repeat;
+            background-position: right 0.75rem center;
+            background-size: 16px 12px;
+            padding-right: 2.5rem; /* Space for arrow */
+        }
+
 
         button {
-            padding: 8px 15px;
+            padding: 0.5rem 1rem;
+            font-size: 0.9rem;
+            font-weight: 500;
+            color: #fff;
+            background-color: var(--primary-color);
+            border: 1px solid var(--primary-color);
+            border-radius: 0.25rem;
             cursor: pointer;
+            transition: background-color 0.15s ease-in-out, border-color 0.15s ease-in-out, box-shadow 0.15s ease-in-out;
+            text-align: center;
+        }
+        button:hover {
+            background-color: #0056b3;
+            border-color: #0056b3;
+        }
+        button:active {
+            background-color: #004085;
+            border-color: #00376e;
+            box-shadow: inset 0 1px 2px rgba(0,0,0,0.125);
+        }
+        button:disabled {
+            background-color: var(--secondary-color);
+            border-color: var(--secondary-color);
+            opacity: 0.65;
+            cursor: not-allowed;
+        }
+        /* Secondary button style */
+        button.secondary {
+            background-color: var(--secondary-color);
+            border-color: var(--secondary-color);
+        }
+        button.secondary:hover {
+            background-color: #545b62;
+            border-color: #4e555b;
+        }
+        button.secondary:active {
+            background-color: #4e555b;
+            border-color: #484e53;
         }
 
+
         #errorLog {
-            color: red;
+            color: var(--error-color);
+            background-color: #f8d7da;
+            border: 1px solid #f5c6cb;
             font-size: 0.9em;
             white-space: pre-wrap;
-            max-height: 100px;
+            max-height: 150px;
             overflow-y: auto;
-            border: 1px solid #ccc;
-            padding: 5px;
+            padding: 0.75rem 1rem;
             margin-top: 10px;
+            border-radius: 0.25rem;
         }
 
         .controls-group {
-            border: 1px solid #eee;
-            padding: 10px;
+            background-color: #fff;
+            border: 1px solid var(--border-color);
+            padding: 15px;
+            border-radius: 0.3rem;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+        }
+        .controls-group h3 {
+            margin-bottom: 1rem;
+            padding-bottom: 0.5rem;
+            border-bottom: 1px solid var(--medium-gray);
+        }
+        .controls-group p {
+            font-size: 0.85em;
+            color: #555;
+            margin-top: -0.5rem;
+            margin-bottom: 0.75rem;
+        }
+        .controls-group .info-text { /* For generic small text */
+             font-size: 0.8em; margin-top: 10px; margin-bottom: 0; color: #555;
         }
 
-        .controls-group h3 {
-            margin-top: 0;
-        }
 
         /* Style CodeMirror editor */
         .CodeMirror {
-            border: 1px solid #ccc;
-            height: 70vh;
-            width: 60vw;
-            font-family: monospace;
-            font-size: 12px;
-            /* Ensure wrapping breaks anywhere needed, including mid-word */
-            /* Legacy */
-            word-wrap: break-word;
-            /* Standard */
+            border: 1px solid var(--border-color);
+            height: 70vh; /* Adjust as needed */
+            width: 100%; /* Take full width of its column */
+            font-family: var(--font-family-monospace);
+            font-size: 13px;
+            line-height: 1.5;
+            border-radius: 0.25rem;
             overflow-wrap: break-word;
         }
+        .CodeMirror-focused {
+            border-color: var(--primary-color);
+            box-shadow: 0 0 0 0.2rem rgba(0, 123, 255, 0.25);
+        }
+
 
         /* Basic Syntax Highlighting Styles (complementing the theme) */
-        .cm-keyword {
-            color: #708;
-        }
+        .cm-keyword { color: #d73a49; } /* GitHub red for keywords */
+        .cm-variable-2 { color: #005cc5; } /* GitHub blue for env vars */
+        .cm-variable-3 { color: #e36209; } /* GitHub orange for user vars */
+        .cm-number { color: #005cc5; } /* GitHub blue for numbers */
+        .cm-string { color: #032f62; } /* GitHub dark blue for strings */
+        .cm-comment { color: #6a737d; } /* GitHub gray for comments */
+        .cm-operator { color: #d73a49; } /* GitHub red for operators */
+        .cm-property { color: #6f42c1; } /* GitHub purple for param names */
 
-        /* Magenta */
-        .cm-variable-2 {
-            color: #05a;
-        }
-
-        /* Blue for env vars */
-        .cm-variable-3 {
-            color: #085;
-        }
-
-        /* Teal for user vars */
-        .cm-number {
-            color: #164;
-        }
-
-        /* Dark blue/green */
-        .cm-string {
-            color: #a11;
-        }
-
-        /* Red */
-        .cm-comment {
-            color: #a80;
-        }
-
-        /* Orange/brown */
-        .cm-operator {
-            color: #c0c;
-        }
-
-        /* Purple */
-        .cm-property {
-            color: #30a;
-        }
-
-        /* Dark blue for param names */
 
         /* Asset Preview Styles */
+        #assetPreviews {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
         #assetPreviews canvas {
-            border: 1px solid #ccc;
+            border: 1px solid var(--border-color);
             image-rendering: pixelated;
-            /* Keep pixels sharp */
             cursor: pointer;
             background-color: white;
-            /* Ensure background for transparent pixels */
             margin-top: 5px;
+            border-radius: 2px;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.05);
         }
-
         #assetPreviews .asset-preview-item {
-            margin-bottom: 10px;
+            margin-bottom: 0; /* Gap is handled by flex on parent */
         }
-
         #assetPreviews .asset-preview-item label {
-            font-weight: bold;
-            font-size: 0.9em;
-            margin-bottom: 2px;
+            font-weight: 600;
+            font-size: 0.95em;
+            margin-bottom: 3px;
             display: block;
         }
-
-        /* Drag and Drop Highlighting */
         #assetPreviews canvas.drop-target-active {
-            outline: 2px dashed blue;
+            outline: 2px dashed var(--primary-color);
             outline-offset: -2px;
-            background-color: #e0e0ff;
-            /* Light blue background */
+            background-color: #e6f2ff;
         }
+
+        /* Environment Controls Styling */
+        .env-control-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 8px;
+        }
+        .env-control-row label {
+            min-width: 60px;
+            font-weight: 500;
+            margin-bottom: 0; /* Align with inputs */
+        }
+        .env-control-row .real-time-value {
+            font-family: var(--font-family-monospace);
+            background-color: var(--medium-gray);
+            padding: 0.3rem 0.5rem;
+            border-radius: 0.2rem;
+            min-width: 30px;
+            text-align: right;
+            font-size: 0.9em;
+        }
+        .env-control-row input[type="number"] {
+            width: 55px; /* Slightly smaller */
+            padding: 0.3rem 0.5rem;
+        }
+        .env-control-row button { /* For counter buttons */
+            padding: 0.2rem 0.6rem;
+            font-size: 0.9em;
+        }
+
+        /* Script Management Section */
+        .script-mgmt-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 10px;
+        }
+        .script-mgmt-row label {
+            margin-bottom: 0;
+        }
+        .script-mgmt-row select,
+        .script-mgmt-row input[type="text"] {
+            flex-grow: 1;
+            min-width: 150px;
+        }
+        #scriptMgmtStatus {
+            font-size: 0.85em;
+            margin: 8px 0 0 0;
+            min-height: 1.2em;
+        }
+
+        /* Device Sync List */
+        #deviceScriptListContainer {
+            max-height: 200px;
+            overflow-y: auto;
+            border: 1px solid var(--medium-gray);
+            padding: 10px;
+            border-radius: 0.25rem;
+            background-color: #fff;
+        }
+        #deviceScriptListContainer div {
+            margin-bottom: 5px;
+            display: flex;
+            align-items: center;
+        }
+        #deviceScriptListContainer input[type="checkbox"] {
+            margin-right: 8px;
+            accent-color: var(--primary-color); /* Modern checkbox color */
+        }
+        #deviceScriptListContainer label {
+            font-weight: normal;
+            cursor: pointer;
+        }
+
+        /* Utility for inline flex items */
+        .inline-flex-center {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            margin-bottom: 5px;
+            font-size: 0.9em;
+        }
+        .inline-flex-center input[type="checkbox"],
+        .inline-flex-center label {
+            margin: 0; /* Remove default margins for tight packing */
+        }
+
     </style>
 </head>
 
@@ -166,9 +331,9 @@
     <div class="column">
         <h2>MicroPatterns Script</h2>
         <!-- Container for the toggle and label -->
-        <div style="display: flex; align-items: center; gap: 5px; margin-bottom: 5px; font-size: 0.9em;">
-            <input type="checkbox" id="lineWrapToggle" checked style="margin: 0;"> <!-- Remove default margin -->
-            <label for="lineWrapToggle" style="margin: 0;">Wrap Lines</label> <!-- Remove default margin -->
+        <div class="inline-flex-center">
+            <input type="checkbox" id="lineWrapToggle" checked>
+            <label for="lineWrapToggle">Wrap Lines</label>
         </div>
         <textarea id="scriptInput" spellcheck="false">
 # Welcome to MicroPatterns!
@@ -236,47 +401,47 @@ ENDREPEAT
 
     <div class="column">
         <h2>Emulator Display</h2>
-        <div style="margin-bottom: 10px; display: flex; align-items: center; gap: 10px;">
-            <div>
-                <label for="displaySizeSelect" style="margin-right: 5px;">Display Size:</label>
+        <div style="margin-bottom: 15px; display: flex; align-items: center; gap: 15px; flex-wrap: wrap;">
+            <div class="inline-flex-center" style="gap: 8px;">
+                <label for="displaySizeSelect">Display Size:</label>
                 <select id="displaySizeSelect">
                     <option value="540x960">540x960 (M5Paper)</option>
                     <option value="200x200">200x200 (Default)</option>
                 </select>
             </div>
-            <button id="zoomToggleButton" title="Toggle M5Paper Zoom (50%/100%)" style="padding: 4px 8px;">Zoom</button>
+            <button id="zoomToggleButton" title="Toggle M5Paper Zoom (50%/100%)" class="secondary" style="padding: 0.3rem 0.6rem;">Zoom</button>
         </div>
         <canvas id="displayCanvas" width="540" height="960"></canvas> <!-- Default to M5Paper actual size for buffer -->
 
         <div class="controls-group">
             <h3>Environment</h3>
             <!-- Hour Row -->
-            <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 5px;">
-                <label for="envHour" style="min-width: 60px; font-weight: bold;">Hour:</label>
-                <span id="realTimeHourSpan" style="font-family: monospace; background-color: #eee; padding: 2px 4px; border-radius: 3px; min-width: 25px; text-align: right;">--</span>
-                <input type="number" id="envHour" placeholder="Ovr" title="Override Hour (0-23)" min="0" max="23" style="width: 45px;">
+            <div class="env-control-row">
+                <label for="envHour">Hour:</label>
+                <span id="realTimeHourSpan" class="real-time-value">--</span>
+                <input type="number" id="envHour" placeholder="Ovr" title="Override Hour (0-23)" min="0" max="23">
             </div>
             <!-- Minute Row -->
-            <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 5px;">
-                <label for="envMinute" style="min-width: 60px; font-weight: bold;">Minute:</label>
-                <span id="realTimeMinuteSpan" style="font-family: monospace; background-color: #eee; padding: 2px 4px; border-radius: 3px; min-width: 25px; text-align: right;">--</span>
-                <input type="number" id="envMinute" placeholder="Ovr" title="Override Minute (0-59)" min="0" max="59" style="width: 45px;">
+            <div class="env-control-row">
+                <label for="envMinute">Minute:</label>
+                <span id="realTimeMinuteSpan" class="real-time-value">--</span>
+                <input type="number" id="envMinute" placeholder="Ovr" title="Override Minute (0-59)" min="0" max="59">
             </div>
             <!-- Second Row -->
-            <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 5px;">
-                <label for="envSecond" style="min-width: 60px; font-weight: bold;">Second:</label>
-                <span id="realTimeSecondSpan" style="font-family: monospace; background-color: #eee; padding: 2px 4px; border-radius: 3px; min-width: 25px; text-align: right;">--</span>
-                <input type="number" id="envSecond" placeholder="Ovr" title="Override Second (0-59)" min="0" max="59" style="width: 45px;">
+            <div class="env-control-row">
+                <label for="envSecond">Second:</label>
+                <span id="realTimeSecondSpan" class="real-time-value">--</span>
+                <input type="number" id="envSecond" placeholder="Ovr" title="Override Second (0-59)" min="0" max="59">
             </div>
             <!-- Counter Row -->
-            <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 5px;">
-                <label for="envCounter" style="min-width: 60px; font-weight: bold;">Counter:</label>
-                <input type="number" id="envCounter" value="0" min="0" style="width: 60px;">
-                <button id="resetCounterButton" title="Reset Counter" style="padding: 2px 8px;">↺</button>
-                <button id="incrementCounterButton" title="Increment Counter" style="padding: 2px 8px;">+</button>
+            <div class="env-control-row">
+                <label for="envCounter">Counter:</label>
+                <input type="number" id="envCounter" value="0" min="0">
+                <button id="resetCounterButton" title="Reset Counter" class="secondary">↺</button>
+                <button id="incrementCounterButton" title="Increment Counter" class="secondary">+</button>
             </div>
             <!-- Static Info -->
-            <p style="font-size: 0.8em; margin-top: 10px; margin-bottom: 0; color: #555;">Display: <span id="displayInfoSpan">200x200</span></p>
+            <p class="info-text">Display: <span id="displayInfoSpan">200x200</span></p>
         </div>
 
         <div class="controls-group">
@@ -293,22 +458,22 @@ ENDREPEAT
         <!-- Script Management Section -->
         <div class="controls-group">
             <h3>Script Management</h3>
-            <div style="display: flex; flex-direction: column; gap: 8px;">
-                <div>
-                    <label for="scriptList" style="margin-right: 5px;">Load Script:</label>
-                    <select id="scriptList" style="min-width: 150px;">
+            <div style="display: flex; flex-direction: column; gap: 10px;">
+                <div class="script-mgmt-row">
+                    <label for="scriptList">Load Script:</label>
+                    <select id="scriptList">
                         <option value="">-- Select Script --</option>
                         <!-- Options will be populated by JS -->
                     </select>
-                    <button id="loadScriptButton" style="margin-left: 5px;">Load</button>
+                    <button id="loadScriptButton">Load</button>
                 </div>
-                <div>
-                    <label for="scriptName" style="margin-right: 5px;">Script Name:</label>
-                    <input type="text" id="scriptName" placeholder="Enter script name..." style="min-width: 150px;">
-                    <button id="saveScriptButton" style="margin-left: 5px;">Save</button>
-                    <button id="newScriptButton" style="margin-left: 5px;">New</button>
+                <div class="script-mgmt-row">
+                    <label for="scriptName">Script Name:</label>
+                    <input type="text" id="scriptName" placeholder="Enter script name...">
+                    <button id="saveScriptButton">Save</button>
+                    <button id="newScriptButton" class="secondary">New</button>
                 </div>
-                <p id="scriptMgmtStatus" style="font-size: 0.8em; margin: 5px 0 0 0; min-height: 1.2em;"></p> <!-- Status messages -->
+                <p id="scriptMgmtStatus"></p> <!-- Status messages -->
             </div>
         </div>
         <!-- End Script Management Section -->
