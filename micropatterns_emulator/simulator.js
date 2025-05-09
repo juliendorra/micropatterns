@@ -446,7 +446,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // --- Asset Preview Rendering and Editing ---
 
-    const PREVIEW_SCALE = 8; // How many screen pixels per asset pixel
+    const PREVIEW_SCALE = 12; // How many screen pixels per asset pixel
 
     // Updated to handle single assets.assets dictionary
     function renderAssetPreviews(assets) {

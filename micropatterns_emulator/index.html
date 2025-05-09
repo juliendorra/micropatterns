@@ -12,229 +12,392 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.15/addon/hint/show-hint.min.css">
     <style>
         :root {
-            --primary-color: #007bff;
-            --secondary-color: #6c757d;
-            --light-gray: #f8f9fa;
-            --medium-gray: #e9ecef;
-            --dark-gray: #343a40;
-            --border-color: #ced4da;
-            --error-color: #dc3545;
-            --success-color: #28a745;
+            /* Memphis Milano Inspired Palette - Toned Down 80s */
+            --primary-color: #F47C7C;
+            /* Softer Coral/Pink */
+            --secondary-color: #5FBCB0;
+            /* Dustier Teal */
+            --accent-color-yellow: #FFF59D;
+            /* Softer Yellow */
+            --accent-color-blue: #6EBCEF;
+            /* Softer Bright Blue */
+
+            --text-color: #2A3D45;
+            /* Softer Dark Teal/Blue-Gray */
+            --text-color-light: #FDFDFD;
+            /* Almost White */
+
+            --bg-color: #FAF7F0;
+            /* Creamy Off-White */
+            --bg-color-alt: #FFFFFF;
+            /* White for cards/groups */
+
+            --border-color: #2A3D45;
+            /* Matches text color */
+            --border-color-light: #C8E6C9;
+            /* Lighter, softer green */
+
+            --error-color-fg: #FFFFFF;
+            --error-color-bg: #D32F2F;
+            /* Slightly softer strong red */
+            --success-color-fg: #2A3D45;
+            --success-color-bg: #A7FFEB;
+            /* Light Minty Turquoise */
+
             --font-family-sans-serif: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
             --font-family-monospace: SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+
+            --shadow-strong: 3px 3px 0px var(--text-color);
+            --shadow-soft: 0 4px 8px rgba(0, 0, 0, 0.1);
+            --border-radius-sharp: 2px;
+            --border-radius-soft: 6px;
         }
 
         body {
             font-family: var(--font-family-sans-serif);
             display: flex;
-            gap: 25px;
+            gap: 30px;
+            /* Reduced gutter */
             padding: 20px;
-            background-color: var(--light-gray);
-            color: var(--dark-gray);
+            /* Reduced padding */
+            background-color: var(--bg-color);
+            color: var(--text-color);
             margin: 0;
-            line-height: 1.6;
+            line-height: 1.55;
+            /* Slightly reduced line-height */
+            min-height: 100vh;
+            font-size: 0.95rem;
+            /* Slightly reduced base font size */
         }
 
         .column {
             display: flex;
             flex-direction: column;
             gap: 20px;
+            /* Reduced gap within columns */
         }
+
         .column:first-child {
-            flex: 2; /* Give more space to script editor column */
+            flex: 2;
+            /* Give more space to script editor column */
         }
+
         .column:last-child {
-            flex: 1; /* Less space for controls/display column */
-            max-width: 600px; /* Max width for the display column */
+            flex: 1;
+            /* Less space for controls/display column */
+            max-width: 550px;
+            /* Slightly reduced max-width for right column */
         }
 
 
-        h2, h3 {
-            color: var(--dark-gray);
+        h2,
+        h3 {
+            color: var(--text-color);
             margin-top: 0;
-            margin-bottom: 0.75rem;
+            margin-bottom: 0.8rem;
+            /* Reduced margin */
+            font-weight: 600;
         }
-        h2 { font-size: 1.75rem; }
-        h3 { font-size: 1.25rem; }
+
+        h2 {
+            font-size: 1.8rem;
+            /* Reduced font size */
+            border-bottom: 2px solid var(--accent-color-yellow);
+            padding-bottom: 0.4rem;
+            /* Reduced padding */
+            display: inline-block;
+            /* So border only spans text */
+        }
+
+        h3 {
+            font-size: 1.25rem;
+            /* Reduced font size */
+            color: var(--primary-color);
+        }
 
         #displayCanvas {
-            border: 1px solid var(--border-color);
+            border: 2px solid var(--border-color);
             image-rendering: pixelated;
             max-width: 100%;
-            background-color: white; /* Ensure canvas background is white */
-            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+            background-color: var(--bg-color-alt);
+            box-shadow: var(--shadow-strong);
+            border-radius: var(--border-radius-sharp);
         }
 
         label {
-            font-weight: 500;
+            font-weight: 600;
+            /* Bolder labels */
             margin-bottom: 0.3rem;
-            display: inline-block; /* Allows margin-bottom and better alignment */
+            /* Reduced margin */
+            display: inline-block;
+            color: var(--text-color);
         }
 
         input[type="number"],
         input[type="text"],
         select {
-            padding: 0.5rem 0.75rem;
-            font-size: 0.9rem;
-            border: 1px solid var(--border-color);
-            border-radius: 0.25rem;
+            padding: 0.5rem 0.7rem;
+            /* Reduced padding */
+            font-size: 0.85rem;
+            /* Reduced font size */
+            border: 2px solid var(--border-color);
+            border-radius: var(--border-radius-sharp);
             transition: border-color 0.15s ease-in-out, box-shadow 0.15s ease-in-out;
-            box-sizing: border-box; /* Include padding and border in the element's total width and height */
+            box-sizing: border-box;
+            background-color: var(--bg-color-alt);
+            color: var(--text-color);
         }
+
         input[type="number"]:focus,
         input[type="text"]:focus,
         select:focus {
             border-color: var(--primary-color);
             outline: 0;
-            box-shadow: 0 0 0 0.2rem rgba(0, 123, 255, 0.25);
+            box-shadow: 0 0 0 3px rgba(255, 107, 107, 0.3);
+            /* Primary color glow */
         }
+
         input[type="number"] {
-            width: 70px;
+            width: 80px;
         }
+
         select {
-            appearance: none; /* Modern look for select */
-            background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3e%3cpath fill='none' stroke='%23343a40' stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M2 5l6 6 6-6'/%3e%3c/svg%3e");
+            appearance: none;
+            background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3e%3cpath fill='none' stroke='%231A535C' stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M2 5l6 6 6-6'/%3e%3c/svg%3e");
+            /* Dark teal arrow */
             background-repeat: no-repeat;
-            background-position: right 0.75rem center;
+            background-position: right 0.85rem center;
             background-size: 16px 12px;
-            padding-right: 2.5rem; /* Space for arrow */
+            padding-right: 2.8rem;
         }
 
 
         button {
-            padding: 0.5rem 1rem;
-            font-size: 0.9rem;
-            font-weight: 500;
-            color: #fff;
+            padding: 0.6rem 1rem;
+            /* Reduced padding */
+            font-size: 0.85rem;
+            /* Reduced font size */
+            font-weight: 700;
+            /* Bolder buttons */
+            color: var(--text-color-light);
             background-color: var(--primary-color);
-            border: 1px solid var(--primary-color);
-            border-radius: 0.25rem;
+            border: 2px solid var(--text-color);
+            /* Contrasting border */
+            border-radius: 12px 4px 12px 4px;
+            /* Asymmetric 80s shape */
             cursor: pointer;
-            transition: background-color 0.15s ease-in-out, border-color 0.15s ease-in-out, box-shadow 0.15s ease-in-out;
+            transition: background-color 0.1s ease-in-out;
+            /* Only transition background */
             text-align: center;
+            box-shadow: var(--shadow-strong);
+            text-transform: uppercase;
         }
+
         button:hover {
-            background-color: #0056b3;
-            border-color: #0056b3;
+            background-color: #F89B9B;
+            /* Lighter version of new primary */
+            /* transform and box-shadow animation removed */
         }
+
         button:active {
-            background-color: #004085;
-            border-color: #00376e;
-            box-shadow: inset 0 1px 2px rgba(0,0,0,0.125);
+            background-color: #E06868;
+            /* Darker version of new primary */
+            transform: translateY(1px);
+            /* Keep subtle press feedback */
+            box-shadow: 1px 1px 0px var(--text-color);
+            /* Smaller shadow on active */
         }
+
         button:disabled {
-            background-color: var(--secondary-color);
-            border-color: var(--secondary-color);
-            opacity: 0.65;
+            background-color: #BDBDBD;
+            /* Muted gray */
+            border-color: #757575;
+            color: #757575;
+            opacity: 0.7;
             cursor: not-allowed;
+            box-shadow: 2px 2px 0px #757575;
         }
-        /* Secondary button style */
+
         button.secondary {
             background-color: var(--secondary-color);
-            border-color: var(--secondary-color);
+            color: var(--text-color);
+            /* Dark text on lighter secondary */
         }
+
         button.secondary:hover {
-            background-color: #545b62;
-            border-color: #4e555b;
+            background-color: #6FE8DE;
+            /* Lighter turquoise */
         }
+
         button.secondary:active {
-            background-color: #4e555b;
-            border-color: #484e53;
+            background-color: #3EBEB3;
+            /* Darker turquoise */
         }
 
 
         #errorLog {
-            color: var(--error-color);
-            background-color: #f8d7da;
-            border: 1px solid #f5c6cb;
-            font-size: 0.9em;
+            color: var(--error-color-fg);
+            background-color: var(--error-color-bg);
+            border: 2px solid var(--text-color);
+            font-size: 0.8em;
+            /* Reduced font size */
+            font-family: var(--font-family-monospace);
             white-space: pre-wrap;
-            max-height: 150px;
+            max-height: 160px;
+            /* Slightly reduced max height */
             overflow-y: auto;
-            padding: 0.75rem 1rem;
-            margin-top: 10px;
-            border-radius: 0.25rem;
+            padding: 0.7rem 1rem;
+            /* Reduced padding */
+            margin-top: 8px;
+            /* Reduced margin */
+            border-radius: var(--border-radius-sharp);
+            box-shadow: var(--shadow-strong);
         }
 
         .controls-group {
-            background-color: #fff;
-            border: 1px solid var(--border-color);
+            background-color: var(--bg-color-alt);
+            border: 2px solid var(--border-color);
             padding: 15px;
-            border-radius: 0.3rem;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+            /* Reduced padding */
+            border-radius: var(--border-radius-soft);
+            /* Softer radius for groups */
+            box-shadow: var(--shadow-soft);
         }
+
         .controls-group h3 {
+            /* Overriding general h3 for groups */
             margin-bottom: 1rem;
+            /* Reduced margin */
             padding-bottom: 0.5rem;
-            border-bottom: 1px solid var(--medium-gray);
+            /* Reduced padding */
+            border-bottom: 2px dashed var(--border-color-light);
+            /* Dashed border */
+            color: var(--primary-color);
+            /* Keep primary color for group titles */
+            font-size: 1.15rem;
+            /* Reduced font size */
         }
+
         .controls-group p {
-            font-size: 0.85em;
-            color: #555;
-            margin-top: -0.5rem;
-            margin-bottom: 0.75rem;
+            font-size: 0.8em;
+            /* Reduced font size */
+            color: var(--text-color);
+            margin-top: -0.4rem;
+            /* Adjusted margin */
+            margin-bottom: 0.8rem;
+            /* Reduced margin */
         }
-        .controls-group .info-text { /* For generic small text */
-             font-size: 0.8em; margin-top: 10px; margin-bottom: 0; color: #555;
+
+        .controls-group .info-text {
+            font-size: 0.75em;
+            margin-top: 8px;
+            margin-bottom: 0;
+            color: var(--text-color);
+            opacity: 0.8;
+            /* Reduced font size */
         }
 
 
         /* Style CodeMirror editor */
         .CodeMirror {
-            border: 1px solid var(--border-color);
-            height: 70vh; /* Adjust as needed */
-            width: 100%; /* Take full width of its column */
+            border: 2px solid var(--border-color);
+            height: 70vh;
+            width: 60vw;
             font-family: var(--font-family-monospace);
             font-size: 13px;
             line-height: 1.5;
-            border-radius: 0.25rem;
-            overflow-wrap: break-word;
+            /* Reduced line height */
+            border-radius: var(--border-radius-sharp);
+            background-color: #fff;
+            /* Ensure white background */
+            box-shadow: var(--shadow-strong);
         }
+
         .CodeMirror-focused {
             border-color: var(--primary-color);
-            box-shadow: 0 0 0 0.2rem rgba(0, 123, 255, 0.25);
+            box-shadow: 0 0 0 3px rgba(255, 107, 107, 0.3), var(--shadow-strong);
+            /* Primary color glow + existing shadow */
         }
 
 
-        /* Basic Syntax Highlighting Styles (complementing the theme) */
-        .cm-keyword { color: #d73a49; } /* GitHub red for keywords */
-        .cm-variable-2 { color: #005cc5; } /* GitHub blue for env vars */
-        .cm-variable-3 { color: #e36209; } /* GitHub orange for user vars */
-        .cm-number { color: #005cc5; } /* GitHub blue for numbers */
-        .cm-string { color: #032f62; } /* GitHub dark blue for strings */
-        .cm-comment { color: #6a737d; } /* GitHub gray for comments */
-        .cm-operator { color: #d73a49; } /* GitHub red for operators */
-        .cm-property { color: #6f42c1; } /* GitHub purple for param names */
+        /* Basic Syntax Highlighting Styles (adjust if needed for new theme) */
+        .cm-keyword {
+            color: #D957A8;
+        }
+
+        /* Bright Pink/Magenta for keywords */
+        .cm-variable-2 {
+            color: var(--accent-color-blue);
+        }
+
+        /* Bright Blue for env vars */
+        .cm-variable-3 {
+            color: #FF8C00;
+        }
+
+        /* Dark Orange for user vars */
+        .cm-number {
+            color: var(--accent-color-blue);
+        }
+
+        .cm-string {
+            color: #2A9D8F;
+        }
+
+        /* Teal for strings */
+        .cm-comment {
+            color: #A9A9A9;
+            font-style: italic;
+        }
+
+        /* Lighter Gray for comments */
+        .cm-operator {
+            color: #D957A8;
+        }
+
+        .cm-property {
+            color: #E58C35;
+        }
+
+        /* Orange for param names */
 
 
         /* Asset Preview Styles */
         #assetPreviews {
             display: flex;
             flex-direction: column;
-            gap: 20px;
+            gap: 25px;
         }
+
         #assetPreviews canvas {
-            border: 1px solid var(--border-color);
+            border: 2px solid var(--border-color);
             image-rendering: pixelated;
             cursor: pointer;
-            background-color: white;
+            background-color: var(--bg-color-alt);
             margin-top: 5px;
-            border-radius: 2px;
-            box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+            border-radius: var(--border-radius-sharp);
+            /* box-shadow: var(--shadow-strong); Removed */
         }
+
         #assetPreviews .asset-preview-item {
-            margin-bottom: 0; /* Gap is handled by flex on parent */
+            margin-bottom: 0;
         }
+
         #assetPreviews .asset-preview-item label {
-            font-weight: 600;
-            font-size: 0.95em;
-            margin-bottom: 3px;
+            font-weight: 700;
+            font-size: 0.9em;
+            /* Reduced font size */
+            margin-bottom: 4px;
+            /* Reduced margin */
             display: block;
+            color: var(--secondary-color);
         }
+
         #assetPreviews canvas.drop-target-active {
-            outline: 2px dashed var(--primary-color);
-            outline-offset: -2px;
-            background-color: #e6f2ff;
+            outline: 3px dashed var(--primary-color);
+            outline-offset: -3px;
+            background-color: #FFD1D1;
+            /* Light coral for drop target */
         }
 
         /* Environment Controls Styling */
@@ -242,29 +405,49 @@
             display: flex;
             align-items: center;
             gap: 10px;
+            /* Reduced gap */
             margin-bottom: 8px;
+            /* Reduced margin */
         }
+
         .env-control-row label {
             min-width: 60px;
-            font-weight: 500;
-            margin-bottom: 0; /* Align with inputs */
+            /* Reduced min-width */
+            font-weight: 600;
+            margin-bottom: 0;
         }
+
         .env-control-row .real-time-value {
             font-family: var(--font-family-monospace);
-            background-color: var(--medium-gray);
+            background-color: var(--accent-color-yellow);
+            /* Yellow accent for real time */
+            color: var(--text-color);
             padding: 0.3rem 0.5rem;
-            border-radius: 0.2rem;
+            /* Reduced padding */
+            border-radius: var(--border-radius-sharp);
             min-width: 30px;
+            /* Reduced min-width */
             text-align: right;
-            font-size: 0.9em;
+            font-size: 0.8em;
+            /* Reduced font size */
+            border: 1px solid var(--text-color);
         }
+
         .env-control-row input[type="number"] {
-            width: 55px; /* Slightly smaller */
+            width: 55px;
+            /* Reduced width */
             padding: 0.3rem 0.5rem;
+            /* Reduced padding */
         }
-        .env-control-row button { /* For counter buttons */
-            padding: 0.2rem 0.6rem;
-            font-size: 0.9em;
+
+        .env-control-row button {
+            /* For counter buttons */
+            padding: 0.25rem 0.6rem;
+            /* Reduced padding */
+            font-size: 0.8em;
+            /* Reduced font size */
+            min-width: 28px;
+            /* Ensure buttons have some width */
         }
 
         /* Script Management Section */
@@ -272,58 +455,108 @@
             display: flex;
             align-items: center;
             gap: 8px;
+            /* Reduced gap */
             margin-bottom: 10px;
+            /* Reduced margin */
         }
+
         .script-mgmt-row label {
             margin-bottom: 0;
         }
+
         .script-mgmt-row select,
         .script-mgmt-row input[type="text"] {
             flex-grow: 1;
             min-width: 150px;
+            /* Slightly reduced min-width */
         }
+
         #scriptMgmtStatus {
-            font-size: 0.85em;
+            font-size: 0.8em;
+            /* Reduced font size */
+            font-weight: 600;
             margin: 8px 0 0 0;
+            /* Reduced margin */
             min-height: 1.2em;
+            /* Adjusted min-height */
+            padding: 4px;
+            /* Reduced padding */
+            border-radius: var(--border-radius-sharp);
         }
+
+        #scriptMgmtStatus[style*="color: red;"] {
+            /* More specific for error */
+            background-color: var(--error-color-bg);
+            color: var(--error-color-fg);
+            border: 1px solid var(--text-color);
+        }
+
+        #scriptMgmtStatus[style*="color: green;"] {
+            /* More specific for success */
+            background-color: var(--success-color-bg);
+            color: var(--success-color-fg);
+            border: 1px solid var(--text-color);
+        }
+
 
         /* Device Sync List */
         #deviceScriptListContainer {
             max-height: 200px;
+            /* Slightly reduced max height */
             overflow-y: auto;
-            border: 1px solid var(--medium-gray);
+            border: 2px solid var(--border-color-light);
             padding: 10px;
-            border-radius: 0.25rem;
-            background-color: #fff;
+            /* Reduced padding */
+            border-radius: var(--border-radius-sharp);
+            background-color: var(--bg-color-alt);
         }
+
         #deviceScriptListContainer div {
-            margin-bottom: 5px;
+            margin-bottom: 4px;
+            /* Reduced margin */
             display: flex;
             align-items: center;
         }
+
         #deviceScriptListContainer input[type="checkbox"] {
             margin-right: 8px;
-            accent-color: var(--primary-color); /* Modern checkbox color */
-        }
-        #deviceScriptListContainer label {
-            font-weight: normal;
+            /* Reduced margin */
+            accent-color: var(--primary-color);
+            transform: scale(1.1);
+            /* Slightly reduced scale */
             cursor: pointer;
+        }
+
+        #deviceScriptListContainer label {
+            font-weight: 500;
+            /* Normal weight for list items */
+            cursor: pointer;
+            font-size: 0.85em;
+            /* Reduced font size */
         }
 
         /* Utility for inline flex items */
         .inline-flex-center {
             display: flex;
             align-items: center;
-            gap: 5px;
-            margin-bottom: 5px;
-            font-size: 0.9em;
-        }
-        .inline-flex-center input[type="checkbox"],
-        .inline-flex-center label {
-            margin: 0; /* Remove default margins for tight packing */
+            gap: 6px;
+            /* Reduced gap */
+            margin-bottom: 6px;
+            /* Reduced margin */
+            font-size: 0.85em;
+            /* Reduced font size */
         }
 
+        .inline-flex-center input[type="checkbox"],
+        .inline-flex-center label {
+            margin: 0;
+            cursor: pointer;
+        }
+
+        .inline-flex-center input[type="checkbox"] {
+            accent-color: var(--primary-color);
+            transform: scale(1.1);
+        }
     </style>
 </head>
 
