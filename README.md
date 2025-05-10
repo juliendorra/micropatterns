@@ -1,11 +1,11 @@
 # MicroPatterns Project
 
-This project defines and implements the **MicroPatterns DSL**, a mini-language designed for creating generative pixel art, especially for monochrome e-ink displays on devices like the ESP32 (e.g., Watchy).
+This project defines and implements the **MicroPatterns DSL**, a mini-language designed for creating generative pixel art, targeting monochrome e-ink displays on devices like the ESP32-based M5Paper and Watchy clones.
 
 It includes:
 *   The MicroPatterns DSL Specification (see below).
 *   A JavaScript-based emulator (`micropatterns_emulator/`) for testing and developing scripts in a web browser.
-*   (Future) A C++/Arduino implementation for target devices.
+*   An ESP32 C++/Arduino runtime for M5Paper
 
 ## MicroPatterns DSL Overview
 
