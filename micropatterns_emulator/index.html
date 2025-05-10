@@ -12,111 +12,116 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.15/addon/hint/show-hint.min.css">
     <style>
         :root {
-            /* Memphis Milano Inspired Palette - Toned Down 80s */
-            --primary-color: #F47C7C;
-            /* Softer Coral/Pink */
-            --secondary-color: #5FBCB0;
-            /* Dustier Teal */
-            --accent-color-yellow: #FFF59D;
-            /* Softer Yellow */
-            --accent-color-blue: #6EBCEF;
-            /* Softer Bright Blue */
+            /* Memphis Milano Inspired Palette - Vibrant but Balanced */
+            --primary-color: #FF5252;
+            /* Vibrant Red like the drawers */
+            --secondary-color: #4FC3F7;
+            /* Light Blue like the columns */
+            --accent-color-yellow: #FFEB3B;
+            /* Bright Yellow like the shelves */
+            --accent-color-blue: #304FFE;
+            /* Deeper Blue like the shelf joint */
+            --accent-color-green: #4CAF50;
+            /* Green like the horizontal shelf */
 
-            --text-color: #2A3D45;
-            /* Softer Dark Teal/Blue-Gray */
-            --text-color-light: #FDFDFD;
-            /* Almost White */
+            --text-color: #212121;
+            /* Near Black for text */
+            --text-color-light: #FFFFFF;
+            /* White for text on dark backgrounds */
 
-            --bg-color: #FAF7F0;
-            /* Creamy Off-White */
+            --bg-color: #F5F5F5;
+            /* Light Gray background */
             --bg-color-alt: #FFFFFF;
-            /* White for cards/groups */
+            /* White for cards/panels */
 
-            --border-color: #2A3D45;
-            /* Matches text color */
-            --border-color-light: #C8E6C9;
-            /* Lighter, softer green */
+            --border-color: #212121;
+            /* Near Black bold borders */
+            --border-color-light: #E0E0E0;
+            /* Light Gray subtle borders */
 
             --error-color-fg: #FFFFFF;
             --error-color-bg: #D32F2F;
-            /* Slightly softer strong red */
-            --success-color-fg: #2A3D45;
-            --success-color-bg: #A7FFEB;
-            /* Light Minty Turquoise */
+            /* Strong red */
+            --success-color-fg: #212121;
+            --success-color-bg: #B2FF59;
+            /* Light Green */
 
-            --font-family-sans-serif: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-            --font-family-monospace: SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+            --font-family-sans-serif: "Helvetica Neue", Arial, sans-serif;
+            --font-family-monospace: "SF Mono", Menlo, Monaco, Consolas, monospace;
 
-            --shadow-strong: 3px 3px 0px var(--text-color);
-            --shadow-soft: 0 4px 8px rgba(0, 0, 0, 0.1);
-            --border-radius-sharp: 2px;
-            --border-radius-soft: 6px;
+            /* Memphis Design inspired shadow and shape features */
+            --shadow-strong: 4px 4px 0px var(--border-color);
+            --shadow-soft: 3px 3px 10px rgba(0, 0, 0, 0.15);
+            --border-radius-sharp: 0px;
+            /* Memphis often uses 90° angles */
+            --border-radius-soft: 0px;
+            /* Keep corners sharp */
+            --border-radius-asymmetric: 0 8px 0 20px;
+            /* Asymmetric corner rounding */
         }
 
         body {
             font-family: var(--font-family-sans-serif);
             display: flex;
-            gap: 30px;
-            /* Reduced gutter */
-            padding: 20px;
-            /* Reduced padding */
+            gap: 40px;
+            padding: 25px;
             background-color: var(--bg-color);
             color: var(--text-color);
             margin: 0;
-            line-height: 1.55;
-            /* Slightly reduced line-height */
+            line-height: 1.5;
             min-height: 100vh;
-            font-size: 0.95rem;
-            /* Slightly reduced base font size */
         }
 
         .column {
             display: flex;
             flex-direction: column;
-            gap: 20px;
-            /* Reduced gap within columns */
+            gap: 25px;
         }
 
         .column:first-child {
             flex: 2;
-            /* Give more space to script editor column */
         }
 
         .column:last-child {
             flex: 1;
-            /* Less space for controls/display column */
             max-width: 550px;
-            /* Slightly reduced max-width for right column */
         }
-
 
         h2,
         h3 {
             color: var(--text-color);
             margin-top: 0;
-            margin-bottom: 0.8rem;
-            /* Reduced margin */
-            font-weight: 600;
+            margin-bottom: 1rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
         }
 
         h2 {
-            font-size: 1.8rem;
-            /* Reduced font size */
-            border-bottom: 2px solid var(--accent-color-yellow);
-            padding-bottom: 0.4rem;
-            /* Reduced padding */
+            font-size: 2rem;
+            border-bottom: 4px solid var(--accent-color-yellow);
+            padding-bottom: 0.5rem;
             display: inline-block;
-            /* So border only spans text */
         }
 
         h3 {
-            font-size: 1.25rem;
-            /* Reduced font size */
+            font-size: 1.4rem;
             color: var(--primary-color);
+            position: relative;
+        }
+
+        h3::after {
+            content: '';
+            position: absolute;
+            bottom: -5px;
+            left: 0;
+            width: 40px;
+            height: 6px;
+            background-color: var(--accent-color-blue);
         }
 
         #displayCanvas {
-            border: 2px solid var(--border-color);
+            border: 3px solid var(--border-color);
             image-rendering: pixelated;
             max-width: 100%;
             background-color: var(--bg-color-alt);
@@ -126,23 +131,22 @@
 
         label {
             font-weight: 600;
-            /* Bolder labels */
-            margin-bottom: 0.3rem;
-            /* Reduced margin */
+            margin-bottom: 0.4rem;
             display: inline-block;
             color: var(--text-color);
+            text-transform: uppercase;
+            font-size: 0.85rem;
+            letter-spacing: 0.5px;
         }
 
         input[type="number"],
         input[type="text"],
         select {
-            padding: 0.5rem 0.7rem;
-            /* Reduced padding */
-            font-size: 0.85rem;
-            /* Reduced font size */
-            border: 2px solid var(--border-color);
+            padding: 0.6rem 0.8rem;
+            font-size: 0.9rem;
+            border: 3px solid var(--border-color);
             border-radius: var(--border-radius-sharp);
-            transition: border-color 0.15s ease-in-out, box-shadow 0.15s ease-in-out;
+            transition: border-color 0.15s ease-in-out;
             box-sizing: border-box;
             background-color: var(--bg-color-alt);
             color: var(--text-color);
@@ -153,8 +157,7 @@
         select:focus {
             border-color: var(--primary-color);
             outline: 0;
-            box-shadow: 0 0 0 3px rgba(255, 107, 107, 0.3);
-            /* Primary color glow */
+            box-shadow: 0 0 0 3px rgba(255, 82, 82, 0.3);
         }
 
         input[type="number"] {
@@ -163,54 +166,58 @@
 
         select {
             appearance: none;
-            background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3e%3cpath fill='none' stroke='%231A535C' stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M2 5l6 6 6-6'/%3e%3c/svg%3e");
-            /* Dark teal arrow */
+            background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3e%3cpath fill='none' stroke='%23212121' stroke-linecap='square' stroke-linejoin='miter' stroke-width='2' d='M2 5l6 6 6-6'/%3e%3c/svg%3e");
             background-repeat: no-repeat;
             background-position: right 0.85rem center;
             background-size: 16px 12px;
             padding-right: 2.8rem;
         }
 
-
+        /* Button styles inspired by Memphis geometric shapes */
         button {
-            padding: 0.6rem 1rem;
-            /* Reduced padding */
-            font-size: 0.85rem;
-            /* Reduced font size */
+            padding: 0.7rem 1.2rem;
+            font-size: 0.9rem;
             font-weight: 700;
-            /* Bolder buttons */
             color: var(--text-color-light);
             background-color: var(--primary-color);
-            border: 2px solid var(--text-color);
-            /* Contrasting border */
-            border-radius: 12px 4px 12px 4px;
-            /* Asymmetric 80s shape */
+            border: 3px solid var(--border-color);
+            border-radius: 0;
             cursor: pointer;
-            transition: background-color 0.1s ease-in-out;
-            /* Only transition background */
+            transition: transform 0.1s, box-shadow 0.1s;
             text-align: center;
             box-shadow: var(--shadow-strong);
             text-transform: uppercase;
+            position: relative;
+            letter-spacing: 1px;
+        }
+
+        button::before {
+            content: "";
+            position: absolute;
+            top: -4px;
+            left: 12px;
+            width: 20px;
+            height: 4px;
+            background-color: var(--accent-color-yellow);
+            z-index: -1;
         }
 
         button:hover {
-            background-color: #F89B9B;
-            /* Lighter version of new primary */
-            /* transform and box-shadow animation removed */
+            background-color: #FF6E6E;
+            /* Lighter version */
+            transform: translateY(-2px);
+            box-shadow: 5px 5px 0px var(--border-color);
         }
 
         button:active {
-            background-color: #E06868;
-            /* Darker version of new primary */
+            background-color: #E04747;
+            /* Darker version */
             transform: translateY(1px);
-            /* Keep subtle press feedback */
-            box-shadow: 1px 1px 0px var(--text-color);
-            /* Smaller shadow on active */
+            box-shadow: 2px 2px 0px var(--border-color);
         }
 
         button:disabled {
             background-color: #BDBDBD;
-            /* Muted gray */
             border-color: #757575;
             color: #757575;
             opacity: 0.7;
@@ -221,148 +228,157 @@
         button.secondary {
             background-color: var(--secondary-color);
             color: var(--text-color);
-            /* Dark text on lighter secondary */
+        }
+
+        button.secondary::before {
+            background-color: var(--accent-color-blue);
         }
 
         button.secondary:hover {
-            background-color: #6FE8DE;
-            /* Lighter turquoise */
+            background-color: #81D4FA;
+            /* Lighter blue */
         }
 
         button.secondary:active {
-            background-color: #3EBEB3;
-            /* Darker turquoise */
+            background-color: #29B6F6;
+            /* Darker blue */
         }
-
 
         #errorLog {
             color: var(--error-color-fg);
             background-color: var(--error-color-bg);
-            border: 2px solid var(--text-color);
-            font-size: 0.8em;
-            /* Reduced font size */
+            border: 3px solid var(--border-color);
+            font-size: 0.85em;
             font-family: var(--font-family-monospace);
             white-space: pre-wrap;
-            max-height: 160px;
-            /* Slightly reduced max height */
+            max-height: 180px;
             overflow-y: auto;
-            padding: 0.7rem 1rem;
-            /* Reduced padding */
-            margin-top: 8px;
-            /* Reduced margin */
+            padding: 0.9rem 1.2rem;
+            margin-top: 10px;
             border-radius: var(--border-radius-sharp);
             box-shadow: var(--shadow-strong);
         }
 
+        /* Controls Group - Memphis inspired geometric block */
         .controls-group {
             background-color: var(--bg-color-alt);
+            border: 3px solid var(--border-color);
+            padding: 20px;
+            border-radius: var(--border-radius-asymmetric);
+            box-shadow: var(--shadow-strong);
+            position: relative;
+        }
+
+        /* Memphis-style decorative elements */
+        .controls-group::before {
+            content: "";
+            position: absolute;
+            right: -12px;
+            top: 15px;
+            width: 25px;
+            height: 25px;
+            background-color: var(--accent-color-yellow);
             border: 2px solid var(--border-color);
-            padding: 15px;
-            /* Reduced padding */
-            border-radius: var(--border-radius-soft);
-            /* Softer radius for groups */
-            box-shadow: var(--shadow-soft);
+            z-index: -1;
+        }
+
+        .controls-group::after {
+            content: "";
+            position: absolute;
+            left: 25px;
+            bottom: -10px;
+            width: 40px;
+            height: 8px;
+            background-color: var(--accent-color-blue);
+            z-index: -1;
         }
 
         .controls-group h3 {
-            /* Overriding general h3 for groups */
-            margin-bottom: 1rem;
-            /* Reduced margin */
-            padding-bottom: 0.5rem;
-            /* Reduced padding */
-            border-bottom: 2px dashed var(--border-color-light);
-            /* Dashed border */
+            margin-bottom: 1.2rem;
+            padding-bottom: 0.6rem;
             color: var(--primary-color);
-            /* Keep primary color for group titles */
-            font-size: 1.15rem;
-            /* Reduced font size */
+            font-size: 1.25rem;
+            position: relative;
+            /* Border styling handled by ::after pseudo element */
         }
 
         .controls-group p {
-            font-size: 0.8em;
-            /* Reduced font size */
+            font-size: 0.85em;
             color: var(--text-color);
-            margin-top: -0.4rem;
-            /* Adjusted margin */
-            margin-bottom: 0.8rem;
-            /* Reduced margin */
+            margin-top: -0.3rem;
+            margin-bottom: 1rem;
         }
 
         .controls-group .info-text {
-            font-size: 0.75em;
+            font-size: 0.8em;
             margin-top: 8px;
             margin-bottom: 0;
             color: var(--text-color);
             opacity: 0.8;
-            /* Reduced font size */
         }
 
-
-        /* Style CodeMirror editor */
+        /* CodeMirror editor styling */
         .CodeMirror {
-            border: 2px solid var(--border-color);
+            border: 3px solid var(--border-color);
             height: 70vh;
             width: 60vw;
             font-family: var(--font-family-monospace);
-            font-size: 13px;
-            line-height: 1.5;
-            /* Reduced line height */
+            font-size: 14px;
+            line-height: 1.6;
             border-radius: var(--border-radius-sharp);
             background-color: #fff;
-            /* Ensure white background */
             box-shadow: var(--shadow-strong);
         }
 
         .CodeMirror-focused {
             border-color: var(--primary-color);
-            box-shadow: 0 0 0 3px rgba(255, 107, 107, 0.3), var(--shadow-strong);
-            /* Primary color glow + existing shadow */
+            box-shadow: 0 0 0 3px rgba(255, 82, 82, 0.2), var(--shadow-strong);
         }
 
-
-        /* Basic Syntax Highlighting Styles (adjust if needed for new theme) */
+        /* Syntax Highlighting - Memphis-inspired color palette */
         .cm-keyword {
-            color: #D957A8;
+            color: var(--primary-color);
+            /* Red for keywords */
         }
 
-        /* Bright Pink/Magenta for keywords */
         .cm-variable-2 {
             color: var(--accent-color-blue);
+            /* Deep Blue for env vars */
         }
 
-        /* Bright Blue for env vars */
         .cm-variable-3 {
-            color: #FF8C00;
+            color: #FF9800;
+            /* Orange for user vars */
         }
 
-        /* Dark Orange for user vars */
         .cm-number {
-            color: var(--accent-color-blue);
+            color: var(--secondary-color);
+            /* Light Blue for numbers */
         }
 
         .cm-string {
-            color: #2A9D8F;
+            color: var(--accent-color-green);
+            /* Green for strings */
         }
 
-        /* Teal for strings */
         .cm-comment {
-            color: #A9A9A9;
+            color: #9E9E9E;
+            /* Medium Gray for comments */
             font-style: italic;
         }
 
-        /* Lighter Gray for comments */
         .cm-operator {
-            color: #D957A8;
+            color: var(--primary-color);
+            /* Red for operators */
+            font-weight: bold;
         }
 
         .cm-property {
-            color: #E58C35;
+            color: #FF9800;
+            /* Orange for param names */
         }
 
-        /* Orange for param names */
-
-
-        /* Asset Preview Styles */
+        /* Asset Preview Styling */
         #assetPreviews {
             display: flex;
             flex-direction: column;
@@ -370,49 +386,68 @@
         }
 
         #assetPreviews canvas {
-            border: 2px solid var(--border-color);
+            border: 3px solid var(--border-color);
             image-rendering: pixelated;
             cursor: pointer;
             background-color: var(--bg-color-alt);
             margin-top: 5px;
             border-radius: var(--border-radius-sharp);
-            /* box-shadow: var(--shadow-strong); Removed */
+            box-shadow: 3px 3px 0 var(--border-color);
         }
 
         #assetPreviews .asset-preview-item {
             margin-bottom: 0;
+            position: relative;
+        }
+
+        #assetPreviews .asset-preview-item::after {
+            content: "";
+            position: absolute;
+            bottom: -10px;
+            right: 10px;
+            width: 20px;
+            height: 20px;
+            background-color: var(--accent-color-yellow);
+            z-index: -1;
+            border: 2px solid var(--border-color);
         }
 
         #assetPreviews .asset-preview-item label {
             font-weight: 700;
-            font-size: 0.9em;
-            /* Reduced font size */
-            margin-bottom: 4px;
-            /* Reduced margin */
+            font-size: 0.95em;
+            margin-bottom: 6px;
             display: block;
-            color: var(--secondary-color);
+            color: var(--accent-color-blue);
         }
 
         #assetPreviews canvas.drop-target-active {
             outline: 3px dashed var(--primary-color);
             outline-offset: -3px;
-            background-color: #FFD1D1;
-            /* Light coral for drop target */
+            background-color: #FFE0E0;
+            /* Light red for drop target */
         }
 
         /* Environment Controls Styling */
         .env-control-row {
             display: flex;
             align-items: center;
-            gap: 10px;
-            /* Reduced gap */
-            margin-bottom: 8px;
-            /* Reduced margin */
+            gap: 12px;
+            margin-bottom: 12px;
+            position: relative;
+        }
+
+        .env-control-row::before {
+            content: "";
+            position: absolute;
+            left: -10px;
+            top: 50%;
+            width: 6px;
+            height: 2px;
+            background-color: var(--accent-color-blue);
         }
 
         .env-control-row label {
-            min-width: 60px;
-            /* Reduced min-width */
+            min-width: 70px;
             font-weight: 600;
             margin-bottom: 0;
         }
@@ -420,44 +455,33 @@
         .env-control-row .real-time-value {
             font-family: var(--font-family-monospace);
             background-color: var(--accent-color-yellow);
-            /* Yellow accent for real time */
             color: var(--text-color);
-            padding: 0.3rem 0.5rem;
-            /* Reduced padding */
+            padding: 0.4rem 0.6rem;
             border-radius: var(--border-radius-sharp);
-            min-width: 30px;
-            /* Reduced min-width */
+            min-width: 35px;
             text-align: right;
-            font-size: 0.8em;
-            /* Reduced font size */
-            border: 1px solid var(--text-color);
+            font-size: 0.85em;
+            border: 2px solid var(--border-color);
+            box-shadow: 2px 2px 0 var(--border-color);
         }
 
         .env-control-row input[type="number"] {
-            width: 55px;
-            /* Reduced width */
-            padding: 0.3rem 0.5rem;
-            /* Reduced padding */
+            width: 60px;
+            padding: 0.4rem 0.6rem;
         }
 
         .env-control-row button {
-            /* For counter buttons */
-            padding: 0.25rem 0.6rem;
-            /* Reduced padding */
-            font-size: 0.8em;
-            /* Reduced font size */
-            min-width: 28px;
-            /* Ensure buttons have some width */
+            padding: 0.3rem 0.7rem;
+            font-size: 0.85em;
+            min-width: 32px;
         }
 
-        /* Script Management Section */
+        /* Script Management Styling */
         .script-mgmt-row {
             display: flex;
             align-items: center;
-            gap: 8px;
-            /* Reduced gap */
-            margin-bottom: 10px;
-            /* Reduced margin */
+            gap: 10px;
+            margin-bottom: 12px;
         }
 
         .script-mgmt-row label {
@@ -467,84 +491,65 @@
         .script-mgmt-row select,
         .script-mgmt-row input[type="text"] {
             flex-grow: 1;
-            min-width: 150px;
-            /* Slightly reduced min-width */
+            min-width: 160px;
         }
 
         #scriptMgmtStatus {
-            font-size: 0.8em;
-            /* Reduced font size */
+            font-size: 0.85em;
             font-weight: 600;
-            margin: 8px 0 0 0;
-            /* Reduced margin */
-            min-height: 1.2em;
-            /* Adjusted min-height */
-            padding: 4px;
-            /* Reduced padding */
+            margin: 10px 0 0 0;
+            min-height: 1.4em;
+            padding: 6px;
             border-radius: var(--border-radius-sharp);
         }
 
         #scriptMgmtStatus[style*="color: red;"] {
-            /* More specific for error */
             background-color: var(--error-color-bg);
             color: var(--error-color-fg);
-            border: 1px solid var(--text-color);
+            border: 2px solid var(--border-color);
         }
 
         #scriptMgmtStatus[style*="color: green;"] {
-            /* More specific for success */
             background-color: var(--success-color-bg);
             color: var(--success-color-fg);
-            border: 1px solid var(--text-color);
+            border: 2px solid var(--border-color);
         }
-
 
         /* Device Sync List */
         #deviceScriptListContainer {
             max-height: 200px;
-            /* Slightly reduced max height */
             overflow-y: auto;
-            border: 2px solid var(--border-color-light);
-            padding: 10px;
-            /* Reduced padding */
+            border: 3px solid var(--border-color-light);
+            padding: 12px;
             border-radius: var(--border-radius-sharp);
             background-color: var(--bg-color-alt);
         }
 
         #deviceScriptListContainer div {
-            margin-bottom: 4px;
-            /* Reduced margin */
+            margin-bottom: 6px;
             display: flex;
             align-items: center;
         }
 
         #deviceScriptListContainer input[type="checkbox"] {
-            margin-right: 8px;
-            /* Reduced margin */
+            margin-right: 10px;
             accent-color: var(--primary-color);
-            transform: scale(1.1);
-            /* Slightly reduced scale */
+            transform: scale(1.2);
             cursor: pointer;
         }
 
         #deviceScriptListContainer label {
             font-weight: 500;
-            /* Normal weight for list items */
             cursor: pointer;
-            font-size: 0.85em;
-            /* Reduced font size */
+            font-size: 0.9em;
         }
 
         /* Utility for inline flex items */
         .inline-flex-center {
             display: flex;
             align-items: center;
-            gap: 6px;
-            /* Reduced gap */
-            margin-bottom: 6px;
-            /* Reduced margin */
-            font-size: 0.85em;
-            /* Reduced font size */
+            gap: 8px;
+            margin-bottom: 8px;
         }
 
         .inline-flex-center input[type="checkbox"],
@@ -555,7 +560,44 @@
 
         .inline-flex-center input[type="checkbox"] {
             accent-color: var(--primary-color);
-            transform: scale(1.1);
+            transform: scale(1.2);
+        }
+
+        /* Memphis-inspired zigzag decoration for page */
+        body::before {
+            content: "";
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 8px;
+            background: repeating-linear-gradient(90deg,
+                    var(--accent-color-yellow),
+                    var(--accent-color-yellow) 20px,
+                    var(--primary-color) 20px,
+                    var(--primary-color) 40px,
+                    var(--secondary-color) 40px,
+                    var(--secondary-color) 60px,
+                    var(--accent-color-green) 60px,
+                    var(--accent-color-green) 80px);
+            z-index: 1000;
+        }
+
+        /* Media queries for better responsiveness */
+        @media (max-width: 1200px) {
+            body {
+                flex-direction: column;
+                gap: 30px;
+            }
+
+            .column:last-child {
+                max-width: 100%;
+            }
+
+            .CodeMirror {
+                width: 100%;
+                height: 60vh;
+            }
         }
     </style>
 </head>
