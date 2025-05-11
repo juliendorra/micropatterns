@@ -599,6 +599,27 @@
                 height: 60vh;
             }
         }
+
+        #runButton {
+            /* Increased height */
+            padding-top: 1.2rem;
+            padding-bottom: 1.2rem;
+            padding-left: 3.5rem;
+            padding-right: 3.5rem;
+
+            /* Use SVG background with Memphis black and white stripes pattern */
+            background-color: var(--primary-color);
+            /* Base color as fallback */
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='300' height='80' viewBox='0 0 300 80'%3E%3Crect width='300' height='80' fill='%23FF5252'/%3E%3C!-- Left side Memphis stripes --%3E%3Cpath d='M0,0 L60,0 L0,80 L0,0 Z' fill='%23FFFFFF'/%3E%3Cpath d='M10,0 L70,0 L10,80 L0,80 L10,0 Z' fill='%23000000'/%3E%3Cpath d='M20,0 L80,0 L20,80 L10,80 L20,0 Z' fill='%23FFFFFF'/%3E%3Cpath d='M30,0 L90,0 L30,80 L20,80 L30,0 Z' fill='%23000000'/%3E%3Cpath d='M40,0 L100,0 L40,80 L30,80 L40,0 Z' fill='%23FFFFFF'/%3E%3C!-- Right side Memphis stripes --%3E%3Cpath d='M300,0 L300,80 L240,80 L300,0 Z' fill='%23FFFFFF'/%3E%3Cpath d='M290,0 L230,80 L240,80 L300,0 L290,0 Z' fill='%23000000'/%3E%3Cpath d='M280,0 L220,80 L230,80 L290,0 L280,0 Z' fill='%23FFFFFF'/%3E%3Cpath d='M270,0 L210,80 L220,80 L280,0 L270,0 Z' fill='%23000000'/%3E%3Cpath d='M260,0 L200,80 L210,80 L270,0 L260,0 Z' fill='%23FFFFFF'/%3E%3C/svg%3E");
+            background-size: cover;
+            background-position: center;
+
+            /* Ensure text is visible on the pattern */
+            position: relative;
+            color: var(--text-color-light);
+            font-weight: bold;
+            text-shadow: 1px 1px 1px rgba(0, 0, 0, 0.3);
+        }
     </style>
 </head>
 
