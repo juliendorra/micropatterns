@@ -889,8 +889,8 @@ body::before {
     }
 
     h3::after {
-        width: 15px;
-        height: 30px;
+        width: 30px;
+        height: 6px;
         right: -15px;
     }
 }
@@ -926,8 +926,8 @@ body::before {
     }
 
     h3::after {
-        width: 12px;
-        height: 25px;
+        width: 30px;
+        height: 6px;
         right: -12px;
     }
 
