@@ -423,8 +423,10 @@ button.secondary:active {
     margin-top: 15px;
     border-radius: var(--border-radius-sharp);
     box-shadow: var(--shadow-medium);
-    width: 50vw; /* Match the width of the CodeMirror editor */
-    box-sizing: border-box; /* Include padding and border in the width */
+    width: 50vw;
+    /* Match the width of the CodeMirror editor */
+    box-sizing: border-box;
+    /* Include padding and border in the width */
 }
 
 /* Remove background image when error log has content for better readability */
@@ -868,9 +870,10 @@ body::before {
         width: 100%;
         height: 60vh;
     }
-    
+
     #errorLog {
-        width: 100%; /* Full width on smaller screens */
+        width: 100%;
+        /* Full width on smaller screens */
     }
 
     h2 {
