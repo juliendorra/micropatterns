@@ -1091,9 +1091,157 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    function newScript() {
+    function createConfirmationDialog(message, options) {
+        // Create overlay
+        const overlay = document.createElement('div');
+        overlay.style.position = 'fixed';
+        overlay.style.top = '0';
+        overlay.style.left = '0';
+        overlay.style.width = '100%';
+        overlay.style.height = '100%';
+        overlay.style.backgroundColor = 'rgba(0, 0, 0, 0.5)';
+        overlay.style.display = 'flex';
+        overlay.style.justifyContent = 'center';
+        overlay.style.alignItems = 'center';
+        overlay.style.zIndex = '9999';
+
+        // Create dialog
+        const dialog = document.createElement('div');
+        dialog.style.backgroundColor = 'var(--bg-color-alt, white)';
+        dialog.style.border = '3px solid var(--border-color, black)';
+        dialog.style.borderRadius = 'var(--border-radius-slight, 4px)';
+        dialog.style.boxShadow = 'var(--shadow-strong, 4px 4px 0px black)';
+        dialog.style.padding = '20px';
+        dialog.style.maxWidth = '450px';
+        dialog.style.width = '90%';
+        dialog.style.textAlign = 'center';
+        dialog.style.position = 'relative';
+
+        // Add Memphis-style decorative element if using Memphis theme
+        const decorElement = document.createElement('div');
+        decorElement.style.position = 'absolute';
+        decorElement.style.top = '-10px';
+        decorElement.style.right = '-10px';
+        decorElement.style.width = '20px';
+        decorElement.style.height = '20px';
+        decorElement.style.backgroundColor = 'var(--accent-color-yellow, yellow)';
+        decorElement.style.border = '2px solid var(--border-color, black)';
+        decorElement.style.transform = 'rotate(45deg)';
+        decorElement.style.zIndex = '-1';
+        dialog.appendChild(decorElement);
+
+        // Add message
+        const messageElement = document.createElement('p');
+        messageElement.textContent = message;
+        messageElement.style.marginBottom = '20px';
+        messageElement.style.fontSize = '1rem';
+        dialog.appendChild(messageElement);
+
+        // Add buttons container
+        const buttonsContainer = document.createElement('div');
+        buttonsContainer.style.display = 'flex';
+        buttonsContainer.style.justifyContent = 'center';
+        buttonsContainer.style.gap = '10px';
+        buttonsContainer.style.flexWrap = 'wrap';
+        dialog.appendChild(buttonsContainer);
+
+        // Create a promise to return
+        return new Promise(resolve => {
+            // Add buttons based on options
+            options.forEach(option => {
+                const button = document.createElement('button');
+                button.textContent = option.label;
+                button.className = option.primary ? 'primary' : 'secondary';
+                
+                // Apply theme-consistent styling
+                if (option.primary) {
+                    button.style.backgroundColor = 'var(--accent-color-green, green)';
+                } else if (option.destructive) {
+                    button.style.backgroundColor = 'var(--error-color-bg, red)';
+                }
+                
+                button.addEventListener('click', () => {
+                    document.body.removeChild(overlay);
+                    resolve(option.value);
+                });
+                buttonsContainer.appendChild(button);
+            });
+
+            // Add dialog to overlay and overlay to body
+            overlay.appendChild(dialog);
+            document.body.appendChild(overlay);
+        });
+    }
+
+    async function newScript() {
+        // Check if there's content in the editor that might be worth saving
+        const currentContent = codeMirrorEditor.getValue().trim();
+        const defaultContent = `# New MicroPatterns Script\n# Display is ${env.WIDTH}x${env.HEIGHT}\n\nDEFINE PATTERN NAME="stripes" WIDTH=8 HEIGHT=8 DATA="1111111100000000111111110000000011111111000000001111111100000000"\n\nCOLOR NAME=BLACK\nFILL NAME="stripes"\nFILL_RECT X=0 Y=0 WIDTH=$WIDTH HEIGHT=$HEIGHT\n\n`.trim();
+        
+        // If editor is empty or contains only the default template, no need to confirm
+        if (currentContent === '' || currentContent === defaultContent) {
+            createNewScript();
+            return;
+        }
+        
+        // Check if the script has a name
+        const hasScriptName = scriptNameInput.value.trim() !== '';
+        
+        // Prepare dialog options based on whether script has a name
+        let dialogMessage, dialogOptions;
+        
+        if (hasScriptName) {
+            dialogMessage = "Do you want to save your current script before creating a new one?";
+            dialogOptions = [
+                { label: "Save & New", value: "save", primary: true },
+                { label: "Discard & New", value: "discard", destructive: true },
+                { label: "Cancel", value: "cancel" }
+            ];
+        } else {
+            dialogMessage = "Your script doesn't have a name. What would you like to do?";
+            dialogOptions = [
+                { label: "Name & Save", value: "name", primary: true },
+                { label: "Discard & New", value: "discard", destructive: true },
+                { label: "Cancel", value: "cancel" }
+            ];
+        }
+        
+        // Show confirmation dialog
+        const result = await createConfirmationDialog(dialogMessage, dialogOptions);
+        
+        switch (result) {
+            case "save":
+                // First save the current script
+                await saveScript();
+                // Then create new script
+                createNewScript();
+                break;
+            case "name":
+                // Focus on the name input field to prompt user to enter a name
+                scriptNameInput.focus();
+                // Highlight the field to make it obvious
+                scriptNameInput.classList.add('highlight-input');
+                // Remove highlight after a delay
+                setTimeout(() => {
+                    scriptNameInput.classList.remove('highlight-input');
+                }, 2000);
+                // Show a message
+                setStatusMessage("Please enter a name for your script before saving.", true);
+                break;
+            case "discard":
+                // Create new script without saving
+                createNewScript();
+                break;
+            case "cancel":
+            default:
+                // Do nothing, keep current script
+                break;
+        }
+    }
+    
+    function createNewScript() {
         scriptNameInput.value = '';
-        codeMirrorEditor.setValue(`# New MicroPatterns Script\n# Display is ${env.WIDTH}x${env.HEIGHT}\n\nCOLOR NAME=BLACK\nFILL NAME=SOLID\nFILL_RECT X=0 Y=0 WIDTH=$WIDTH HEIGHT=$HEIGHT\n\n`);
+        codeMirrorEditor.setValue(`# New MicroPatterns Script\n# Display is ${env.WIDTH}x${env.HEIGHT}\n\nDEFINE PATTERN NAME="stripes" WIDTH=8 HEIGHT=8 DATA="1111111100000000111111110000000011111111000000001111111100000000"\n\nCOLOR NAME=BLACK\nFILL NAME="stripes"\nFILL_RECT X=0 Y=0 WIDTH=$WIDTH HEIGHT=$HEIGHT\n\n`);
         scriptListSelect.value = ''; // Deselect any loaded script
         setStatusMessage("Cleared editor for new script.", false);
         runScript(); // Run the blank script template
