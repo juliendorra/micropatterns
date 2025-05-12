@@ -468,9 +468,10 @@ class MicroPatternsParser {
 
             // --- Control Flow (Special Syntax) ---
             case 'REPEAT':
-                 const repeatMatch = command.rawArgsString.match(/^COUNT\s*=\s*(.*?)\s+TIMES$/i);
+                 // Updated regex: Remove TIMES. Expects "COUNT=value"
+                 const repeatMatch = command.rawArgsString.match(/^COUNT\s*=\s*(.*)$/i);
                  if (!repeatMatch) {
-                     throw new ParseError(`Invalid syntax for REPEAT. Expected 'REPEAT COUNT=value TIMES'.`, command.line);
+                     throw new ParseError(`Invalid syntax for REPEAT. Expected 'REPEAT COUNT=value'.`, command.line);
                  }
                  const countValueString = repeatMatch[1].trim();
                  if (countValueString === '') {

@@ -232,12 +232,13 @@ MicroPatterns is a mini-language designed for creating generative pixel art, pri
 
 *   **Repeat Loop:**
    ```micropatterns
-   REPEAT COUNT=n TIMES
+   REPEAT COUNT=n
        # Commands to repeat...
        # $INDEX is available here (0 to n-1)
    ENDREPEAT
    ```
    *   Executes the block of commands `n` times. `n` can be an integer literal or variable (`$var` - case-insensitive), must be >= 0.
+   *   The `COUNT` parameter specifies the number of iterations.
    *   An implicit, read-only variable `$INDEX` (case-insensitive lookup) holds the current iteration number (0-based) within the loop block.
 
 *   **Conditional:**
@@ -289,7 +290,7 @@ FILL_RECT X=0 Y=0 WIDTH=$width HEIGHT=$HEIGHT
 COLOR NAME=BLACK
 # Use solid color for markers
 FILL NAME=SOLID 
-REPEAT COUNT=12 TIMES
+REPEAT COUNT=12
    RESET_TRANSFORMS
    # Center origin (assuming 200x200 display)
    TRANSLATE DX=100 DY=100 
@@ -337,7 +338,7 @@ COLOR NAME=WHITE
 FILL NAME=SOLID
 # Declare loop variable (initialized to 0 by default)
 VAR $diag_pos 
-REPEAT COUNT=50 TIMES
+REPEAT COUNT=50
     LET $diag_pos = $INDEX * 2 + 50 # Update inside loop
     # Use FILL_PIXEL: only draws if the background pattern at (diag_pos, diag_pos) is '1'
     FILL_PIXEL X=$diag_pos Y=$diag_pos

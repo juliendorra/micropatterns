@@ -295,7 +295,7 @@ bool MicroPatternsParser::processLine(const String& line) {
     return true;
 }
 
-// Parses REPEAT COUNT=value TIMES
+// Parses REPEAT COUNT=value
 bool MicroPatternsParser::parseRepeat(const String& argsString, ParamValue& outCount) {
     String trimmedArgs = argsString;
     trimmedArgs.trim();
@@ -307,15 +307,14 @@ bool MicroPatternsParser::parseRepeat(const String& argsString, ParamValue& outC
         return false;
     }
 
-    int equalsPos = trimmedArgs.indexOf('=');
-    int timesPos = upperArgs.indexOf(" TIMES");
-
-    if (timesPos == -1) {
-        addError("REPEAT requires TIMES keyword after COUNT value.");
+    int equalsPos = trimmedArgs.indexOf('='); // Find the first '='
+    if (equalsPos == -1) { // Should be caught by startsWith, but defensive
+        addError("Invalid format for REPEAT COUNT parameter. Missing '='.");
         return false;
     }
 
-    String countValueStr = trimmedArgs.substring(equalsPos + 1, timesPos);
+    // The value is everything after "COUNT="
+    String countValueStr = trimmedArgs.substring(equalsPos + 1);
     countValueStr.trim();
 
     if (countValueStr.length() == 0) {
@@ -323,22 +322,27 @@ bool MicroPatternsParser::parseRepeat(const String& argsString, ParamValue& outC
         return false;
     }
 
-    String remaining = trimmedArgs.substring(timesPos + 6); // Length of " TIMES"
-    remaining.trim();
-    if (remaining.length() > 0) {
-        addError("Unexpected characters after TIMES in REPEAT command: '" + remaining + "'");
-        return false;
-    }
-
+    // Attempt to parse the value string. parseValue expects a single token.
+    // If countValueStr contains multiple tokens (e.g., "10 EXTRA"), parseValue will likely
+    // treat it as a single string "10 EXTRA", and subsequent type checks will fail.
     outCount = parseValue(countValueStr);
 
     if (outCount.type != ParamValue::TYPE_INT && outCount.type != ParamValue::TYPE_VARIABLE) {
-        addError("REPEAT COUNT value must be an integer or a variable ($var). Got: " + countValueStr);
+        addError("REPEAT COUNT value must be an integer or a variable ($var). Got: '" + countValueStr + "' which parsed as type " + String(outCount.type));
         return false;
     }
-    if (outCount.type == ParamValue::TYPE_VARIABLE && !validateVariableUsage(outCount.stringValue)) {
-        return false; // Error added by validateVariableUsage
+
+    // If it's a variable, validate its existence/format
+    if (outCount.type == ParamValue::TYPE_VARIABLE) {
+        if (!validateVariableUsage(outCount.stringValue)) {
+            // Error already added by validateVariableUsage
+            return false;
+        }
     }
+    
+    // Check if the original countValueStr was indeed just a single valid token.
+    // This is implicitly handled because parseValue would return a TYPE_STRING for "10 EXTRA",
+    // which would then fail the type check above.
 
     return true;
 }
