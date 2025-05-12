@@ -18,8 +18,8 @@
         <h2>MicroPatterns Script</h2>
         <!-- Container for the toggle and label -->
         <div class="inline-flex-center">
-            <input type="checkbox" id="lineWrapToggle" checked>
             <label for="lineWrapToggle">Wrap Lines</label>
+            <input type="checkbox" id="lineWrapToggle" checked>
         </div>
         <textarea id="scriptInput" spellcheck="false">
 # Welcome to MicroPatterns!
@@ -81,21 +81,19 @@ REPEAT COUNT=100 TIMES
 ENDREPEAT
                     
         </textarea>
-        <button id="runButton">Run Script</button>
+        <button id="runButton"><span>Run Script</span></button>
         <div id="errorLog"></div>
     </div>
 
     <div class="column">
         <h2>Emulator Display</h2>
         <div style="margin-bottom: 15px; display: flex; align-items: center; gap: 15px; flex-wrap: wrap;">
-            <div class="inline-flex-center" style="gap: 8px;">
-                <label for="displaySizeSelect">Display Size:</label>
-                <select id="displaySizeSelect">
-                    <option value="540x960">540x960 (M5Paper)</option>
-                    <option value="200x200">200x200 (Default)</option>
-                </select>
-            </div>
-            <button id="zoomToggleButton" title="Toggle M5Paper Zoom (50%/100%)" class="secondary" style="padding: 0.3rem 0.6rem;">Zoom</button>
+            <label for="displaySizeSelect">Display Size:</label>
+            <select id="displaySizeSelect">
+                <option value="540x960">540x960 (M5Paper)</option>
+                <option value="200x200">200x200 (Default)</option>
+            </select>
+            <button id="zoomToggleButton" title="Toggle M5Paper Zoom (50%/100%)" class="secondary">Zoom</button>
         </div>
         <canvas id="displayCanvas" width="540" height="960"></canvas> <!-- Default to M5Paper actual size for buffer -->
 
