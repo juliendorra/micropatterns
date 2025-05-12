@@ -1152,14 +1152,14 @@ document.addEventListener('DOMContentLoaded', () => {
                 const button = document.createElement('button');
                 button.textContent = option.label;
                 button.className = option.primary ? 'primary' : 'secondary';
-                
+
                 // Apply theme-consistent styling
                 if (option.primary) {
                     button.style.backgroundColor = 'var(--accent-color-green, green)';
                 } else if (option.destructive) {
                     button.style.backgroundColor = 'var(--error-color-bg, red)';
                 }
-                
+
                 button.addEventListener('click', () => {
                     document.body.removeChild(overlay);
                     resolve(option.value);
@@ -1177,19 +1177,19 @@ document.addEventListener('DOMContentLoaded', () => {
         // Check if there's content in the editor that might be worth saving
         const currentContent = codeMirrorEditor.getValue().trim();
         const defaultContent = `# New MicroPatterns Script\n# Display is ${env.WIDTH}x${env.HEIGHT}\n\nDEFINE PATTERN NAME="stripes" WIDTH=8 HEIGHT=8 DATA="1111111100000000111111110000000011111111000000001111111100000000"\n\nCOLOR NAME=BLACK\nFILL NAME="stripes"\nFILL_RECT X=0 Y=0 WIDTH=$WIDTH HEIGHT=$HEIGHT\n\n`.trim();
-        
+
         // If editor is empty or contains only the default template, no need to confirm
         if (currentContent === '' || currentContent === defaultContent) {
             createNewScript();
             return;
         }
-        
+
         // Check if the script has a name
         const hasScriptName = scriptNameInput.value.trim() !== '';
-        
+
         // Prepare dialog options based on whether script has a name
         let dialogMessage, dialogOptions;
-        
+
         if (hasScriptName) {
             dialogMessage = "Do you want to save your current script before creating a new one?";
             dialogOptions = [
@@ -1205,10 +1205,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 { label: "Cancel", value: "cancel" }
             ];
         }
-        
+
         // Show confirmation dialog
         const result = await createConfirmationDialog(dialogMessage, dialogOptions);
-        
+
         switch (result) {
             case "save":
                 // First save the current script
@@ -1238,10 +1238,21 @@ document.addEventListener('DOMContentLoaded', () => {
                 break;
         }
     }
-    
+
     function createNewScript() {
         scriptNameInput.value = '';
-        codeMirrorEditor.setValue(`# New MicroPatterns Script\n# Display is ${env.WIDTH}x${env.HEIGHT}\n\nDEFINE PATTERN NAME="stripes" WIDTH=8 HEIGHT=8 DATA="1111111100000000111111110000000011111111000000001111111100000000"\n\nCOLOR NAME=BLACK\nFILL NAME="stripes"\nFILL_RECT X=0 Y=0 WIDTH=$WIDTH HEIGHT=$HEIGHT\n\n`);
+        codeMirrorEditor.setValue(`# New MicroPatterns Script\n# Display is ${env.WIDTH}x${env.HEIGHT}
+
+DEFINE PATTERN NAME="stripes" WIDTH=8 HEIGHT=8 DATA="1111111100000000111111110000000011111111000000001111111100000000"
+
+VAR $CENTERX = $WIDTH / 2
+VAR $CENTERY = $HEIGHT / 2
+VAR $SECONDPLUSONE = $SECOND + 1
+
+COLOR NAME=BLACK
+FILL NAME="stripes"
+FILL_RECT X=0 Y=0 WIDTH=$WIDTH HEIGHT=$HEIGHT
+`);
         scriptListSelect.value = ''; // Deselect any loaded script
         setStatusMessage("Cleared editor for new script.", false);
         runScript(); // Run the blank script template
