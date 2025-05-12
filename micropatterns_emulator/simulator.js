@@ -17,6 +17,10 @@ document.addEventListener('DOMContentLoaded', () => {
     const displayInfoSpan = document.getElementById('displayInfoSpan');
     const zoomToggleButton = document.getElementById('zoomToggleButton');
 
+    // Theme Switcher UI
+    const themeStylesheet = document.getElementById('themeStylesheet');
+    const themeSelect = document.getElementById('themeSelect');
+
     // Script Management UI
     const scriptListSelect = document.getElementById('scriptList');
     const loadScriptButton = document.getElementById('loadScriptButton');
@@ -29,6 +33,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // --- Local Storage Keys ---
     const LOCAL_STORAGE_SCRIPT_CONTENT_KEY = 'micropatterns_editor_content';
     const LOCAL_STORAGE_SCRIPT_NAME_KEY = 'micropatterns_editor_script_name';
+    const LOCAL_STORAGE_THEME_KEY = 'micropatterns_theme_preference';
 
     // --- Configuration ---
     // Assume server runs on localhost:8000 during development
@@ -152,6 +157,43 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
     // --- End Line Wrap Toggle Logic ---
+
+    // --- Theme Switcher Logic ---
+    function applyTheme(themeFile) {
+        if (themeStylesheet && themeFile) {
+            themeStylesheet.href = themeFile;
+            if (themeSelect) { // Sync dropdown if it exists
+                themeSelect.value = themeFile;
+            }
+            localStorage.setItem(LOCAL_STORAGE_THEME_KEY, themeFile);
+            console.log(`Theme applied: ${themeFile}`);
+        } else {
+            console.error("Theme stylesheet link or theme file not found for applyTheme.");
+        }
+    }
+
+    // Load theme preference on page load
+    if (themeStylesheet && themeSelect) { // Ensure elements are available
+        const savedTheme = localStorage.getItem(LOCAL_STORAGE_THEME_KEY);
+        if (savedTheme) {
+            applyTheme(savedTheme); // This will also set themeSelect.value
+            console.log(`Loaded theme from local storage: ${savedTheme}`);
+        } else {
+            // Default to the one set in HTML (style.css) and save it as preference
+            const initialTheme = themeStylesheet.getAttribute('href') || 'style.css';
+            themeSelect.value = initialTheme; // Ensure select matches
+            localStorage.setItem(LOCAL_STORAGE_THEME_KEY, initialTheme);
+            console.log(`No saved theme, defaulted to ${initialTheme} and saved preference.`);
+        }
+
+        // Add listener for theme changes
+        themeSelect.addEventListener('change', (event) => {
+            applyTheme(event.target.value);
+        });
+    } else {
+        console.error("Theme select or stylesheet element not found. Theme switching disabled.");
+    }
+    // --- End Theme Switcher Logic ---
 
     // --- Autocompletion Logic ---
 

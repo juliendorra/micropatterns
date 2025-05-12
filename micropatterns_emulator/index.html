@@ -10,14 +10,24 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.15/theme/neat.css">
     <!-- CodeMirror show-hint addon CSS -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.15/addon/hint/show-hint.min.css">
-    <link rel="stylesheet" href="style.css">
+    <link id="themeStylesheet" rel="stylesheet" href="style.css"> <!-- Changed ID and default -->
 </head>
 
 <body>
     <div class="column">
         <h2>MicroPatterns Script</h2>
         <!-- Container for the toggle and label -->
+
         <div class="inline-flex-center">
+
+            <label for="themeSelect">Theme:</label>
+            <select id="themeSelect">
+                <option value="style.css">Memphis (Default)</option>
+                <option value="toned-down.css">Toned Down</option>
+                <option value="basic.css">Basic</option>
+            </select>
+
+
             <label for="lineWrapToggle">Wrap Lines</label>
             <input type="checkbox" id="lineWrapToggle" checked>
         </div>
@@ -94,6 +104,7 @@ ENDREPEAT
                 <option value="200x200">200x200 (Default)</option>
             </select>
             <button id="zoomToggleButton" title="Toggle M5Paper Zoom (50%/100%)" class="secondary">Zoom</button>
+
         </div>
         <canvas id="displayCanvas" width="540" height="960"></canvas> <!-- Default to M5Paper actual size for buffer -->
 
