@@ -36,6 +36,11 @@ void IRAM_ATTR button_isr(void* arg);
 extern volatile bool g_user_interrupt_signal_for_fetch_task;
 extern volatile bool g_wakeup_handled; // Flag to track if wakeup event has been handled in this wake cycle
 
+// Forward declarations for items from main.cpp used in global_setting.cpp
+extern bool shouldPerformFetch(const char* caller);
+extern SemaphoreHandle_t g_fetchRequestSemaphore;
+
+
 // Basic settings placeholder - can be expanded later
 // Example: Timezone might still be relevant
 extern int8_t global_timezone;
@@ -60,6 +65,11 @@ bool saveScriptContent(const char* id, const char* content);
 bool loadScriptContent(const char* id, String& content);
 bool saveCurrentScriptId(const char* id);
 bool loadCurrentScriptId(String& id);
+
+// --- Script Execution State Persistence ---
+extern const char* SCRIPT_STATES_PATH; // Path to the script states JSON file
+bool saveScriptExecutionState(const char* scriptId, int counter, int hour, int minute, int second);
+bool loadScriptExecutionState(const char* scriptId, int& counter, int& hour, int& minute, int& second);
 
 // --- Sleep/Shutdown ---
 void goToLightSleep(); // Renamed from Shutdown

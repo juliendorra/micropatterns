@@ -5,7 +5,17 @@ This project defines and implements the **MicroPatterns DSL**, a mini-language d
 It includes:
 *   The MicroPatterns DSL Specification (see below).
 *   A JavaScript-based emulator (`micropatterns_emulator/`) for testing and developing scripts in a web browser.
-*   An ESP32 C++/Arduino runtime for M5Paper
+*   An ESP32 C++/Arduino runtime for M5Paper, including:
+    *   Parsing and execution of the DSL.
+    *   SPIFFS storage for multiple scripts.
+    *   Fetching scripts from a remote API (e.g., `micropatterns-api.deno.dev`).
+    *   Automatic refresh checks only on boot and after timer-based wakeups (not on button presses).
+    *   Graceful handling of unavailable WiFi - skips fetch entirely if WiFi is unavailable.
+    *   Non-blocking fetch operations that never prevent device operation.
+    *   Light sleep support for power saving.
+    *   Graceful handling of unavailable WiFi - skips fetch entirely if WiFi is unavailable.
+    *   Non-blocking fetch operations that never prevent device operation.
+    *   Light sleep support for power saving.
 
 ## MicroPatterns DSL Overview
 

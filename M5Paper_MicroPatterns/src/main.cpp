@@ -55,7 +55,6 @@ DRAW NAME="girafe" WIDTH=20 HEIGHT=20 X=0 Y=0
 M5EPD_Canvas canvas(&M5.EPD);
 MicroPatternsParser parser;
 MicroPatternsRuntime *runtime = nullptr;
-RTC_DATA_ATTR int executionCounter = 0; // Use RTC memory to persist counter across sleep
 RTC_DATA_ATTR int last_fetch_hour = -1; // -1 indicates no previous fetch
 RTC_DATA_ATTR int last_fetch_minute = -1;
 RTC_DATA_ATTR int last_fetch_day = -1;
@@ -64,6 +63,7 @@ RTC_DATA_ATTR int last_fetch_year = -1;
 RTC_Time time_struct;                    // To store time from RTC
 RTC_Date date_struct;                    // To store date from RTC
 RTC_DATA_ATTR int freshStartCounter = 0; // Counter for triggering full data refresh
+RTC_DATA_ATTR bool g_full_refresh_intended = false; // True if next fetch should be a full refresh
 String currentScriptId = "";             // ID of the script to execute
 String currentScriptContent = "";        // Content of the script to execute
 
@@ -87,15 +87,6 @@ struct DisplayMsg
     bool push_full_update; // GC16 vs DU4
 };
 
-enum FetchResultStatus
-{
-    FETCH_SUCCESS,
-    FETCH_GENUINE_ERROR,
-    FETCH_INTERRUPTED_BY_USER, // Hard interrupt
-    FETCH_NO_WIFI,
-    FETCH_RESTART_REQUESTED // Graceful restart
-};
-
 // Function Prototypes
 bool selectNextScript(bool moveUp);
 bool loadScriptToExecute();
@@ -103,156 +94,191 @@ void displayMessage(const String &msg, int y_offset, uint16_t color);
 void displayParseErrors();
 void handleWakeupAndScriptExecution(uint8_t raw_gpio_from_isr); // Modified signature
 void fetchTaskFunction(void *pvParameters);
-FetchResultStatus perform_fetch_operations(); // Renamed and modified fetchAndStoreScripts
-void performFullDataRefresh();                // Declaration already in main.h, actual implementation below
+FetchResultStatus perform_fetch_operations(bool isFullRefresh); // Modified signature
+bool shouldPerformFetch(const char* caller);  // Helper to check if fetch should be performed based on time criteria
+void clearAllScriptDataFromSPIFFS();      // New helper function
 
 // Interrupt handling for wakeup pin is defined in global_setting.cpp
 
-void performFullDataRefresh()
-{
-    log_w("Performing full data refresh (deleting list.json, current_script.id, and content files).");
+// Helper function to check if a fetch should be performed based on time criteria
+bool shouldPerformFetch(const char* caller) {
+    if (g_full_refresh_intended) {
+        log_i("%s: Allowing fetch: Full refresh is intended.", caller);
+        return true;
+    }
 
-    // Display message on screen - ensure canvas is ready
-    if (canvas.frameBuffer())
-    {                         // Check if canvas framebuffer is created
-        canvas.fillCanvas(0); // Clear screen
-        displayMessage("Full Data Refresh...", 100, 15);
-        canvas.pushCanvas(0, 0, UPDATE_MODE_GC16);
-        vTaskDelay(pdMS_TO_TICKS(1000)); // Show message for a bit
+    // Get current time and date from RTC
+    RTC_Time currentTime;
+    RTC_Date currentDate;
+    M5.RTC.getTime(&currentTime);
+    M5.RTC.getDate(&currentDate);
+
+    bool allowFetch = false;
+    int elapsed_minutes = 0;
+
+    if (last_fetch_year == -1 || last_fetch_month == -1 || last_fetch_day == -1)
+    { // First fetch or old version data
+        log_i("%s: Allowing fetch: No previous full fetch date stored.", caller);
+        allowFetch = true;
+    }
+    else if (currentDate.year != last_fetch_year ||
+             currentDate.mon != last_fetch_month ||
+             currentDate.day != last_fetch_day)
+    {
+        log_i("%s: Allowing fetch: Date changed (Last: %d-%02d-%02d, Now: %d-%02d-%02d).",
+              caller, last_fetch_year, last_fetch_month, last_fetch_day,
+              currentDate.year, currentDate.mon, currentDate.day);
+        allowFetch = true;
     }
     else
     {
-        log_e("performFullDataRefresh: Canvas not ready for displaying message.");
+        // Date is the same, check time interval
+        if (last_fetch_hour != -1)
+        {
+            if (currentTime.hour < last_fetch_hour)
+            { // Crossed midnight (should be caught by date check, but defensive)
+                elapsed_minutes = (currentTime.hour + 24 - last_fetch_hour) * 60 + (currentTime.min - last_fetch_minute);
+            }
+            else
+            {
+                elapsed_minutes = (currentTime.hour - last_fetch_hour) * 60 + (currentTime.min - last_fetch_minute);
+            }
+        }
+        else
+        {
+            log_w("%s: Inconsistent RTC data: Date set but hour not. Allowing fetch.", caller);
+            allowFetch = true;
+        }
+
+        if (elapsed_minutes >= 120)
+        {
+            log_i("%s: Allowing fetch: Same date, but >= 120 minutes passed (elapsed: %d min).", caller, elapsed_minutes);
+            allowFetch = true;
+        }
+        else
+        {
+            log_i("%s: Skipping fetch: Same date and < 120 minutes passed since last successful fetch (Last: %02d:%02d, Now: %02d:%02d, Elapsed: %d min).",
+                  caller, last_fetch_hour, last_fetch_minute, currentTime.hour, currentTime.min, elapsed_minutes);
+            allowFetch = false;
+        }
     }
+    
+    return allowFetch;
+}
+
+void clearAllScriptDataFromSPIFFS() {
+    log_w("clearAllScriptDataFromSPIFFS: Clearing all script data (list.json and content files).");
 
     // Delete list.json
-    if (SPIFFS.exists("/scripts/list.json"))
-    {
-        if (SPIFFS.remove("/scripts/list.json"))
-        {
-            log_i("performFullDataRefresh: Deleted /scripts/list.json");
+    if (SPIFFS.exists("/scripts/list.json")) {
+        if (SPIFFS.remove("/scripts/list.json")) {
+            log_i("clearAllScriptDataFromSPIFFS: Deleted /scripts/list.json");
+        } else {
+            log_e("clearAllScriptDataFromSPIFFS: Failed to delete /scripts/list.json");
         }
-        else
-        {
-            log_e("performFullDataRefresh: Failed to delete /scripts/list.json");
-        }
-    }
-    else
-    {
-        log_i("performFullDataRefresh: /scripts/list.json not found, no need to delete.");
-    }
-
-    // Delete current_script.id
-    if (SPIFFS.exists("/current_script.id"))
-    {
-        if (SPIFFS.remove("/current_script.id"))
-        {
-            log_i("performFullDataRefresh: Deleted /current_script.id");
-        }
-        else
-        {
-            log_e("performFullDataRefresh: Failed to delete /current_script.id");
-        }
-    }
-    else
-    {
-        log_i("performFullDataRefresh: /current_script.id not found, no need to delete.");
+    } else {
+        log_i("clearAllScriptDataFromSPIFFS: /scripts/list.json not found, no need to delete.");
     }
 
     // Delete all files in /scripts/content/
     File root = SPIFFS.open("/scripts/content");
-    if (root)
-    {
-        if (root.isDirectory())
-        {
+    if (root) {
+        if (root.isDirectory()) {
             File entry = root.openNextFile();
-            while (entry)
-            {
-                if (!entry.isDirectory())
-                {
-                    String pathComponent = entry.name(); // Based on logs, this might be "s0", "s1", etc.
+            while (entry) {
+                if (!entry.isDirectory()) {
+                    String pathComponent = entry.name();
                     String fullPathToDelete;
-
-                    if (pathComponent.startsWith("/"))
-                    {
-                        // If entry.name() somehow returned a full path, use it directly
+                    if (pathComponent.startsWith("/")) {
                         fullPathToDelete = pathComponent;
-                    }
-                    else
-                    {
-                        // Construct the full path using the known directory "/scripts/content/"
+                    } else {
                         fullPathToDelete = String("/scripts/content/") + pathComponent;
                     }
-
-                    log_i("performFullDataRefresh: Attempting to delete: %s (derived from component: %s)",
-                          fullPathToDelete.c_str(), pathComponent.c_str());
-
-                    if (!SPIFFS.remove(fullPathToDelete.c_str()))
-                    {
-                        log_e("performFullDataRefresh: Failed to delete %s", fullPathToDelete.c_str());
+                    log_i("clearAllScriptDataFromSPIFFS: Attempting to delete: %s", fullPathToDelete.c_str());
+                    if (!SPIFFS.remove(fullPathToDelete.c_str())) {
+                        log_e("clearAllScriptDataFromSPIFFS: Failed to delete %s", fullPathToDelete.c_str());
                     }
                 }
                 entry.close();
                 entry = root.openNextFile();
             }
-        }
-        else
-        {
-            log_w("performFullDataRefresh: /scripts/content is not a directory.");
+        } else {
+            log_w("clearAllScriptDataFromSPIFFS: /scripts/content is not a directory.");
         }
         root.close();
+    } else {
+        log_w("clearAllScriptDataFromSPIFFS: Could not open /scripts/content directory.");
     }
-    else
-    {
-        log_w("performFullDataRefresh: Could not open /scripts/content directory.");
-    }
-    log_i("Full data refresh completed.");
-    // The system will now proceed to loadScriptToExecute, which will find nothing
-    // and trigger a fetch operation via its existing logic.
+    log_i("clearAllScriptDataFromSPIFFS: Script data clearing completed.");
 }
+
 
 void setup()
 {
     SysInit_Start();
 
-    // Increment freshStartCounter early, but actual refresh happens after canvas init
-    freshStartCounter++;
-    log_i("MicroPatterns M5Paper - Wakeup Cycle %d. Fresh Start Counter: %d (Threshold: %d)",
-          executionCounter, freshStartCounter, FRESH_START_THRESHOLD);
-
-    // Initialize watchdog for the main task (Core 1)
+    // Initialize watchdog for the main task (Core 1) early
     esp_task_wdt_init(30, false); // 30 second timeout, don't panic on timeout
     esp_task_wdt_add(NULL);       // Add current task to watchdog
 
     canvas.createCanvas(540, 960);
     if (!canvas.frameBuffer())
     {
-        log_e("Failed to create canvas framebuffer!");
-        displayMessage("Canvas Error!");
-        canvas.pushCanvas(0, 0, UPDATE_MODE_GC16);
-        while (1)
-            delay(1000); // Halt
+        log_e("CRITICAL: Failed to create canvas framebuffer! Restarting device.");
+        // No point trying to draw an error message if canvas itself failed.
+        // A restart is the most robust option.
+        esp_restart(); // This function does not return.
     }
     log_i("Canvas created: %d x %d", canvas.width(), canvas.height());
+    esp_task_wdt_reset();
 
-    // Perform full data refresh if conditions are met
+    // --- Step 1: Immediate Script Execution on Boot ---
+    log_i("Setup: Attempting initial script execution before refresh checks.");
+    handleWakeupAndScriptExecution(0); // Pass 0 to indicate timer/boot wakeup
+    esp_task_wdt_reset();              // Reset watchdog after initial script execution
+
+    // Increment freshStartCounter after initial display, so its value reflects this boot cycle
+    freshStartCounter++;
+    log_i("MicroPatterns M5Paper - Fresh Start Counter: %d (Threshold: %d)",
+          freshStartCounter, FRESH_START_THRESHOLD);
+
+    // --- Step 2: Full Refresh Logic (if needed) ---
     // Condition 1: First boot after RTC_DATA_ATTR variable is initialized (e.g., after full power cycle or new flash where counter is 0)
     // Condition 2: Counter reaches or exceeds the defined threshold
     if (freshStartCounter == 1)
     {
-        log_i("Fresh Start: Counter is 1 (first boot cycle or reset). Performing full data refresh.");
-        performFullDataRefresh();
-        // Counter remains 1, will increment on next boot.
+        log_i("Fresh Start: Counter is 1 (first boot cycle or RTC reset). Intending full data refresh.");
+        g_full_refresh_intended = true; // Set the RTC flag
+        if (canvas.frameBuffer()) { // Display message about full refresh intent
+            canvas.fillCanvas(0);
+            displayMessage("Full Refresh Pending...", 100, 15);
+            canvas.pushCanvas(0, 0, UPDATE_MODE_GC16);
+            vTaskDelay(pdMS_TO_TICKS(1000)); // Show message
+        }
     }
-    else if (freshStartCounter >= FRESH_START_THRESHOLD)
+    else if (freshStartCounter > FRESH_START_THRESHOLD)
     {
-        log_i("Fresh Start: Threshold (%d) reached. Performing full data refresh.", FRESH_START_THRESHOLD);
-        performFullDataRefresh();
+        log_i("Fresh Start: Threshold (%d) reached/exceeded (Counter: %d). Intending full data refresh.", FRESH_START_THRESHOLD, freshStartCounter);
+        g_full_refresh_intended = true; // Set the RTC flag
         freshStartCounter = 1; // Reset counter to 1 to restart the cycle towards threshold
         log_i("Fresh Start: Counter reset to 1.");
+        if (canvas.frameBuffer()) { // Display message
+            canvas.fillCanvas(0);
+            displayMessage("Full Refresh Pending...", 100, 15);
+            canvas.pushCanvas(0, 0, UPDATE_MODE_GC16);
+            vTaskDelay(pdMS_TO_TICKS(1000)); // Show message
+        }
     }
+    // Ensure g_full_refresh_intended is false on the very first boot if freshStartCounter was 0 and became 1,
+    // but we don't want an immediate full refresh without user scripts yet.
+    // The above logic sets it to true if freshStartCounter IS 1.
+    // If freshStartCounter was 0 (initial RTC state) and became 1, and no scripts exist,
+    // g_full_refresh_intended will be true, and shouldPerformFetch will allow the first fetch.
+    // This seems correct.
 
-    // Create FreeRTOS objects
+    esp_task_wdt_reset();
+
+    // --- Step 3: Create FreeRTOS objects ---
     g_displayMessageQueue = xQueueCreate(5, sizeof(DisplayMsg));
     if (g_displayMessageQueue == NULL)
     {
@@ -278,6 +304,20 @@ void setup()
     {
         log_e("Failed to create fetch task!");
     }
+
+    // --- Initial Fetch Check on Boot ---
+    log_i("Setup: Checking fetch criteria on boot...");
+    if (shouldPerformFetch("Setup")) { // shouldPerformFetch now checks g_full_refresh_intended first
+        log_i("Setup: Triggering initial fetch request.");
+        if (g_fetchRequestSemaphore != NULL) {
+            xSemaphoreGive(g_fetchRequestSemaphore);
+        } else {
+            log_e("Setup: Fetch request semaphore is NULL, cannot trigger initial fetch.");
+        }
+    } else {
+        log_i("Setup: No fetch triggered on boot (full refresh not intended and time criteria not met).");
+    }
+    // --- End Initial Fetch Check ---
 }
 
 void loop()
@@ -363,11 +403,11 @@ void handleWakeupAndScriptExecution(uint8_t raw_gpio_from_isr) // Modified signa
 {
     bool scriptChangeRequest = false;
     bool moveUpDirection = false;
-    // Initialize fetchFromServerAfterExecution to false.
-    // It will only be set true if a button requests it AND no fetch is currently active/being restarted.
-    bool fetchFromServerAfterExecution = false;
+    // Fetch triggering is now handled in setup() and after timer wakeups in goToLightSleep()
+    // bool fetchFromServerAfterExecution = false; // Removed
 
     // Capture initial fetch task state to make decisions based on state at entry
+    // This is still useful for deciding whether to signal a restart if a button is pressed *during* a fetch.
     bool initial_fetch_task_state_is_progress = g_fetch_task_in_progress;
     bool signaled_restart_to_existing_fetch_this_cycle = false;
 
@@ -427,20 +467,14 @@ void handleWakeupAndScriptExecution(uint8_t raw_gpio_from_isr) // Modified signa
             log_i("Button UP (GPIO %d) detected.", processed_gpio_event);
             scriptChangeRequest = true;
             moveUpDirection = true;
-            if (!initial_fetch_task_state_is_progress)
-            {
-                fetchFromServerAfterExecution = true;
-            }
+            // fetchFromServerAfterExecution = true; // Removed - Fetch not triggered by script change
         }
         else if (processed_gpio_event == BUTTON_DOWN_PIN)
         {
             log_i("Button DOWN (GPIO %d) detected.", processed_gpio_event);
             scriptChangeRequest = true;
             moveUpDirection = false;
-            if (!initial_fetch_task_state_is_progress)
-            {
-                fetchFromServerAfterExecution = true;
-            }
+            // fetchFromServerAfterExecution = true; // Removed - Fetch not triggered by script change
         }
         else if (processed_gpio_event == BUTTON_PUSH_PIN)
         {
@@ -472,7 +506,7 @@ void handleWakeupAndScriptExecution(uint8_t raw_gpio_from_isr) // Modified signa
     // 3. Load Script Content (current, newly selected, or default)
     if (!loadScriptToExecute())
     {
-        log_w("Failed to load script from SPIFFS. Using default script.");
+        log_w("Failed to load script from SPIFFS. Using default script as last resort.");
         currentScriptContent = default_script;
         currentScriptId = "default";
     }
@@ -508,129 +542,66 @@ void handleWakeupAndScriptExecution(uint8_t raw_gpio_from_isr) // Modified signa
         // Reset watchdog timer before executing script to avoid timeouts
         esp_task_wdt_reset();
 
-        M5.RTC.getTime(&time_struct);
-        executionCounter++;
+        int counterForThisExecution;
+        int hourForThisExecution, minuteForThisExecution, secondForThisExecution;
+        bool isResumeWakeup = (processed_gpio_event == 0); // True if timer wakeup, false if button press
 
-        log_i("Executing script '%s' - Cycle: %d, Time: %02d:%02d:%02d",
-              currentScriptId.c_str(), executionCounter, time_struct.hour, time_struct.min, time_struct.sec);
+        // Attempt to load persisted state for the current script
+        bool stateLoaded = loadScriptExecutionState(currentScriptId.c_str(), counterForThisExecution, hourForThisExecution, minuteForThisExecution, secondForThisExecution);
 
-        runtime->setTime(time_struct.hour, time_struct.min, time_struct.sec);
-        runtime->setCounter(executionCounter);
+        if (isResumeWakeup && stateLoaded) {
+            // Resume wakeup and state was loaded: use the persisted state directly
+            log_i("Resuming script '%s' with persisted state: C=%d, T=%02d:%02d:%02d",
+                  currentScriptId.c_str(), counterForThisExecution, hourForThisExecution, minuteForThisExecution, secondForThisExecution);
+            // Time and counter are already set from loaded state.
+        } else {
+            // Button press, or no persisted state, or first run for this script:
+            // Use current RTC time.
+            M5.RTC.getTime(&time_struct);
+            hourForThisExecution = time_struct.hour;
+            minuteForThisExecution = time_struct.min;
+            secondForThisExecution = time_struct.sec;
+
+            if (stateLoaded) {
+                // State was loaded, but it's a button press, so increment the counter for this new execution.
+                counterForThisExecution++;
+            } else {
+                // No state loaded (e.g., new script, or script_states.json cleared), start counter from 0.
+                counterForThisExecution = 0;
+            }
+            log_i("Executing script '%s' with new/updated state: C=%d, T=%02d:%02d:%02d",
+                  currentScriptId.c_str(), counterForThisExecution, hourForThisExecution, minuteForThisExecution, secondForThisExecution);
+        }
+
+        runtime->setTime(hourForThisExecution, minuteForThisExecution, secondForThisExecution);
+        runtime->setCounter(counterForThisExecution);
+
+        log_i("Executing script '%s' - Using Counter: %d, Time: %02d:%02d:%02d",
+              currentScriptId.c_str(), counterForThisExecution, hourForThisExecution, minuteForThisExecution, secondForThisExecution);
 
         unsigned long executionStartTime = millis();
-
-        // Execute the script (this might take time for complex scripts)
         runtime->execute(); // This includes drawing and pushing canvas
-
         unsigned long executionEndTime = millis();
         unsigned long executionDuration = executionEndTime - executionStartTime;
+
         log_i("Script '%s' execution and rendering took %lu ms.", currentScriptId.c_str(), executionDuration);
 
-        // Reset watchdog timer after execution
-        esp_task_wdt_reset();
+        // Save the state that was *used* for this execution.
+        // This counter (counterForThisExecution) is the one that produced the current image.
+        // If resumed, it's the same. If button pressed, it's the incremented one.
+        saveScriptExecutionState(currentScriptId.c_str(), counterForThisExecution, hourForThisExecution, minuteForThisExecution, secondForThisExecution);
 
-        log_i("Finished execution for cycle #%d", executionCounter);
+        // Reset watchdog timer after execution and state saving
+        esp_task_wdt_reset();
+        log_i("Finished execution for script '%s', counter %d.", currentScriptId.c_str(), counterForThisExecution);
     }
     else
     {
         log_e("Runtime not initialized, skipping execution. Check for parse errors.");
     }
 
-    // 6. Trigger Fetch from Server if Requested
-    if (fetchFromServerAfterExecution) // True if UP/DOWN pressed AND no fetch was active at handler start
-    {
-        // Get current time and date from RTC
-        RTC_Time currentTime;
-        RTC_Date currentDate;
-        M5.RTC.getTime(&currentTime);
-        M5.RTC.getDate(&currentDate);
-
-        bool allowFetch = false;
-        int elapsed_minutes = 0; // Only relevant if date is the same
-
-        if (last_fetch_year == -1 || last_fetch_month == -1 || last_fetch_day == -1)
-        { // First fetch or old version data
-            log_i("Allowing fetch: No previous full fetch date stored.");
-            allowFetch = true;
-        }
-        else if (currentDate.year != last_fetch_year ||
-                 currentDate.mon != last_fetch_month ||
-                 currentDate.day != last_fetch_day)
-        {
-            log_i("Allowing fetch: Date changed (Last: %d-%02d-%02d, Now: %d-%02d-%02d).",
-                  last_fetch_year, last_fetch_month, last_fetch_day,
-                  currentDate.year, currentDate.mon, currentDate.day);
-            allowFetch = true;
-        }
-        else
-        {
-            // Date is the same, check time interval
-            if (last_fetch_hour != -1)
-            { // Should always be true if date was set
-                if (currentTime.hour < last_fetch_hour)
-                { // Crossed midnight (should be caught by date check, but defensive)
-                    elapsed_minutes = (currentTime.hour + 24 - last_fetch_hour) * 60 + (currentTime.min - last_fetch_minute);
-                }
-                else
-                {
-                    elapsed_minutes = (currentTime.hour - last_fetch_hour) * 60 + (currentTime.min - last_fetch_minute);
-                }
-            }
-            else
-            { // Should not happen if date was set, implies inconsistent RTC_DATA
-                log_w("Inconsistent RTC data: Date set but hour not. Allowing fetch.");
-                allowFetch = true;
-            }
-
-            if (elapsed_minutes >= 120)
-            {
-                log_i("Allowing fetch: Same date, but >= 120 minutes passed (elapsed: %d min).", elapsed_minutes);
-                allowFetch = true;
-            }
-            else
-            {
-                log_i("Skipping fetch: Same date and < 120 minutes passed since last successful fetch (Last: %02d:%02d, Now: %02d:%02d, Elapsed: %d min).",
-                      last_fetch_hour, last_fetch_minute, currentTime.hour, currentTime.min, elapsed_minutes);
-                allowFetch = false;
-            }
-        }
-
-        if (allowFetch)
-        {
-            log_i("Requesting new fetch (button press, no initial fetch active, time/date criteria met).");
-
-            if (g_fetch_task_in_progress)
-            {
-                log_w("Warning: Queuing new fetch, but g_fetch_task_in_progress is now true. This might lead to overlapping requests if not handled by fetch task.");
-            }
-
-            if (g_fetchRequestSemaphore != NULL)
-            {
-                xSemaphoreGive(g_fetchRequestSemaphore);
-                log_i("Fetch request semaphore given.");
-            }
-            else
-            {
-                log_e("Fetch request semaphore is NULL, cannot trigger fetch.");
-            }
-        }
-        else
-        {
-            // Display a message to inform the user
-            DisplayMsg msg_to_send;
-            snprintf(msg_to_send.text, sizeof(msg_to_send.text) - 1, "Fetch skipped (<2m or same day). Last: %02d:%02d", last_fetch_hour, last_fetch_minute);
-            msg_to_send.text[sizeof(msg_to_send.text) - 1] = '\0';
-            msg_to_send.y_offset = 100;
-            msg_to_send.color = 15;
-            msg_to_send.clear_canvas_first = false;
-            msg_to_send.push_full_update = true; // Use GC16 for better readability
-            if (g_displayMessageQueue != NULL)
-            {
-                xQueueSend(g_displayMessageQueue, &msg_to_send, pdMS_TO_TICKS(100));
-            }
-        }
-        // UI task no longer displays "Fetching..." directly. Fetch task sends message.
-    }
+    // 6. Trigger Fetch from Server if Requested - REMOVED
+    // Fetch triggering is now handled in setup() and after timer wakeups in goToLightSleep()
 }
 
 void displayMessage(const String &msg, int y_offset, uint16_t color)
@@ -689,16 +660,21 @@ void fetchTaskFunction(void *pvParameters)
             do
             {
                 restart_fetch_immediately = false;
-                // g_fetch_task_in_progress = true; // Moved up
                 // g_user_interrupt_signal_for_fetch_task is for hard stop, cleared by perform_fetch_operations or if it triggers
                 // g_fetch_restart_pending is for soft restart, cleared when acted upon below or by perform_fetch_operations
+
+                bool is_full_refresh_for_this_attempt = g_full_refresh_intended; // Capture intent for this attempt
 
                 // Send "Fetching scripts..." or "Restarting fetch..." message to UI task
                 if (g_displayMessageQueue != NULL)
                 {
                     if (first_attempt_in_cycle)
                     {
-                        strncpy(msg_to_send.text, "Fetching scripts...", sizeof(msg_to_send.text) - 1);
+                        if (is_full_refresh_for_this_attempt) {
+                            strncpy(msg_to_send.text, "Full Refreshing...", sizeof(msg_to_send.text) - 1);
+                        } else {
+                            strncpy(msg_to_send.text, "Fetching scripts...", sizeof(msg_to_send.text) - 1);
+                        }
                     }
                     else
                     {
@@ -713,7 +689,7 @@ void fetchTaskFunction(void *pvParameters)
                 }
                 first_attempt_in_cycle = false;
 
-                FetchResultStatus fetch_status = perform_fetch_operations(); // This function checks g_fetch_restart_pending
+                FetchResultStatus fetch_status = perform_fetch_operations(is_full_refresh_for_this_attempt);
 
                 // Prepare result message based on status
                 bool send_final_message = true;
@@ -725,8 +701,14 @@ void fetchTaskFunction(void *pvParameters)
                 switch (fetch_status)
                 {
                 case FETCH_SUCCESS:
-                    strncpy(msg_to_send.text, "Fetch OK!", sizeof(msg_to_send.text) - 1);
-                    log_i("FetchTask: Completed successfully.");
+                    if (is_full_refresh_for_this_attempt) {
+                        strncpy(msg_to_send.text, "Full Refresh OK!", sizeof(msg_to_send.text) - 1);
+                        g_full_refresh_intended = false; // Clear the intent flag
+                        log_i("FetchTask: Full refresh completed successfully. Intent cleared.");
+                    } else {
+                        strncpy(msg_to_send.text, "Fetch OK!", sizeof(msg_to_send.text) - 1);
+                        log_i("FetchTask: Incremental fetch completed successfully.");
+                    }
                     disconnectWiFi(); // Disconnect on final success
 
                     // Update last successful fetch time and date
@@ -756,9 +738,12 @@ void fetchTaskFunction(void *pvParameters)
                     // disconnectWiFi() should have been called by perform_fetch_operations
                     break;
                 case FETCH_NO_WIFI:
-                    strncpy(msg_to_send.text, "Fetch: No WiFi", sizeof(msg_to_send.text) - 1);
-                    log_w("FetchTask: No WiFi connection.");
-                    // disconnectWiFi() should have been called by perform_fetch_operations or connectToWiFi
+                    // This case now covers "SSID not found" and general "connection failed".
+                    // The specific log in perform_fetch_operations will detail the cause.
+                    strncpy(msg_to_send.text, "WiFi connection failed, skipping fetch", sizeof(msg_to_send.text) - 1);
+                    msg_to_send.push_full_update = false; // DU4 for transient message
+                    log_w("FetchTask: No WiFi connection or SSID not found, skipping fetch operation.");
+                    disconnectWiFi(); // Ensure WiFi is off
                     break;
                 case FETCH_RESTART_REQUESTED:
                     log_i("FetchTask: Restart requested. Looping.");
@@ -792,34 +777,52 @@ void fetchTaskFunction(void *pvParameters)
     }
 } // Closing brace for fetchTaskFunction
 
-FetchResultStatus perform_fetch_operations()
+// Helper struct for temporarily storing script data during full refresh
+struct TempScriptData {
+    String humanId;
+    String name;
+    String content;
+};
+
+FetchResultStatus perform_fetch_operations(bool isFullRefresh)
 {
     // Clear hard interrupt signal for this specific attempt. Restart signal is handled differently.
     g_user_interrupt_signal_for_fetch_task = false;
 
+    log_i("perform_fetch_operations: Starting. Full Refresh Mode: %s", isFullRefresh ? "YES" : "NO");
+
     // Reset watchdog before potentially long WiFi connection
     esp_task_wdt_reset();
 
+    // Instead of scanning first, try to connect directly
+    // This is more reliable as scanning can sometimes miss networks
+    log_i("perform_fetch_operations: Attempting to connect to WiFi SSID '%s'...", WIFI_SSID);
+    
+    // Reset watchdog before potentially long WiFi connection
+    esp_task_wdt_reset();
+    
+    // Try to connect directly without scanning first
     bool wifiConnected = connectToWiFi(); // connectToWiFi checks g_user_interrupt_signal_for_fetch_task
-
-    if (g_user_interrupt_signal_for_fetch_task)
-    { // Check if connectToWiFi was hard-interrupted
+    
+    if (g_user_interrupt_signal_for_fetch_task) {
         log_i("perform_fetch_operations: connectToWiFi hard-interrupted.");
         // connectToWiFi should have handled disconnect
         return FETCH_INTERRUPTED_BY_USER;
     }
-    if (g_fetch_restart_pending)
-    { // Check for restart request immediately after connection attempt
+    
+    if (g_fetch_restart_pending) {
         log_i("perform_fetch_operations: Restart requested after connectToWiFi attempt.");
         // WiFi might be on or off depending on connectToWiFi result. If on, keep it on.
         return FETCH_RESTART_REQUESTED;
     }
 
-    if (!wifiConnected)
-    {
-        log_e("perform_fetch_operations: WiFi connection failed.");
+    if (!wifiConnected) {
+        log_w("perform_fetch_operations: WiFi connection failed. SSID '%s' may not be available.", WIFI_SSID);
+        disconnectWiFi();  // Ensure WiFi is off
         return FETCH_NO_WIFI;
     }
+    
+    // WiFi is now connected (we checked above)
 
     // If we reach here, WiFi is connected.
     log_i("perform_fetch_operations: WiFi connected. Proceeding with fetch.");
@@ -827,162 +830,227 @@ FetchResultStatus perform_fetch_operations()
     WiFiClientSecure httpsClient;
     httpsClient.setCACert(rootCACertificate);
     HTTPClient http;
-    bool overall_fetch_successful = true;
+    bool overall_fetch_successful = true; // Assume success unless something fails
 
-    // 0. Load existing SPIFFS list to help preserve fileIds
-    DynamicJsonDocument oldSpiifsListDoc(8192); // Increased size to match finalSpiifsListDoc
-    bool oldListLoaded = loadScriptList(oldSpiifsListDoc);
-    if (oldListLoaded)
-    {
-        log_i("perform_fetch_operations: Successfully loaded existing list.json to help preserve fileIds (%d entries).", oldSpiifsListDoc.as<JsonArray>().size());
-    }
-    else
-    {
-        log_w("perform_fetch_operations: Could not load existing list.json or it was empty/invalid. New fileIds will be generated for all scripts.");
-        // oldSpiifsListDoc will be empty or invalid, checks later will handle this.
-    }
-    vTaskDelay(pdMS_TO_TICKS(10)); // Yield after SPIFFS load
-
-    // 1. Fetch Script List from Server
-    String listUrl = String(API_BASE_URL) + "/api/device/scripts";
-    log_i("perform_fetch_operations: Fetching script list from: %s", listUrl.c_str());
-
-    if (g_user_interrupt_signal_for_fetch_task)
-    {
-        http.end();
-        disconnectWiFi();
-        return FETCH_INTERRUPTED_BY_USER;
-    }
-    if (g_fetch_restart_pending)
-    {
-        http.end();
-        return FETCH_RESTART_REQUESTED;
-    }
-
-    if (!http.begin(httpsClient, listUrl))
-    {
-        log_e("perform_fetch_operations: HTTPClient begin failed for list URL!");
-        return FETCH_GENUINE_ERROR;
-    }
-
-    esp_task_wdt_reset(); // Reset watchdog before HTTP GET
-    int httpCode = http.GET();
-    vTaskDelay(pdMS_TO_TICKS(10));
-    esp_task_wdt_reset(); // Reset watchdog after HTTP GET
-
-    if (g_user_interrupt_signal_for_fetch_task)
-    {
-        http.end();
-        disconnectWiFi();
-        return FETCH_INTERRUPTED_BY_USER;
-    }
-    if (g_fetch_restart_pending)
-    {
-        http.end();
-        return FETCH_RESTART_REQUESTED;
-    }
-
+    // --- Variables for both full and incremental refresh ---
     DynamicJsonDocument serverListDoc(4096); // To store the list fetched from server
-    if (httpCode == HTTP_CODE_OK)
-    {
-        String serverJsonPayload = http.getString();
-        if (g_user_interrupt_signal_for_fetch_task)
-        {
-            http.end();
-            disconnectWiFi();
-            return FETCH_INTERRUPTED_BY_USER;
-        }
-        if (g_fetch_restart_pending)
-        {
-            http.end();
-            return FETCH_RESTART_REQUESTED;
-        }
-
-        DeserializationError error = deserializeJson(serverListDoc, serverJsonPayload);
-        if (error)
-        {
-            log_e("perform_fetch_operations: Failed to parse server script list JSON: %s", error.c_str());
-            overall_fetch_successful = false;
-        }
-        else if (!serverListDoc.is<JsonArray>())
-        {
-            log_e("perform_fetch_operations: Server script list JSON is not an array.");
-            overall_fetch_successful = false;
-        }
-    }
-    else
-    {
-        log_e("perform_fetch_operations: HTTP error fetching script list: %d", httpCode);
-        overall_fetch_successful = false;
-    }
-    http.end(); // End connection for list fetch
-
-    if (!overall_fetch_successful)
-    {
-        // No need to disconnectWiFi here, caller task will handle it for GENUINE_ERROR
-        return FETCH_GENUINE_ERROR;
-    }
-
-    // 2. Reconcile with Local State, Fetch Content, and Build Final SPIFFS List
-    DynamicJsonDocument finalSpiifsListDoc(8192); // Increased size for safety
+    DynamicJsonDocument finalSpiifsListDoc(8192); // To build the list to be saved to SPIFFS
     JsonArray finalSpiifsArray = finalSpiifsListDoc.to<JsonArray>();
     std::set<String> assignedFileIdsThisFetch; // Track fileIds used in this fetch to ensure uniqueness
 
-    if (serverListDoc.is<JsonArray>())
-    {
-        JsonArray serverArray = serverListDoc.as<JsonArray>();
-        log_i("perform_fetch_operations: Processing %d scripts from server list.", serverArray.size());
+    // --- Fetch Script List from Server (common for both modes) ---
+    String listUrl = String(API_BASE_URL) + "/api/device/scripts";
+    log_i("perform_fetch_operations: Fetching script list from: %s", listUrl.c_str());
 
+    if (g_user_interrupt_signal_for_fetch_task) { http.end(); disconnectWiFi(); return FETCH_INTERRUPTED_BY_USER; }
+    if (g_fetch_restart_pending) { http.end(); return FETCH_RESTART_REQUESTED; }
+
+    if (!http.begin(httpsClient, listUrl)) {
+        log_e("perform_fetch_operations: HTTPClient begin failed for list URL!");
+        disconnectWiFi(); // Ensure WiFi is disconnected on error
+        return FETCH_GENUINE_ERROR;
+    }
+    esp_task_wdt_reset();
+    int httpCode = http.GET();
+    vTaskDelay(pdMS_TO_TICKS(10));
+    esp_task_wdt_reset();
+
+    if (g_user_interrupt_signal_for_fetch_task) { http.end(); disconnectWiFi(); return FETCH_INTERRUPTED_BY_USER; }
+    if (g_fetch_restart_pending) { http.end(); return FETCH_RESTART_REQUESTED; }
+
+    if (httpCode == HTTP_CODE_OK) {
+        String serverJsonPayload = http.getString();
+        if (g_user_interrupt_signal_for_fetch_task) { http.end(); disconnectWiFi(); return FETCH_INTERRUPTED_BY_USER; }
+        if (g_fetch_restart_pending) { http.end(); return FETCH_RESTART_REQUESTED; }
+
+        DeserializationError error = deserializeJson(serverListDoc, serverJsonPayload);
+        if (error) {
+            log_e("perform_fetch_operations: Failed to parse server script list JSON: %s", error.c_str());
+            overall_fetch_successful = false;
+        } else if (!serverListDoc.is<JsonArray>()) {
+            log_e("perform_fetch_operations: Server script list JSON is not an array.");
+            overall_fetch_successful = false;
+        }
+    } else {
+        log_e("perform_fetch_operations: HTTP error fetching script list: %d (%s)", httpCode, http.errorToString(httpCode).c_str());
+        overall_fetch_successful = false;
+    }
+    http.end();
+
+    if (!overall_fetch_successful) {
+        return FETCH_GENUINE_ERROR; // Disconnect will be handled by caller task for GENUINE_ERROR
+    }
+    if (!serverListDoc.is<JsonArray>() || serverListDoc.as<JsonArray>().size() == 0) {
+        log_w("perform_fetch_operations: Server script list is empty or invalid. Saving an empty list locally.");
+        if (isFullRefresh) {
+            clearAllScriptDataFromSPIFFS(); // Clear old data if full refresh and server list is empty
+        }
+        DynamicJsonDocument emptyListDoc(JSON_ARRAY_SIZE(0)); // Create an empty array
+        emptyListDoc.to<JsonArray>();
+        if (!saveScriptList(emptyListDoc)) {
+             log_e("perform_fetch_operations: Failed to save empty script list to SPIFFS.");
+             return FETCH_GENUINE_ERROR;
+        }
+        // Also clean up script states if we're saving an empty list
+        DynamicJsonDocument emptyStatesDoc(JSON_OBJECT_SIZE(0));
+        emptyStatesDoc.to<JsonObject>(); // Create an empty object
+        File statesFile = SPIFFS.open(SCRIPT_STATES_PATH, FILE_WRITE);
+        if (statesFile) {
+            serializeJson(emptyStatesDoc, statesFile);
+            statesFile.close();
+            log_i("perform_fetch_operations: Cleared script states due to empty server list.");
+        } else {
+            log_e("perform_fetch_operations: Failed to open script_states.json for clearing.");
+        }
+        return FETCH_SUCCESS; // Successfully processed an empty list from server
+    }
+
+    // --- Branch logic for Full Refresh vs Incremental ---
+    if (isFullRefresh) {
+        log_i("perform_fetch_operations: --- Full Refresh Path ---");
+        std::vector<TempScriptData> fetchedScripts;
+        JsonArray serverArray = serverListDoc.as<JsonArray>();
+        log_i("perform_fetch_operations (Full): Processing %d scripts from server list for content fetch.", serverArray.size());
+
+        // IMPORTANT: First fetch ALL script contents BEFORE clearing SPIFFS
+        // This ensures we don't wipe existing scripts if the fetch fails
         int scriptCounter = 0;
-        for (JsonObject serverScriptInfo : serverArray)
-        {
-            // Reset watchdog periodically during script processing
-            if (scriptCounter++ % 3 == 0)
-            {
-                esp_task_wdt_reset();
-            }
-            if (g_user_interrupt_signal_for_fetch_task)
-            {
-                disconnectWiFi();
-                return FETCH_INTERRUPTED_BY_USER;
-            }
-            if (g_fetch_restart_pending)
-            {
-                return FETCH_RESTART_REQUESTED;
-            }
+        for (JsonObject serverScriptInfo : serverArray) {
+            if (scriptCounter++ % 3 == 0) esp_task_wdt_reset();
+            if (g_user_interrupt_signal_for_fetch_task) { disconnectWiFi(); return FETCH_INTERRUPTED_BY_USER; }
+            if (g_fetch_restart_pending) { return FETCH_RESTART_REQUESTED; }
 
             const char *humanId = serverScriptInfo["id"];
             const char *humanName = serverScriptInfo["name"];
+            if (!humanId || strlen(humanId) == 0) {
+                log_w("perform_fetch_operations (Full): Skipping script from server with missing 'id'.");
+                continue;
+            }
 
-            if (!humanId || strlen(humanId) == 0)
-            {
-                log_w("perform_fetch_operations: Skipping script from server with missing 'id'.");
+            String scriptUrl = String(API_BASE_URL) + "/api/scripts/" + humanId;
+            if (!http.begin(httpsClient, scriptUrl)) {
+                log_e("perform_fetch_operations (Full): HTTPClient begin failed for script content URL: %s", scriptUrl.c_str());
+                overall_fetch_successful = false;
+                esp_task_wdt_reset(); // Reset watchdog before potentially breaking
+                break; // Abort full refresh
+            }
+            int scriptHttpCode = http.GET();
+            vTaskDelay(pdMS_TO_TICKS(10)); esp_task_wdt_reset();
+            
+            if (g_user_interrupt_signal_for_fetch_task) { http.end(); disconnectWiFi(); return FETCH_INTERRUPTED_BY_USER; }
+            if (g_fetch_restart_pending) { http.end(); return FETCH_RESTART_REQUESTED; }
+
+            if (scriptHttpCode == HTTP_CODE_OK) {
+                String scriptPayload = http.getString();
+                http.end(); // End connection for this script content fetch
+                
+                DynamicJsonDocument scriptDoc(8192);
+                DeserializationError scriptError = deserializeJson(scriptDoc, scriptPayload);
+                if (scriptError) {
+                    log_e("perform_fetch_operations (Full): Failed to parse script content JSON for humanId %s: %s", humanId, scriptError.c_str());
+                    overall_fetch_successful = false; break;
+                }
+                const char *scriptContentFetched = scriptDoc["content"];
+                if (scriptContentFetched) {
+                    fetchedScripts.push_back({String(humanId), String(humanName ? humanName : humanId), String(scriptContentFetched)});
+                    log_i("perform_fetch_operations (Full): Successfully fetched content for humanId %s", humanId);
+                } else {
+                    log_e("perform_fetch_operations (Full): Missing 'content' field for humanId %s.", humanId);
+                    overall_fetch_successful = false; break;
+                }
+            } else {
+                http.end(); // End connection on error
+                log_w("perform_fetch_operations (Full): HTTP error %d (%s) fetching script content for humanId %s.",
+                      scriptHttpCode, http.errorToString(scriptHttpCode).c_str(), humanId);
+                overall_fetch_successful = false; break;
+            }
+        } // End loop for fetching all contents
+
+        if (!overall_fetch_successful || fetchedScripts.empty()) {
+            log_e("perform_fetch_operations (Full): Aborting full refresh due to errors in fetching all script contents or no scripts fetched.");
+            return FETCH_GENUINE_ERROR;
+        }
+
+        // All content fetched successfully, NOW clear old SPIFFS data and save new
+        log_i("perform_fetch_operations (Full): All %d script contents fetched successfully. NOW clearing old data and saving new.", fetchedScripts.size());
+        clearAllScriptDataFromSPIFFS();
+        esp_task_wdt_reset();
+
+        int fileIdCounter = 0;
+        for (const auto& scriptData : fetchedScripts) {
+            String newFileId = "s" + String(fileIdCounter++);
+            if (saveScriptContent(newFileId.c_str(), scriptData.content.c_str())) {
+                JsonObject newEntry = finalSpiifsArray.createNestedObject();
+                newEntry["id"] = scriptData.humanId;
+                newEntry["name"] = scriptData.name;
+                newEntry["fileId"] = newFileId;
+                log_i("perform_fetch_operations (Full): Saved script content for humanId %s with fileId %s", scriptData.humanId.c_str(), newFileId.c_str());
+            } else {
+                log_e("perform_fetch_operations (Full): Failed to save script content for humanId %s (new fileId %s). Critical error during save phase.", scriptData.humanId.c_str(), newFileId.c_str());
+                // This is a critical error after clearing, might leave system in bad state.
+                // For now, mark as overall failure.
+                overall_fetch_successful = false;
+                break;
+            }
+        }
+        if (!overall_fetch_successful) {
+            log_e("perform_fetch_operations (Full): Failed during saving phase after clearing SPIFFS. System may be inconsistent.");
+            return FETCH_GENUINE_ERROR; // Indicate a serious problem
+        }
+
+    } else { // --- Incremental Refresh Path ---
+        log_i("perform_fetch_operations: --- Incremental Refresh Path ---");
+        DynamicJsonDocument oldSpiifsListDoc(8192);
+        bool oldListLoaded = loadScriptList(oldSpiifsListDoc);
+        if (oldListLoaded) {
+            log_i("perform_fetch_operations (Inc): Successfully loaded existing list.json to help preserve fileIds (%d entries).", oldSpiifsListDoc.as<JsonArray>().size());
+        } else {
+            log_w("perform_fetch_operations (Inc): Could not load existing list.json or it was empty/invalid.");
+        }
+        vTaskDelay(pdMS_TO_TICKS(10));
+
+        JsonArray serverArray = serverListDoc.as<JsonArray>();
+        log_i("perform_fetch_operations (Inc): Processing %d scripts from server list.", serverArray.size());
+        int scriptCounter = 0;
+
+        for (JsonObject serverScriptInfo : serverArray) {
+            // (Logic from existing incremental path - reconcile, fetch missing, assign fileIds)
+            // This part needs to be carefully merged from the original perform_fetch_operations
+            // For brevity, assuming the existing complex reconciliation logic is here.
+            // Key parts:
+            // - Determine fileId (reuse from oldSpiifsListDoc or generate new)
+            // - Check if content exists or needs fetching (based on existence or ideally lastModified)
+            // - Fetch content if needed
+            // - Add to finalSpiifsArray
+            // - Ensure assignedFileIdsThisFetch is updated
+
+            // Reset watchdog periodically during script processing
+            if (scriptCounter++ % 3 == 0) {
+                esp_task_wdt_reset();
+            }
+            if (g_user_interrupt_signal_for_fetch_task) { disconnectWiFi(); return FETCH_INTERRUPTED_BY_USER; }
+            if (g_fetch_restart_pending) { return FETCH_RESTART_REQUESTED; }
+
+            const char *humanId = serverScriptInfo["id"];
+            const char *humanName = serverScriptInfo["name"];
+            // const char *serverLastModified = serverScriptInfo["lastModified"]; // If using lastModified checks
+
+            if (!humanId || strlen(humanId) == 0) {
+                log_w("perform_fetch_operations (Inc): Skipping script from server with missing 'id'.");
                 continue;
             }
 
             String determinedFileId = "";
             bool foundInOldList = false;
 
-            // Try to find this humanId in the old SPIFFS list to reuse its fileId
-            if (oldListLoaded && oldSpiifsListDoc.is<JsonArray>())
-            {
-                // Reset watchdog timer before potentially long operation
-                esp_task_wdt_reset();
-
-                for (JsonObject oldScriptInfo : oldSpiifsListDoc.as<JsonArray>())
-                {
+            if (oldListLoaded && oldSpiifsListDoc.is<JsonArray>()) {
+                for (JsonObject oldScriptInfo : oldSpiifsListDoc.as<JsonArray>()) {
                     const char *oldHumanId = oldScriptInfo["id"];
                     const char *oldFileId = oldScriptInfo["fileId"];
-                    if (oldHumanId && oldFileId && strcmp(oldHumanId, humanId) == 0 && strlen(oldFileId) > 0)
-                    {
-                        // Check if this oldFileId is already taken by another humanId in this new fetch (e.g. if old list had duplicates)
-                        if (assignedFileIdsThisFetch.count(oldFileId))
-                        {
-                            log_w("perform_fetch_operations: fileId '%s' for humanId '%s' from old list is already assigned in this fetch. Will generate new ID.", oldFileId, humanId);
-                            // Fall through to generate new ID
-                        }
-                        else
-                        {
+                    if (oldHumanId && oldFileId && strcmp(oldHumanId, humanId) == 0) {
+                        if (assignedFileIdsThisFetch.count(oldFileId)) {
+                            log_w("perform_fetch_operations (Inc): FileId '%s' for humanId '%s' from old list already assigned. Generating new.", oldFileId, humanId);
+                        } else {
                             determinedFileId = oldFileId;
                             foundInOldList = true;
                             break;
@@ -991,228 +1059,193 @@ FetchResultStatus perform_fetch_operations()
                 }
             }
 
-            if (foundInOldList)
-            {
-                log_i("perform_fetch_operations: Reusing fileId '%s' for humanId '%s'.", determinedFileId.c_str(), humanId);
+            if (foundInOldList) {
+                log_i("perform_fetch_operations (Inc): Reusing fileId '%s' for humanId '%s'.", determinedFileId.c_str(), humanId);
                 assignedFileIdsThisFetch.insert(determinedFileId);
-            }
-            else
-            {
-                // Generate a new fileId, ensuring it's unique for this fetch cycle
+            } else {
                 int tempIdCounter = 0;
-                do
-                {
+                do {
                     determinedFileId = "s" + String(tempIdCounter++);
                 } while (assignedFileIdsThisFetch.count(determinedFileId));
-                log_i("perform_fetch_operations: Assigning new fileId '%s' for humanId '%s'.", determinedFileId.c_str(), humanId);
+                log_i("perform_fetch_operations (Inc): Assigning new fileId '%s' for humanId '%s'.", determinedFileId.c_str(), humanId);
                 assignedFileIdsThisFetch.insert(determinedFileId);
             }
 
             String contentPath = "/scripts/content/" + determinedFileId;
             bool contentAvailableOrFetched = false;
 
-            if (SPIFFS.exists(contentPath.c_str()))
-            {
-                log_d("perform_fetch_operations: Content for humanId '%s' (fileId '%s') already exists locally at %s.", humanId, determinedFileId.c_str(), contentPath.c_str());
+            // TODO: Add lastModified check here if server provides it and we store it.
+            // For now, just check existence.
+            if (SPIFFS.exists(contentPath.c_str())) {
+                log_d("perform_fetch_operations (Inc): Content for humanId '%s' (fileId '%s') already exists.", humanId, determinedFileId.c_str());
                 contentAvailableOrFetched = true;
-            }
-            else
-            {
-                log_i("perform_fetch_operations: Content for humanId '%s' (fileId '%s') missing locally at %s, fetching from server.", humanId, determinedFileId.c_str(), contentPath.c_str());
+            } else {
+                log_i("perform_fetch_operations (Inc): Content for humanId '%s' (fileId '%s') missing, fetching.", humanId, determinedFileId.c_str());
                 String scriptUrl = String(API_BASE_URL) + "/api/scripts/" + humanId;
-
-                if (g_user_interrupt_signal_for_fetch_task)
-                {
-                    http.end();
-                    disconnectWiFi();
-                    return FETCH_INTERRUPTED_BY_USER;
+                if (!http.begin(httpsClient, scriptUrl)) {
+                    log_e("perform_fetch_operations (Inc): HTTPClient begin failed for script content URL: %s", scriptUrl.c_str());
+                    assignedFileIdsThisFetch.erase(determinedFileId); // Release ID
+                    continue; // Skip this script
                 }
-                if (g_fetch_restart_pending)
-                {
-                    http.end();
-                    return FETCH_RESTART_REQUESTED;
-                }
-                if (!http.begin(httpsClient, scriptUrl))
-                {
-                    log_e("perform_fetch_operations: HTTPClient begin failed for script content URL: %s", scriptUrl.c_str());
-                    assignedFileIdsThisFetch.erase(determinedFileId); // Release ID if fetch setup fails
-                    continue;                                         // Skip this script
-                }
-
                 int scriptHttpCode = http.GET();
-                vTaskDelay(pdMS_TO_TICKS(10));
-                esp_task_wdt_reset(); // Reset watchdog after HTTP GET
+                vTaskDelay(pdMS_TO_TICKS(10)); esp_task_wdt_reset();
+                http.end();
 
-                if (g_user_interrupt_signal_for_fetch_task)
-                {
-                    http.end();
-                    disconnectWiFi();
-                    return FETCH_INTERRUPTED_BY_USER;
-                }
-                if (g_fetch_restart_pending)
-                {
-                    http.end();
-                    return FETCH_RESTART_REQUESTED;
-                }
+                if (g_user_interrupt_signal_for_fetch_task) { disconnectWiFi(); return FETCH_INTERRUPTED_BY_USER; }
+                if (g_fetch_restart_pending) { return FETCH_RESTART_REQUESTED; }
 
-                if (scriptHttpCode == HTTP_CODE_OK)
-                {
+                if (scriptHttpCode == HTTP_CODE_OK) {
                     String scriptPayload = http.getString();
-                    if (g_user_interrupt_signal_for_fetch_task)
-                    {
-                        http.end();
-                        disconnectWiFi();
-                        return FETCH_INTERRUPTED_BY_USER;
-                    }
-                    if (g_fetch_restart_pending)
-                    {
-                        http.end();
-                        return FETCH_RESTART_REQUESTED;
-                    }
-
-                    DynamicJsonDocument scriptDoc(8192); // Ensure large enough for script content
+                    DynamicJsonDocument scriptDoc(8192);
                     DeserializationError scriptError = deserializeJson(scriptDoc, scriptPayload);
-                    if (scriptError)
-                    {
-                        log_e("perform_fetch_operations: Failed to parse script content JSON for humanId %s: %s", humanId, scriptError.c_str());
-                    }
-                    else
-                    {
+                    if (scriptError) {
+                        log_e("perform_fetch_operations (Inc): Failed to parse script content JSON for %s: %s", humanId, scriptError.c_str());
+                    } else {
                         const char *scriptContentFetched = scriptDoc["content"];
-                        if (scriptContentFetched)
-                        {
-                            if (saveScriptContent(determinedFileId.c_str(), scriptContentFetched))
-                            {
+                        if (scriptContentFetched) {
+                            if (saveScriptContent(determinedFileId.c_str(), scriptContentFetched)) {
                                 contentAvailableOrFetched = true;
+                            } else {
+                                log_e("perform_fetch_operations (Inc): Failed to save content for %s (fileId %s).", humanId, determinedFileId.c_str());
                             }
-                            else
-                            {
-                                log_e("perform_fetch_operations: Failed to save script content for fileId %s (humanId %s).", determinedFileId.c_str(), humanId);
-                            }
-                        }
-                        else
-                        {
-                            log_e("perform_fetch_operations: Missing 'content' field for humanId %s.", humanId);
+                        } else {
+                            log_e("perform_fetch_operations (Inc): Missing 'content' for %s.", humanId);
                         }
                     }
+                } else {
+                    log_w("perform_fetch_operations (Inc): HTTP error %d fetching content for %s.", scriptHttpCode, humanId);
                 }
-                else
-                {
-                    log_w("perform_fetch_operations: HTTP error %d fetching script content for humanId %s. Script will be excluded.", scriptHttpCode, humanId);
-                }
-                http.end(); // End connection for this script content fetch
             }
 
-            if (contentAvailableOrFetched)
-            {
+            if (contentAvailableOrFetched) {
                 JsonObject newEntry = finalSpiifsArray.createNestedObject();
                 newEntry["id"] = humanId;
-                newEntry["name"] = humanName ? humanName : humanId; // Fallback for name
+                newEntry["name"] = humanName ? humanName : humanId;
                 newEntry["fileId"] = determinedFileId;
-                // No validScriptIndex++ here, assignedFileIdsThisFetch tracks used IDs.
+                // newEntry["lastModified"] = serverLastModified; // If storing this
+            } else {
+                log_w("perform_fetch_operations (Inc): Script %s (fileId %s) excluded, content unavailable/save failed.", humanId, determinedFileId.c_str());
+                assignedFileIdsThisFetch.erase(determinedFileId);
             }
-            else
-            {
-                log_w("perform_fetch_operations: Script humanId '%s' (intended fileId '%s') excluded from final list as content is unavailable or save failed.", humanId, determinedFileId.c_str());
-                assignedFileIdsThisFetch.erase(determinedFileId); // Release the fileId if script is not included
-            }
-            vTaskDelay(pdMS_TO_TICKS(50)); // Small delay between script processing
+            vTaskDelay(pdMS_TO_TICKS(50));
         }
-    }
+    } // End of Full vs Incremental branch
 
-    // Reset watchdog timer before file cleanup
+    // --- Common operations for both paths (Cleanup, Save List) ---
     esp_task_wdt_reset();
 
-    // 3. Cleanup Orphaned Script Content Files
-    log_i("perform_fetch_operations(): Cleaning up orphaned script content files...");
-    File root = SPIFFS.open("/scripts/content");
-    if (root && root.isDirectory())
-    {
-        File entry = root.openNextFile();
-        while (entry)
-        {
-            if (g_user_interrupt_signal_for_fetch_task)
-            {
-                root.close();
-                entry.close();
-                disconnectWiFi();
-                return FETCH_INTERRUPTED_BY_USER;
-            }
-            if (g_fetch_restart_pending)
-            {
-                root.close();
-                entry.close();
-                return FETCH_RESTART_REQUESTED;
-            }
+    // Cleanup Orphaned Script Content Files (only if not a full refresh, as full refresh clears all first)
+    if (!isFullRefresh) {
+        log_i("perform_fetch_operations: Cleaning up orphaned script content files (Incremental Mode)...");
+        File root = SPIFFS.open("/scripts/content");
+        if (root && root.isDirectory()) {
+            File entry = root.openNextFile();
+            while (entry) {
+                if (g_user_interrupt_signal_for_fetch_task) { root.close(); entry.close(); disconnectWiFi(); return FETCH_INTERRUPTED_BY_USER; }
+                if (g_fetch_restart_pending) { root.close(); entry.close(); return FETCH_RESTART_REQUESTED; }
+                if (!entry.isDirectory()) {
+                    String entryName = entry.name();
+                    String pathToRemove;
+                    String fileIdFromPath;
+                    if (entryName.startsWith("/")) { pathToRemove = entryName; }
+                    else { pathToRemove = "/scripts/content/" + entryName; }
+                    fileIdFromPath = pathToRemove.substring(pathToRemove.lastIndexOf('/') + 1);
 
-            if (!entry.isDirectory())
-            {
-                String entryName = entry.name(); // This might be relative or absolute depending on SPIFFS lib version
-                String pathToRemove;
-                String fileIdFromPath;
-
-                if (entryName.startsWith("/"))
-                { // Already an absolute path
-                    pathToRemove = entryName;
-                }
-                else
-                { // Relative path, construct absolute
-                    pathToRemove = "/scripts/content/" + entryName;
-                }
-                fileIdFromPath = pathToRemove.substring(pathToRemove.lastIndexOf('/') + 1);
-
-                bool foundInFinalList = false;
-                for (JsonObject scriptInFinalList : finalSpiifsArray)
-                {
-                    if (fileIdFromPath == scriptInFinalList["fileId"].as<String>())
-                    {
-                        foundInFinalList = true;
-                        break;
+                    bool foundInFinalList = false;
+                    for (JsonObject scriptInFinalList : finalSpiifsArray) {
+                        if (fileIdFromPath == scriptInFinalList["fileId"].as<String>()) {
+                            foundInFinalList = true;
+                            break;
+                        }
+                    }
+                    if (!foundInFinalList) {
+                        log_i("perform_fetch_operations: Removing orphaned script content: %s", pathToRemove.c_str());
+                        if (!SPIFFS.remove(pathToRemove)) {
+                            log_e("perform_fetch_operations: Failed to remove %s", pathToRemove.c_str());
+                        }
                     }
                 }
-                if (!foundInFinalList)
-                {
-                    log_i("perform_fetch_operations: Removing orphaned script content: %s", pathToRemove.c_str());
-                    if (!SPIFFS.remove(pathToRemove))
-                    {
-                        log_e("perform_fetch_operations: Failed to remove %s", pathToRemove.c_str());
-                    }
-                }
+                entry.close();
+                entry = root.openNextFile();
             }
-            entry.close();               // Close current entry
-            entry = root.openNextFile(); // Open next
+            root.close();
+        } else {
+            log_w("perform_fetch_operations: Could not open /scripts/content for cleanup or not a directory.");
         }
-        root.close(); // Close root directory
+        vTaskDelay(pdMS_TO_TICKS(10));
     }
-    else
-    {
-        log_w("perform_fetch_operations: Could not open /scripts/content directory for cleanup or it's not a directory.");
-    }
-    vTaskDelay(pdMS_TO_TICKS(10));
 
-    // 4. Save the New list.json
-    if (!saveScriptList(finalSpiifsListDoc))
-    { // Uses the new saveScriptList(DynamicJsonDocument&)
+
+    // Save the New list.json
+    if (!saveScriptList(finalSpiifsListDoc)) {
         log_e("perform_fetch_operations: Failed to save final script list to SPIFFS.");
-        overall_fetch_successful = false;
+        overall_fetch_successful = false; // This is a critical failure
+    } else {
+        // State Cleanup Logic (common for both full and incremental, happens after successful list save)
+        log_i("perform_fetch_operations: Cleaning up orphaned script execution states...");
+        DynamicJsonDocument currentStatesDoc(2048);
+        File statesFile = SPIFFS.open(SCRIPT_STATES_PATH, FILE_READ);
+        bool statesLoaded = false;
+        if (!statesFile || statesFile.isDirectory() || statesFile.size() == 0) {
+            if(statesFile) statesFile.close();
+            log_w("perform_fetch_operations: %s not found, is directory, or empty. No states to clean.", SCRIPT_STATES_PATH);
+        } else {
+            DeserializationError error = deserializeJson(currentStatesDoc, statesFile);
+            statesFile.close();
+            if (error) {
+                log_e("perform_fetch_operations: Failed to parse %s for cleanup: %s. Skipping cleanup.", SCRIPT_STATES_PATH, error.c_str());
+            } else if (!currentStatesDoc.is<JsonObject>()) {
+                log_e("perform_fetch_operations: %s content not a JSON object. Skipping cleanup.", SCRIPT_STATES_PATH);
+            } else {
+                statesLoaded = true;
+            }
+        }
+
+        if (statesLoaded) {
+            std::set<String> validHumanIds;
+            for (JsonObject scriptInfo : finalSpiifsArray) { // Use finalSpiifsArray directly
+                 const char* humanId = scriptInfo["id"];
+                 if (humanId) validHumanIds.insert(String(humanId));
+            }
+            log_i("Found %d valid human script IDs in the final list for state cleanup.", validHumanIds.size());
+            JsonObject statesRoot = currentStatesDoc.as<JsonObject>();
+            bool statesModified = false;
+            std::vector<String> keysToRemove;
+            for (JsonPair kv : statesRoot) {
+                String scriptIdKey = kv.key().c_str();
+                if (validHumanIds.find(scriptIdKey) == validHumanIds.end()) {
+                    keysToRemove.push_back(scriptIdKey);
+                    statesModified = true;
+                }
+            }
+            if (statesModified) {
+                log_i("Removing states for %d orphaned script IDs:", keysToRemove.size());
+                for (const String& key : keysToRemove) {
+                    log_i("  - Removing state for: %s", key.c_str());
+                    statesRoot.remove(key);
+                }
+                statesFile = SPIFFS.open(SCRIPT_STATES_PATH, FILE_WRITE);
+                if (!statesFile) {
+                    log_e("perform_fetch_operations: Failed to open %s for writing cleaned states.", SCRIPT_STATES_PATH);
+                } else {
+                     if (serializeJson(currentStatesDoc, statesFile) > 0) {
+                         log_i("Successfully saved cleaned-up script states to %s.", SCRIPT_STATES_PATH);
+                     } else {
+                         log_e("Failed to write updated states to %s.", SCRIPT_STATES_PATH);
+                     }
+                     statesFile.close();
+                }
+            } else {
+                log_i("No orphaned script states found to remove.");
+            }
+        }
     }
 
-    // Final checks before returning success/error
-    if (g_user_interrupt_signal_for_fetch_task)
-    {
-        disconnectWiFi();
-        return FETCH_INTERRUPTED_BY_USER;
-    }
-    if (g_fetch_restart_pending)
-    {
-        return FETCH_RESTART_REQUESTED;
-    }
+    // Final checks before returning
+    if (g_user_interrupt_signal_for_fetch_task) { disconnectWiFi(); return FETCH_INTERRUPTED_BY_USER; }
+    if (g_fetch_restart_pending) { return FETCH_RESTART_REQUESTED; }
 
-    if (overall_fetch_successful)
-    {
-        return FETCH_SUCCESS;
-    }
-    return FETCH_GENUINE_ERROR;
+    return overall_fetch_successful ? FETCH_SUCCESS : FETCH_GENUINE_ERROR;
 }
 
 // Selects the next script ID based on the direction (up/down)
@@ -1227,13 +1260,10 @@ bool selectNextScript(bool moveUp)
     }
     if (!listDoc.is<JsonArray>() || listDoc.as<JsonArray>().size() == 0)
     {
-        log_e("Cannot select next script, list is empty or not an array after loading.");
-        // Attempt to trigger a fetch if list is empty/invalid, as it might be recoverable
-        log_w("selectNextScript: Triggering fetch due to empty/invalid script list.");
-        if (g_fetchRequestSemaphore != NULL)
-        {
-            xSemaphoreGive(g_fetchRequestSemaphore);
-        }
+        log_e("Cannot select next script, list is empty or not an array after loading. Fetch will not be triggered from here.");
+        // Fetch is no longer triggered from here.
+        // The main loop will proceed, and loadScriptToExecute will handle the missing/bad list,
+        // potentially falling back to default. A fetch might occur later if it's a boot/timer-wakeup.
         return false;
     }
 
@@ -1328,18 +1358,23 @@ bool loadScriptToExecute()
     DynamicJsonDocument listDoc(4096);
     bool listIsProblematic = false; // Flag if list.json seems to have issues
     JsonArray scriptList;
+    bool hasScriptsInList = false;
 
     if (loadScriptList(listDoc) && listDoc.is<JsonArray>() && listDoc.as<JsonArray>().size() > 0)
     {
         scriptList = listDoc.as<JsonArray>();
+        hasScriptsInList = scriptList.size() > 0;
         log_i("loadScriptToExecute: Script list loaded with %d entries.", scriptList.size());
-        JsonObject firstEntryTest = scriptList[0];
-        const char *testId = firstEntryTest["id"];
-        const char *testFileId = firstEntryTest["fileId"];
-        if (!testId || strlen(testId) == 0 || !testFileId || strlen(testFileId) == 0)
-        {
-            log_w("loadScriptToExecute: First script in list.json is missing 'id' or 'fileId'. List may be problematic.");
-            listIsProblematic = true;
+        
+        if (hasScriptsInList) {
+            JsonObject firstEntryTest = scriptList[0];
+            const char *testId = firstEntryTest["id"];
+            const char *testFileId = firstEntryTest["fileId"];
+            if (!testId || strlen(testId) == 0 || !testFileId || strlen(testFileId) == 0)
+            {
+                log_w("loadScriptToExecute: First script in list.json is missing 'id' or 'fileId'. List may be problematic.");
+                listIsProblematic = true;
+            }
         }
     }
     else
@@ -1351,7 +1386,7 @@ bool loadScriptToExecute()
 
     // 3. Try to use humanReadableScriptIdFromSpiffs if it was loaded and list is not problematic
     bool foundAndMappedSpiffsId = false;
-    if (spiffsIdLoaded && !listIsProblematic)
+    if (spiffsIdLoaded && !listIsProblematic && hasScriptsInList)
     {
         bool idExistsInList = false;
         for (JsonObject scriptInfo : scriptList)
@@ -1371,7 +1406,7 @@ bool loadScriptToExecute()
                 else
                 {
                     log_w("loadScriptToExecute: HumanId '%s' (from SPIFFS preference) found in list but has no valid fileId.", humanReadableScriptIdFromSpiffs.c_str());
-                    listIsProblematic = true; // Mark list as problematic
+                    // Don't mark list as problematic here, just try the first script instead
                 }
                 break;
             }
@@ -1382,15 +1417,14 @@ bool loadScriptToExecute()
         }
     }
 
-    // 4. If spiffsId wasn't used or list is problematic, try first script from list (if list is usable)
-    if (!foundAndMappedSpiffsId && !listIsProblematic && scriptList.size() > 0)
+    // 4. If spiffsId wasn't used, try first script from list (if list is usable)
+    if (!foundAndMappedSpiffsId && !listIsProblematic && hasScriptsInList)
     {
         log_i("loadScriptToExecute: Attempting to use first script from the list.");
-        JsonObject firstScript = scriptList[0]; // Already checked firstEntryTest for validity
+        JsonObject firstScript = scriptList[0];
         const char *firstHumanId = firstScript["id"];
         const char *firstFileId = firstScript["fileId"];
 
-        // This check is redundant if listIsProblematic is false, but good for safety
         if (firstHumanId && strlen(firstHumanId) > 0 && firstFileId && strlen(firstFileId) > 0)
         {
             finalHumanIdForExecution = firstHumanId;
@@ -1410,36 +1444,38 @@ bool loadScriptToExecute()
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 
-    // 5. If we still don't have a fileId (due to list problems or empty list), fallback to default.
+    // 5. If we still don't have a fileId (due to list problems or empty list), check if we need to trigger a fetch
     if (determinedFileId.length() == 0)
     {
-        log_e("loadScriptToExecute: Could not determine a valid script/fileId from list.json or list was unusable.");
-        currentScriptId = spiffsIdLoaded ? humanReadableScriptIdFromSpiffs : "default";
-        currentScriptContent = "";
-
-        if (listIsProblematic)
-        { // This covers empty, corrupt, or unreadable list.json
-            if (spiffsIdLoaded)
-            {
-                log_w("loadScriptToExecute: List.json seems problematic. Clearing current_script.id ('%s') to avoid getting stuck.", humanReadableScriptIdFromSpiffs.c_str());
-                saveCurrentScriptId("");
-            }
-            else
-            {
-                log_w("loadScriptToExecute: List.json seems problematic. No specific current_script.id was loaded to clear.");
-            }
-            log_w("loadScriptToExecute: Triggering a fetch operation to rebuild problematic list.json.");
-            if (g_fetchRequestSemaphore != NULL)
-            {
-                xSemaphoreGive(g_fetchRequestSemaphore);
-                log_i("loadScriptToExecute: Fetch request semaphore given due to problematic list.");
-            }
-            else
-            {
-                log_e("loadScriptToExecute: Fetch request semaphore is NULL, cannot trigger fetch for problematic list.");
-            }
+        // Only use default script if we have no scripts at all on the device
+        if (!hasScriptsInList) {
+            log_w("loadScriptToExecute: No scripts found in list. Using default script as last resort.");
+            currentScriptId = "default";
+            currentScriptContent = default_script;
+            
+            // Fetch is no longer triggered from here.
+            log_w("loadScriptToExecute: No scripts found in list or list problematic. Using default script. Fetch will not be triggered from here.");
+            // A fetch might occur later if it's a boot/timer-wakeup scenario and shouldPerformFetch allows.
+            return true; // Return true since we're using the default script
         }
-        return false;
+        
+        // If listIsProblematic but hasScriptsInList is false, the above block handles it.
+        // If listIsProblematic is true AND hasScriptsInList is true, it means we have a list, but it's flawed.
+        // We will proceed to try and load based on finalHumanIdForExecution / determinedFileId if they were set.
+        // If they weren't set (e.g. first script in problematic list was bad), determinedFileId will be empty.
+
+        // If determinedFileId is still empty at this point, it means:
+        // - List was problematic and first entry was bad, OR
+        // - SPIFFS ID was loaded but not found in a problematic list, OR
+        // - Some other edge case where we couldn't map to a fileId.
+        // In this scenario, we fall back to default.
+        if (determinedFileId.length() == 0) { // This check is now more encompassing
+            log_w("loadScriptToExecute: Could not determine a fileId due to list issues or missing entries. Using default script.");
+            currentScriptId = "default";
+            currentScriptContent = default_script;
+            // Fetch is not triggered from here.
+            return true;
+        }
     }
 
     // 6. Load script content using the determined fileId
@@ -1448,19 +1484,22 @@ bool loadScriptToExecute()
     if (!loadScriptContent(determinedFileId.c_str(), currentScriptContent))
     {
         log_e("loadScriptToExecute: Failed to load script content for fileId '%s' (humanId '%s'). This file should exist according to list.json.", determinedFileId.c_str(), currentScriptId.c_str());
-        currentScriptContent = "";
-        // Trigger fetch to repair missing content
-        log_w("loadScriptToExecute: Triggering a fetch operation to attempt to download missing content for '%s'.", currentScriptId.c_str());
-        if (g_fetchRequestSemaphore != NULL)
-        {
-            xSemaphoreGive(g_fetchRequestSemaphore);
-            log_i("loadScriptToExecute: Fetch request semaphore given for missing content file.");
+        
+        // Try to use default script only if we have no scripts at all
+        if (!hasScriptsInList) { // This implies list.json was empty or didn't exist
+            log_w("loadScriptToExecute: No scripts available (list empty/missing). Using default script as last resort.");
+            currentScriptId = "default";
+            currentScriptContent = default_script;
+            // Fetch is not triggered from here.
+            return true;
         }
-        else
-        {
-            log_e("loadScriptToExecute: Fetch request semaphore is NULL, cannot trigger fetch for missing content.");
-        }
-        return false;
+        
+        // If content is missing for a script that list.json says should exist:
+        log_e("loadScriptToExecute: Content for humanId '%s' (fileId '%s') is missing, but list.json entry exists. Using default script.", currentScriptId.c_str(), determinedFileId.c_str());
+        currentScriptId = "default"; // Fallback to default
+        currentScriptContent = default_script;
+        // Fetch is not triggered from here. A future fetch (on boot/timer) should repair this.
+        return true; // Return true as we are providing default script
     }
     vTaskDelay(pdMS_TO_TICKS(10));
 

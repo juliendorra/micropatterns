@@ -134,38 +134,80 @@ bool connectToWiFi()
         return true;
     }
 
+    // Ensure WiFi is in the right mode before connecting
+    WiFi.mode(WIFI_STA);
+    
+    // Disconnect first to ensure clean connection attempt
+    WiFi.disconnect(false);
+    vTaskDelay(pdMS_TO_TICKS(100)); // Brief delay after disconnect
+    
     log_i("Connecting to WiFi SSID: %s", WIFI_SSID);
     WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
     unsigned long startTime = millis();
     unsigned long last_dot_log_time = millis();
+    int retry_count = 0;
+    const int max_retries = 2; // Allow one retry if first attempt fails
 
-    while (WiFi.status() != WL_CONNECTED)
+    while (retry_count <= max_retries)
     {
-        // Check for user interrupt frequently
-        if (g_user_interrupt_signal_for_fetch_task) {
-            log_i("connectToWiFi: User interrupt detected. Aborting connection.");
-            WiFi.disconnect(false); // Try to stop current operations
-            WiFi.mode(WIFI_OFF);    // Turn off WiFi module
-            return false;
+        while (WiFi.status() != WL_CONNECTED)
+        {
+            // Check for user interrupt frequently
+            if (g_user_interrupt_signal_for_fetch_task) {
+                log_i("connectToWiFi: User interrupt detected. Aborting connection.");
+                WiFi.disconnect(false); // Try to stop current operations
+                WiFi.mode(WIFI_OFF);    // Turn off WiFi module
+                return false;
+            }
+
+            vTaskDelay(pdMS_TO_TICKS(50)); // Yield for a short period (50ms)
+
+            if (millis() - last_dot_log_time > 500) { // Log "." approx every 500ms
+                log_d(".");
+                last_dot_log_time = millis();
+            }
+
+            if (millis() - startTime > 10000) { // 10 second timeout per attempt
+                if (retry_count < max_retries) {
+                    log_w("WiFi connection attempt %d timed out, retrying...", retry_count + 1);
+                    WiFi.disconnect(false);
+                    vTaskDelay(pdMS_TO_TICKS(500)); // Wait before retry
+                    WiFi.begin(WIFI_SSID, WIFI_PASSWORD); // Try again
+                    startTime = millis(); // Reset timeout
+                    retry_count++;
+                    break; // Break inner while loop to increment retry counter
+                } else {
+                    log_e("WiFi connection failed after %d attempts!", max_retries + 1);
+                    WiFi.disconnect(false); // Don't erase config
+                    WiFi.mode(WIFI_OFF);    // Turn off WiFi module
+                    return false;
+                }
+            }
+            
+            // If we got here and status is connected, break out of both loops
+            if (WiFi.status() == WL_CONNECTED) {
+                break;
+            }
         }
-
-        vTaskDelay(pdMS_TO_TICKS(50)); // Yield for a short period (50ms)
-
-        if (millis() - last_dot_log_time > 500) { // Log "." approx every 500ms
-            log_d(".");
-            last_dot_log_time = millis();
-        }
-
-        if (millis() - startTime > 15000) { // 15 second timeout
-            log_e("WiFi connection timed out!");
-            WiFi.disconnect(false); // Don't erase config
-            WiFi.mode(WIFI_OFF);    // Turn off WiFi module
-            return false;
+        
+        // If connected, break out of retry loop
+        if (WiFi.status() == WL_CONNECTED) {
+            break;
         }
     }
-    log_i("WiFi connected! IP Address: %s", WiFi.localIP().toString().c_str());
-    return true;
+    
+    // Final check if we're connected
+    if (WiFi.status() == WL_CONNECTED) {
+        log_i("WiFi connected! IP Address: %s", WiFi.localIP().toString().c_str());
+        return true;
+    }
+    
+    // Should not reach here if properly connected, but just in case
+    log_e("WiFi connection failed with unexpected state!");
+    WiFi.disconnect(false);
+    WiFi.mode(WIFI_OFF);
+    return false;
 }
 
 void disconnectWiFi()
@@ -239,6 +281,8 @@ void getNTPTime()
 }
 
 // --- SPIFFS Functions ---
+const char* SCRIPT_STATES_PATH = "/scripts/script_states.json";
+
 bool initializeSPIFFS()
 {
     log_i("Initializing SPIFFS...");
@@ -463,6 +507,116 @@ bool loadCurrentScriptId(String &id)
     }
 }
 
+// --- Script Execution State Persistence ---
+// const char* SCRIPT_STATES_PATH = "/scripts/script_states.json"; // Duplicate removed, defined earlier
+
+bool saveScriptExecutionState(const char* scriptId, int counter, int hour, int minute, int second) {
+    if (!scriptId || strlen(scriptId) == 0) {
+        log_e("saveScriptExecutionState: scriptId is null or empty.");
+        return false;
+    }
+
+    DynamicJsonDocument statesDoc(2048); // Adjust size as needed based on number of scripts
+    JsonObject scriptStateObj;
+
+    // 1. Load existing states file if it exists
+    File file = SPIFFS.open(SCRIPT_STATES_PATH, FILE_READ);
+    if (file && file.size() > 0) {
+        DeserializationError error = deserializeJson(statesDoc, file);
+        if (error) {
+            log_e("saveScriptExecutionState: Failed to parse existing %s: %s. Will overwrite.", SCRIPT_STATES_PATH, error.c_str());
+            statesDoc.clear(); // Clear to start fresh if parsing failed
+        }
+    }
+    file.close(); // Close read file
+
+    // Ensure statesDoc is an object, even if it was cleared or new
+    if (!statesDoc.is<JsonObject>()) {
+        statesDoc.to<JsonObject>();
+    }
+    JsonObject root = statesDoc.as<JsonObject>();
+
+    // 2. Get or create the object for the current scriptId
+    if (root.containsKey(scriptId)) {
+        scriptStateObj = root[scriptId];
+    } else {
+        scriptStateObj = root.createNestedObject(scriptId);
+    }
+
+    // 3. Update the state for this scriptId
+    scriptStateObj["counter"] = counter;
+    scriptStateObj["hour"] = hour;
+    scriptStateObj["minute"] = minute;
+    scriptStateObj["second"] = second;
+
+    // 4. Write the updated statesDoc back to the file
+    file = SPIFFS.open(SCRIPT_STATES_PATH, FILE_WRITE);
+    if (!file) {
+        log_e("saveScriptExecutionState: Failed to open %s for writing.", SCRIPT_STATES_PATH);
+        return false;
+    }
+
+    if (serializeJson(statesDoc, file) == 0) {
+        log_e("saveScriptExecutionState: Failed to write to %s.", SCRIPT_STATES_PATH);
+        file.close();
+        return false;
+    }
+
+    file.close();
+    log_i("Script state for ID '%s' (C:%d, T:%02d:%02d:%02d) saved to %s.", scriptId, counter, hour, minute, second, SCRIPT_STATES_PATH);
+    return true;
+}
+
+bool loadScriptExecutionState(const char* scriptId, int& counter, int& hour, int& minute, int& second) {
+    if (!scriptId || strlen(scriptId) == 0) {
+        log_e("loadScriptExecutionState: scriptId is null or empty.");
+        return false;
+    }
+
+    File file = SPIFFS.open(SCRIPT_STATES_PATH, FILE_READ);
+    if (!file || file.isDirectory() || file.size() == 0) {
+        // log_w("loadScriptExecutionState: %s not found, is directory, or is empty.", SCRIPT_STATES_PATH);
+        if (file) file.close();
+        return false; // No state file or empty, so no state to load
+    }
+
+    DynamicJsonDocument statesDoc(2048); // Adjust size as needed
+    DeserializationError error = deserializeJson(statesDoc, file);
+    file.close();
+
+    if (error) {
+        log_e("loadScriptExecutionState: Failed to parse %s: %s.", SCRIPT_STATES_PATH, error.c_str());
+        return false;
+    }
+
+    if (!statesDoc.is<JsonObject>()) {
+        log_e("loadScriptExecutionState: %s content is not a JSON object.", SCRIPT_STATES_PATH);
+        return false;
+    }
+
+    JsonObject root = statesDoc.as<JsonObject>();
+    if (!root.containsKey(scriptId)) {
+        // log_w("loadScriptExecutionState: No state found for script ID '%s' in %s.", scriptId, SCRIPT_STATES_PATH);
+        return false; // No state for this specific scriptId
+    }
+
+    JsonObject scriptStateObj = root[scriptId];
+    if (!scriptStateObj.containsKey("counter") || !scriptStateObj.containsKey("hour") ||
+        !scriptStateObj.containsKey("minute") || !scriptStateObj.containsKey("second")) {
+        log_e("loadScriptExecutionState: Incomplete state for script ID '%s' in %s.", scriptId, SCRIPT_STATES_PATH);
+        return false;
+    }
+
+    counter = scriptStateObj["counter"].as<int>();
+    hour = scriptStateObj["hour"].as<int>();
+    minute = scriptStateObj["minute"].as<int>();
+    second = scriptStateObj["second"].as<int>();
+
+    log_i("Script state for ID '%s' loaded (C:%d, T:%02d:%02d:%02d) from %s.", scriptId, counter, hour, minute, second, SCRIPT_STATES_PATH);
+    return true;
+}
+
+
 // --- Sleep/Shutdown ---
 void goToLightSleep()
 {
@@ -517,22 +671,47 @@ void goToLightSleep()
     esp_task_wdt_reset();
 
     // After wakeup, check which pin triggered it
-    if (wakeup_pin == BUTTON_UP_PIN)
+    // The actual pin value from ISR is processed by handleWakeupAndScriptExecution.
+    // Here, we check wakeup_pin (which ISR sets and handleWakeupAndScriptExecution clears)
+    // primarily to decide if a fetch should be considered for timer wakeups.
+    // Note: wakeup_pin might have been cleared by handleWakeupAndScriptExecution if it ran due to a button press
+    // that also woke the device. However, g_wakeup_handled ensures handleWakeupAndScriptExecution runs once.
+    // The critical check for fetch is if it was a timer that caused the primary wake event.
+
+    esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
+
+    if (cause == ESP_SLEEP_WAKEUP_TIMER)
     {
-        log_i("Wakeup triggered by UP button");
+        log_i("Wakeup triggered by timer.");
+        // Check if a fetch should be performed
+        if (shouldPerformFetch("Timer Wakeup")) // shouldPerformFetch is declared in main.h, defined in main.cpp
+        {
+            log_i("goToLightSleep: Timer wakeup, conditions met for fetch. Triggering fetch request.");
+            if (g_fetchRequestSemaphore != NULL) // g_fetchRequestSemaphore is in main.cpp
+            {
+                xSemaphoreGive(g_fetchRequestSemaphore);
+            }
+            else
+            {
+                log_e("goToLightSleep: Fetch request semaphore is NULL, cannot trigger fetch.");
+            }
+        }
+        else
+        {
+            log_i("goToLightSleep: Timer wakeup, but fetch conditions not met or not needed now.");
+        }
     }
-    else if (wakeup_pin == BUTTON_DOWN_PIN)
+    else if (cause == ESP_SLEEP_WAKEUP_GPIO)
     {
-        log_i("Wakeup triggered by DOWN button");
-    }
-    else if (wakeup_pin == BUTTON_PUSH_PIN)
-    {
-        log_i("Wakeup triggered by PUSH button");
+        // GPIO wakeup source is logged by handleWakeupAndScriptExecution based on the specific pin.
+        // No fetch trigger here for GPIO wakeups.
+        log_i("Wakeup triggered by GPIO.");
     }
     else
     {
-        log_i("Wakeup triggered by timer or unknown source");
+        log_i("Wakeup triggered by other source: %d", cause);
     }
+
 
     // Disable GPIO wakeup sources after waking up
     gpio_wakeup_disable(BUTTON_UP_PIN);
