@@ -46,75 +46,87 @@ const s3client = new S3Client({
   pathStyle: true, // Important for MinIO, R2, and potentially mock server
 });
 
-const SCRIPTS_INDEX_KEY = "scripts.json";
-const DEVICE_SCRIPTS_INDEX_KEY = "scripts-device.json"; // New key for device-specific list
-const SCRIPT_PREFIX = "scripts/"; // Folder for individual scripts
+// --- User ID based S3 Key Generation ---
+// Sanitize userID to prevent path traversal or invalid characters in S3 keys
+function sanitizeUserIdForS3(userId: string): string {
+    if (!userId) return "invalid_user"; // Fallback for empty userId
+    // Allow alphanumeric, hyphen, underscore. Max length 50.
+    return userId.replace(/[^a-zA-Z0-9-_]/g, '').substring(0, 50) || "sanitized_user_id";
+}
+
+const SCRIPTS_INDEX_KEY_FN = (userId: string) => `${sanitizeUserIdForS3(userId)}.json`;
+const DEVICE_SCRIPTS_INDEX_KEY_FN = (userId: string) => `${sanitizeUserIdForS3(userId)}-device.json`;
+const SCRIPT_PREFIX_FN = (userId: string) => `scripts/${sanitizeUserIdForS3(userId)}/`;
+
 
 // --- Script Index Operations ---
 
-export async function getScriptsIndex(): Promise<any[]> {
+export async function getScriptsIndex(userId: string): Promise<any[]> {
+    const key = SCRIPTS_INDEX_KEY_FN(userId);
     try {
-        const response = await s3client.getObject(SCRIPTS_INDEX_KEY);
+        const response = await s3client.getObject(key);
         if (!response) return []; // Index doesn't exist yet
         const content = await response.text();
         return JSON.parse(content || "[]");
     } catch (error) {
-        // If index doesn't exist (404), return empty array, otherwise log error
-        if (error.message.includes("NoSuchKey") || error.message.includes("Object not found")) {
-            console.log("[S3] Scripts index not found, returning empty list.");
+        if (error.message.includes("NoSuchKey") || error.message.includes("Object not found") || error.message.includes("404")) {
+            console.log(`[S3] Scripts index for user '${userId}' (key: '${key}') not found, returning empty list.`);
             return [];
         }
-        console.error("[S3] Error getting scripts index:", error.message);
-        return []; // Return empty on other errors too
+        console.error(`[S3] Error getting scripts index for user '${userId}' (key: '${key}'):`, error.message);
+        return [];
     }
 }
 
-export async function saveScriptsIndex(indexData: any[]): Promise<boolean> {
+export async function saveScriptsIndex(userId: string, indexData: any[]): Promise<boolean> {
+    const key = SCRIPTS_INDEX_KEY_FN(userId);
     try {
-        const dataString = JSON.stringify(indexData, null, 2); // Pretty print for readability
+        const dataString = JSON.stringify(indexData, null, 2);
         await s3client.putObject(
-            SCRIPTS_INDEX_KEY,
+            key,
             new TextEncoder().encode(dataString),
             { metadata: { "Content-Type": "application/json; charset=utf-8" } }
         );
-        console.log("[S3] Scripts index saved successfully.");
+        console.log(`[S3] Scripts index for user '${userId}' (key: '${key}') saved successfully.`);
         return true;
     } catch (error) {
-        console.error("[S3] Error saving scripts index:", error.message);
+        console.error(`[S3] Error saving scripts index for user '${userId}' (key: '${key}'):`, error.message);
         return false;
     }
 }
 
 // --- Device-Specific Script Index Operations ---
 
-export async function getDeviceScriptsIndex(): Promise<any[]> {
+export async function getDeviceScriptsIndex(userId: string): Promise<any[]> {
+    const key = DEVICE_SCRIPTS_INDEX_KEY_FN(userId);
     try {
-        const response = await s3client.getObject(DEVICE_SCRIPTS_INDEX_KEY);
-        if (!response) return []; // Index doesn't exist yet
+        const response = await s3client.getObject(key);
+        if (!response) return [];
         const content = await response.text();
         return JSON.parse(content || "[]");
     } catch (error) {
         if (error.message.includes("NoSuchKey") || error.message.includes("Object not found") || error.message.includes("404")) {
-            console.log(`[S3] Device scripts index ('${DEVICE_SCRIPTS_INDEX_KEY}') not found, returning empty list.`);
+            console.log(`[S3] Device scripts index for user '${userId}' (key: '${key}') not found, returning empty list.`);
             return [];
         }
-        console.error(`[S3] Error getting device scripts index ('${DEVICE_SCRIPTS_INDEX_KEY}'):`, error.message);
+        console.error(`[S3] Error getting device scripts index for user '${userId}' (key: '${key}'):`, error.message);
         return [];
     }
 }
 
-export async function saveDeviceScriptsIndex(indexData: any[]): Promise<boolean> {
+export async function saveDeviceScriptsIndex(userId: string, indexData: any[]): Promise<boolean> {
+    const key = DEVICE_SCRIPTS_INDEX_KEY_FN(userId);
     try {
         const dataString = JSON.stringify(indexData, null, 2);
         await s3client.putObject(
-            DEVICE_SCRIPTS_INDEX_KEY,
+            key,
             new TextEncoder().encode(dataString),
             { metadata: { "Content-Type": "application/json; charset=utf-8" } }
         );
-        console.log("[S3] Device scripts index saved successfully.");
+        console.log(`[S3] Device scripts index for user '${userId}' (key: '${key}') saved successfully.`);
         return true;
     } catch (error) {
-        console.error("[S3] Error saving device scripts index:", error.message);
+        console.error(`[S3] Error saving device scripts index for user '${userId}' (key: '${key}'):`, error.message);
         return false;
     }
 }
@@ -122,15 +134,16 @@ export async function saveDeviceScriptsIndex(indexData: any[]): Promise<boolean>
 
 // --- Individual Script Operations ---
 
-function getScriptKey(scriptId: string): string {
-    // Basic sanitization - remove potential path traversal chars, ensure valid filename
-    const safeId = scriptId.replace(/[^a-zA-Z0-9-_]/g, '');
-    if (!safeId) throw new Error("Invalid script ID provided.");
-    return `${SCRIPT_PREFIX}${safeId}.json`;
+function getScriptKey(userId: string, scriptId: string): string {
+    const safeUserId = sanitizeUserIdForS3(userId);
+    // Basic sanitization for scriptId - remove potential path traversal chars, ensure valid filename
+    const safeScriptId = scriptId.replace(/[^a-zA-Z0-9-_]/g, '');
+    if (!safeScriptId) throw new Error("Invalid script ID provided.");
+    return `${SCRIPT_PREFIX_FN(safeUserId)}${safeScriptId}.json`;
 }
 
-export async function getScript(scriptId: string): Promise<any | null> {
-    const key = getScriptKey(scriptId);
+export async function getScript(userId: string, scriptId: string): Promise<any | null> {
+    const key = getScriptKey(userId, scriptId);
     try {
         const response = await s3client.getObject(key);
         if (!response) return null;
@@ -138,16 +151,16 @@ export async function getScript(scriptId: string): Promise<any | null> {
         return JSON.parse(content);
     } catch (error) {
          if (error.message.includes("NoSuchKey") || error.message.includes("Object not found") || error.message.includes("404")) {
-            console.log(`[S3] Script '${scriptId}' (key: '${key}') not found.`);
+            console.log(`[S3] Script '${scriptId}' for user '${userId}' (key: '${key}') not found.`);
             return null;
         }
-        console.error(`[S3] Error getting script '${scriptId}' (key: '${key}'):`, error.message);
+        console.error(`[S3] Error getting script '${scriptId}' for user '${userId}' (key: '${key}'):`, error.message);
         return null;
     }
 }
 
-export async function saveScript(scriptId: string, scriptData: any): Promise<boolean> {
-    const key = getScriptKey(scriptId);
+export async function saveScript(userId: string, scriptId: string, scriptData: any): Promise<boolean> {
+    const key = getScriptKey(userId, scriptId);
     try {
         const dataString = JSON.stringify(scriptData, null, 2);
         await s3client.putObject(
@@ -155,10 +168,10 @@ export async function saveScript(scriptId: string, scriptData: any): Promise<boo
             new TextEncoder().encode(dataString),
             { metadata: { "Content-Type": "application/json; charset=utf-8" } }
         );
-        console.log(`[S3] Script '${scriptId}' saved successfully.`);
+        console.log(`[S3] Script '${scriptId}' for user '${userId}' (key: '${key}') saved successfully.`);
         return true;
     } catch (error) {
-        console.error(`[S3] Error saving script '${scriptId}':`, error.message);
+        console.error(`[S3] Error saving script '${scriptId}' for user '${userId}' (key: '${key}'):`, error.message);
         return false;
     }
 }

@@ -168,6 +168,10 @@ ENDREPEAT
                     <button id="saveScriptButton">Save</button>
                     <button id="newScriptButton" class="secondary">New</button>
                 </div>
+                <div class="script-mgmt-row">
+                    <label for="userId">User ID:</label>
+                    <input type="text" id="userId" placeholder="Your secret User ID...">
+                </div>
                 <p id="scriptMgmtStatus"></p> <!-- Status messages -->
             </div>
         </div>
@@ -198,7 +202,8 @@ ENDREPEAT
     <script src="drawing.js"></script>
     <script src="parser.js"></script>
     <script src="runtime.js"></script>
-    <script src="simulator.js"></script>
+    <script type="module" src="simulator.js"></script>
+    <script src="scroll-handler.js"></script> <!-- Add the new scroll handler -->
 </body>
 
 </html>

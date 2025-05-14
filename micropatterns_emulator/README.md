@@ -16,11 +16,15 @@ For the full MicroPatterns language specification and project details, please se
 4.  **Toggle Zoom (M5Paper):**
     *   If M5Paper (540x960) display is selected, use the "Zoom" button to toggle the visual display between 50% (default) and 100% (actual pixel size). This does not affect the script's `$WIDTH` or `$HEIGHT`.
 5.  **Set Environment:** Adjust the `$HOUR`, `$MINUTE`, `$SECOND`, and `$COUNTER` values in the "Environment Variables" section.
-6.  **Run Script:** Click the "Run Script" button. The script will be parsed and executed, drawing the result on the canvas display.
-7.  **Increment Counter:** Click "Increment Counter" to increase the `$COUNTER` by one and automatically re-run the script, showing how the output changes over time (or iterations).
-8.  **Errors:** Any parsing or runtime errors will appear in the red box below the script input, indicating the line number and error message.
-9.  **Patterns:** Patterns defined using `DEFINE PATTERN` in the script will be listed under "Patterns Defined" after a successful parse. Click on a preview to interactively edit its pixels in the editor. You can also drag & drop image files onto previews to import them.
-10. **New Command:** Includes the `FILL_PIXEL` command for drawing pixels conditionally based on the current fill pattern.
+6.  **User ID:**
+    *   A unique User ID is automatically generated (using NanoID) and stored in your browser's local storage. This ID is displayed in the "Script Management" section.
+    *   This User ID namespaces your scripts on the server. You can copy this ID to use in another browser to access the same set of scripts.
+    *   You can also paste an existing User ID into the field.
+7.  **Run Script:** Click the "Run Script" button. The script will be parsed and executed, drawing the result on the canvas display.
+8.  **Increment Counter:** Click "Increment Counter" to increase the `$COUNTER` by one and automatically re-run the script, showing how the output changes over time (or iterations).
+9.  **Errors:** Any parsing or runtime errors will appear in the red box below the script input, indicating the line number and error message.
+10. **Patterns:** Patterns defined using `DEFINE PATTERN` in the script will be listed under "Patterns Defined" after a successful parse. Click on a preview to interactively edit its pixels in the editor. You can also drag & drop image files onto previews to import them.
+11. **New Command:** Includes the `FILL_PIXEL` command for drawing pixels conditionally based on the current fill pattern.
 
 ## Emulator Implementation Notes
 

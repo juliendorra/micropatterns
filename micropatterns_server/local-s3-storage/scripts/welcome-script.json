@@ -1,6 +1,0 @@
-{
-  "id": "welcome-script",
-  "name": "Welcome Script",
-  "content": "# Welcome to MicroPatterns!\n# Display is 200x200\n\n# Define patterns using DEFINE PATTERN\nDEFINE PATTERN NAME=\"checker\" WIDTH=4 HEIGHT=4 DATA=\"1010010110100101\"\nDEFINE PATTERN NAME=\"smile\" WIDTH=8 HEIGHT=8 DATA=\"0111111010000001101001011000000110100101100110011000000101111110\"\n\n# Declare variables used later\nVAR $center_x\nVAR $center_y\nVAR $bar_height\nVAR $secondplusone\nVAR $rotation\nVAR $size\n\nCOLOR NAME=BLACK\n# Use defined pattern name with FILL\nFILL NAME=\"checker\"\nFILL_RECT X=0 Y=0 WIDTH=$WIDTH HEIGHT=$HEIGHT\n\nCOLOR NAME=WHITE\n# Reset to solid fill\nFILL NAME=SOLID\nLET $center_x = $WIDTH / 2\nLET $center_y = $HEIGHT / 2\n\n# Use declared variables\nTRANSLATE DX=$center_x DY=$center_y\n\n# Expressions are only supported in assignements\nLET $secondplusone = 1 + $SECOND\n# Precedence: (350 * 59) / $secondplusone\nLET $rotation = 350 * 59 / $secondplusone\nROTATE DEGREES=$rotation\n\nLET $size = 1 + $COUNTER % 20\nSCALE FACTOR=$size\n\n# Center the 8x8 pattern using DRAW\nDRAW NAME=\"smile\" X=-4 Y=-4\n\nRESET_TRANSFORMS\nCOLOR NAME=BLACK\nLET $bar_height = $COUNTER % 50 + 10\n# Use declared variable\nFILL_RECT X=10 Y=180 WIDTH=30 HEIGHT=$bar_height",
-  "lastModified": "2024-01-01T00:00:00.000Z"
-}

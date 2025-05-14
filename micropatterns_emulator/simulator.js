@@ -1,4 +1,4 @@
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
     const scriptInputTextArea = document.getElementById('scriptInput');
     const runButton = document.getElementById('runButton');
     const incrementCounterButton = document.getElementById('incrementCounterButton');
@@ -29,11 +29,38 @@ document.addEventListener('DOMContentLoaded', () => {
     const newScriptButton = document.getElementById('newScriptButton');
     const scriptMgmtStatus = document.getElementById('scriptMgmtStatus');
     const deviceScriptListContainer = document.getElementById('deviceScriptListContainer');
+    const userIdInput = document.getElementById('userId'); // Added User ID input
+
+    // --- NanoID Import & Setup ---
+    // Import nanoid
+    // Note: Ensure this path is correct relative to your project structure or use a CDN.
+    // If running locally, you might need to adjust this or use a bundler.
+    // For direct browser use with ES modules, ensure your server serves it correctly.
+    let nanoid, customAlphabet;
+    try {
+        const nanoidModule = await import('https://cdn.jsdelivr.net/npm/nanoid@4.0.2/+esm');
+        nanoid = nanoidModule.nanoid; // Default export if available
+        customAlphabet = nanoidModule.customAlphabet; // Named export
+    } catch (e) {
+        console.error("Failed to load nanoid module. User ID generation will be affected.", e);
+        // Fallback or error handling if nanoid doesn't load
+        // For simplicity, we'll proceed, but ID generation might fail.
+    }
+
+
+    // Define custom nanoid generator
+    const NANOID_ALPHABET = "123456789bcdfghjkmnpqrstvwxyz";
+    const generatePeerId = customAlphabet ? customAlphabet(NANOID_ALPHABET, 10) : () => `fallback-${Date.now()}-${Math.random().toString(36).substring(2,8)}`;
+
 
     // --- Local Storage Keys ---
     const LOCAL_STORAGE_SCRIPT_CONTENT_KEY = 'micropatterns_editor_content';
     const LOCAL_STORAGE_SCRIPT_NAME_KEY = 'micropatterns_editor_script_name';
     const LOCAL_STORAGE_THEME_KEY = 'micropatterns_theme_preference';
+    const LOCAL_STORAGE_USER_ID_KEY = 'micropatterns_user_id'; // Added User ID key
+
+    // --- User ID State ---
+    let currentUserId = '';
 
     // --- Configuration ---
     // Assume server runs on localhost:8000 during development
@@ -144,6 +171,39 @@ document.addEventListener('DOMContentLoaded', () => {
             // console.log("Saved script name to local storage."); // Can be noisy
         });
     }
+
+    // --- User ID Initialization and Handling ---
+    function initializeUserId() {
+        if (!userIdInput) {
+            console.error("User ID input field not found.");
+            return;
+        }
+        const savedUserId = localStorage.getItem(LOCAL_STORAGE_USER_ID_KEY);
+        if (savedUserId) {
+            currentUserId = savedUserId;
+            console.log("Loaded User ID from local storage:", currentUserId);
+        } else {
+            if (generatePeerId) {
+                currentUserId = generatePeerId();
+                localStorage.setItem(LOCAL_STORAGE_USER_ID_KEY, currentUserId);
+                console.log("Generated new User ID:", currentUserId);
+            } else {
+                currentUserId = "default-user-id"; // Fallback if nanoid failed
+                console.warn("Nanoid not available, using fallback User ID. Please check module import.");
+            }
+        }
+        userIdInput.value = currentUserId;
+
+        userIdInput.addEventListener('input', () => {
+            currentUserId = userIdInput.value.trim();
+            localStorage.setItem(LOCAL_STORAGE_USER_ID_KEY, currentUserId);
+            console.log("User ID updated and saved to local storage:", currentUserId);
+            // Optionally, re-fetch script list if user ID changes significantly
+            // For now, user needs to manually click load/save after changing ID.
+            fetchScriptList(); // Re-fetch script list for the new user ID
+        });
+    }
+    // --- End User ID Initialization ---
 
 
     // --- Line Wrap Toggle Logic ---
@@ -884,11 +944,24 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     async function fetchScriptList() {
-        console.log("Fetching script list...");
+        if (!currentUserId) {
+            setStatusMessage("User ID is not set. Cannot load scripts.", true);
+            scriptListSelect.options.length = 1; // Clear list
+            if (deviceScriptListContainer) deviceScriptListContainer.innerHTML = '<p style="color: #777; font-style: italic;">User ID required to load scripts.</p>';
+            return;
+        }
+        console.log(`Fetching script list for user: ${currentUserId}...`);
         setStatusMessage("Loading script list...");
         try {
-            const response = await fetch(`${API_BASE_URL}/api/scripts`);
+            const response = await fetch(`${API_BASE_URL}/api/scripts/${currentUserId}`);
             if (!response.ok) {
+                 if (response.status === 404) { // User might not have any scripts yet
+                    console.log(`No scripts found for user ${currentUserId}. This might be a new user.`);
+                    scriptListSelect.options.length = 1; // Clear previous options
+                    populateDeviceScriptList([], []); // Empty device list
+                    setStatusMessage("No scripts found for this User ID.", false);
+                    return;
+                }
                 throw new Error(`Failed to fetch script list: ${response.status} ${response.statusText}`);
             }
             const scripts = await response.json();
@@ -908,13 +981,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
             // Fetch device-specific script list to populate checkboxes
             try {
-                const deviceScriptsResponse = await fetch(`${API_BASE_URL}/api/device/scripts`);
+                const deviceScriptsResponse = await fetch(`${API_BASE_URL}/api/device/scripts/${currentUserId}`);
                 if (!deviceScriptsResponse.ok) {
-                    // If 404, it means no device scripts are selected yet, which is fine.
                     if (deviceScriptsResponse.status === 404) {
-                        console.log("No device-specific script list found (scripts-device.json). Assuming empty.");
+                        console.log(`No device-specific script list found for user ${currentUserId}.`);
                         populateDeviceScriptList(scripts, []);
-                        return; // Exit after populating with all scripts unchecked
+                        return;
                     }
                     throw new Error(`Failed to fetch device script list: ${deviceScriptsResponse.status} ${deviceScriptsResponse.statusText}`);
                 }
@@ -923,13 +995,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 populateDeviceScriptList(scripts, deviceScriptIds);
             } catch (deviceError) {
                 setStatusMessage(`Error loading device script selection: ${deviceError.message}`, true);
-                // Populate with all scripts unchecked if device list fails to load
                 populateDeviceScriptList(scripts, []);
             }
 
         } catch (error) {
             setStatusMessage(`Error loading script list: ${error.message}`, true);
-            // Clear device script list on error too
+            scriptListSelect.options.length = 1; // Clear list on error
             if (deviceScriptListContainer) deviceScriptListContainer.innerHTML = '<p style="color: red; font-style: italic;">Error loading script list.</p>';
         }
     }
@@ -968,6 +1039,10 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     async function updateDeviceSelection() {
+        if (!currentUserId) {
+            setStatusMessage("User ID is not set. Cannot update device selection.", true);
+            return;
+        }
         if (!deviceScriptListContainer) return;
         const selectedIds = [];
         const checkboxes = deviceScriptListContainer.querySelectorAll('input[type="checkbox"]');
@@ -977,14 +1052,14 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         });
 
-        console.log("Updating device selection with IDs:", selectedIds);
+        console.log(`Updating device selection for user ${currentUserId} with IDs:`, selectedIds);
         setStatusMessage("Updating device selection...");
 
         try {
-            const response = await fetch(`${API_BASE_URL}/api/device/scripts`, {
+            const response = await fetch(`${API_BASE_URL}/api/device/scripts/${currentUserId}`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ selectedIds: selectedIds })
+                body: JSON.stringify({ selectedIds: selectedIds }) // Server will use userID from path
             });
 
             if (!response.ok) {
@@ -999,21 +1074,25 @@ document.addEventListener('DOMContentLoaded', () => {
 
 
     async function loadScript(scriptId) {
+        if (!currentUserId) {
+            setStatusMessage("User ID is not set. Cannot load script.", true);
+            return;
+        }
         if (!scriptId) {
             setStatusMessage("Please select a script to load.", true);
             return;
         }
-        console.log(`Loading script: ${scriptId}`);
+        console.log(`Loading script: ${scriptId} for user ${currentUserId}`);
         setStatusMessage(`Loading script '${scriptId}'...`);
 
         // Reset counter and overrides BEFORE loading
         resetEnvironmentInputs();
 
         try {
-            const response = await fetch(`${API_BASE_URL}/api/scripts/${scriptId}`);
+            const response = await fetch(`${API_BASE_URL}/api/scripts/${currentUserId}/${scriptId}`);
             if (!response.ok) {
                 if (response.status === 404) {
-                    throw new Error(`Script '${scriptId}' not found.`);
+                    throw new Error(`Script '${scriptId}' not found for this user.`);
                 } else {
                     throw new Error(`Failed to load script: ${response.status} ${response.statusText}`);
                 }
@@ -1035,6 +1114,10 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     async function saveScript() {
+        if (!currentUserId) {
+            setStatusMessage("User ID is not set. Cannot save script.", true);
+            return;
+        }
         const scriptName = scriptNameInput.value.trim();
         const scriptContent = codeMirrorEditor.getValue();
 
@@ -1054,11 +1137,11 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
-        console.log(`Saving script: ID=${scriptId}, Name=${scriptName}`);
+        console.log(`Saving script: ID=${scriptId}, Name=${scriptName} for user ${currentUserId}`);
         setStatusMessage(`Saving script '${scriptName}'...`);
 
         try {
-            const response = await fetch(`${API_BASE_URL}/api/scripts/${scriptId}`, {
+            const response = await fetch(`${API_BASE_URL}/api/scripts/${currentUserId}/${scriptId}`, {
                 method: 'PUT',
                 headers: {
                     'Content-Type': 'application/json',
@@ -1066,6 +1149,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 body: JSON.stringify({
                     name: scriptName,
                     content: scriptContent,
+                    // userId: currentUserId // Server will get userID from path
                 }),
             });
 
@@ -1275,6 +1359,7 @@ FILL_RECT X=0 Y=0 WIDTH=$WIDTH HEIGHT=$HEIGHT
 
 
     // Run once on load
+    initializeUserId(); // Initialize User ID first
     runScript();
-    fetchScriptList(); // Fetch scripts when the page loads
+    fetchScriptList(); // Fetch scripts when the page loads (will use currentUserId)
 });

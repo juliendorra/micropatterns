@@ -24,27 +24,35 @@ async function handler(req: Request): Promise<Response> {
 
     try {
         // --- API Routes ---
+        // User ID regex part: [a-zA-Z0-9-_]{10} (assuming 10 char nanoid, can be more flexible)
+        // Script ID regex part: [a-zA-Z0-9-_]+
 
-        // GET /api/scripts - Get full script index
-        if (path === "/api/scripts" && method === "GET") {
-            const index = await s3.getScriptsIndex();
+        // GET /api/scripts/:userID - Get script index for a user
+        const userScriptsIndexMatch = path.match(/^\/api\/scripts\/([a-zA-Z0-9-_]{1,50})$/);
+        if (userScriptsIndexMatch && method === "GET") {
+            const userId = userScriptsIndexMatch[1];
+            const index = await s3.getScriptsIndex(userId);
             return new Response(JSON.stringify(index), {
                 status: 200,
                 headers: { ...corsHeaders, "Content-Type": "application/json" },
             });
         }
 
-        // GET /api/device/scripts - Returns the list of scripts selected for device sync
-        if (path === "/api/device/scripts" && method === "GET") {
-            const deviceIndex = await s3.getDeviceScriptsIndex();
+        // GET /api/device/scripts/:userID - Get device script list for a user
+        const userDeviceScriptsGetMatch = path.match(/^\/api\/device\/scripts\/([a-zA-Z0-9-_]{1,50})$/);
+        if (userDeviceScriptsGetMatch && method === "GET") {
+            const userId = userDeviceScriptsGetMatch[1];
+            const deviceIndex = await s3.getDeviceScriptsIndex(userId);
             return new Response(JSON.stringify(deviceIndex), {
                 status: 200,
                 headers: { ...corsHeaders, "Content-Type": "application/json" },
             });
         }
 
-        // PUT /api/device/scripts - Updates the list of scripts for device sync
-        if (path === "/api/device/scripts" && method === "PUT") {
+        // PUT /api/device/scripts/:userID - Update device script list for a user
+        const userDeviceScriptsPutMatch = path.match(/^\/api\/device\/scripts\/([a-zA-Z0-9-_]{1,50})$/);
+        if (userDeviceScriptsPutMatch && method === "PUT") {
+            const userId = userDeviceScriptsPutMatch[1];
             let requestBody;
             try {
                 requestBody = await req.json();
@@ -63,13 +71,10 @@ async function handler(req: Request): Promise<Response> {
             }
             const selectedIds: string[] = requestBody.selectedIds;
 
-            // Fetch all scripts to ensure we only add existing ones
-            const allScripts = await s3.getScriptsIndex();
+            const allScripts = await s3.getScriptsIndex(userId);
             const deviceScripts = allScripts.filter(script => selectedIds.includes(script.id));
             
-            // The deviceScripts array now contains objects like {id, name} for selected scripts
-
-            const saveSuccess = await s3.saveDeviceScriptsIndex(deviceScripts);
+            const saveSuccess = await s3.saveDeviceScriptsIndex(userId, deviceScripts);
             if (saveSuccess) {
                 return new Response(JSON.stringify({ success: true, count: deviceScripts.length }), {
                     status: 200,
@@ -83,12 +88,12 @@ async function handler(req: Request): Promise<Response> {
             }
         }
 
-        // Matches /api/scripts/:scriptId
-        const scriptMatch = path.match(/^\/api\/scripts\/([a-zA-Z0-9-_]+)$/);
-        if (scriptMatch && method === "GET") {
-            // Get single script
-            const scriptId = scriptMatch[1];
-            const scriptData = await s3.getScript(scriptId);
+        // Matches /api/scripts/:userID/:scriptID
+        const scriptDetailMatch = path.match(/^\/api\/scripts\/([a-zA-Z0-9-_]{1,50})\/([a-zA-Z0-9-_]+)$/);
+        if (scriptDetailMatch && method === "GET") {
+            const userId = scriptDetailMatch[1];
+            const scriptId = scriptDetailMatch[2];
+            const scriptData = await s3.getScript(userId, scriptId);
             if (scriptData) {
                 return new Response(JSON.stringify(scriptData), {
                     status: 200,
@@ -102,9 +107,9 @@ async function handler(req: Request): Promise<Response> {
             }
         }
 
-        if (scriptMatch && method === "PUT") {
-            // Save/Update single script
-            const scriptId = scriptMatch[1];
+        if (scriptDetailMatch && method === "PUT") {
+            const userId = scriptDetailMatch[1];
+            const scriptId = scriptDetailMatch[2];
             let requestBody;
             try {
                 requestBody = await req.json();
@@ -122,16 +127,14 @@ async function handler(req: Request): Promise<Response> {
                 });
             }
 
-            // Prepare script data for S3
             const scriptData = {
-                id: scriptId,
+                id: scriptId, // The scriptId from the path is the canonical one
                 name: requestBody.name,
                 content: requestBody.content,
                 lastModified: new Date().toISOString(),
             };
 
-            // Save the individual script file
-            const scriptSaveSuccess = await s3.saveScript(scriptId, scriptData);
+            const scriptSaveSuccess = await s3.saveScript(userId, scriptId, scriptData);
             if (!scriptSaveSuccess) {
                 return new Response(JSON.stringify({ error: "Failed to save script file" }), {
                     status: 500,
@@ -139,22 +142,20 @@ async function handler(req: Request): Promise<Response> {
                 });
             }
 
-            // Update the index
-            let index = await s3.getScriptsIndex();
-            const existingIndex = index.findIndex(item => item.id === scriptId);
+            let index = await s3.getScriptsIndex(userId);
+            const existingIndexEntry = index.findIndex(item => item.id === scriptId);
             const indexEntry = { id: scriptId, name: scriptData.name, lastModified: scriptData.lastModified };
 
-            if (existingIndex !== -1) {
-                index[existingIndex] = indexEntry; // Update existing entry
+            if (existingIndexEntry !== -1) {
+                index[existingIndexEntry] = indexEntry;
             } else {
-                index.push(indexEntry); // Add new entry
+                index.push(indexEntry);
             }
-            // Sort index alphabetically by name for consistent listing
             index.sort((a, b) => a.name.localeCompare(b.name));
 
-            const indexSaveSuccess = await s3.saveScriptsIndex(index);
+            const indexSaveSuccess = await s3.saveScriptsIndex(userId, index);
             if (!indexSaveSuccess) {
-                 console.error(`[Server] Script ${scriptId} saved, but failed to update index.`);
+                 console.error(`[Server] Script ${scriptId} for user ${userId} saved, but failed to update index.`);
             }
 
             return new Response(JSON.stringify({ success: true, script: scriptData }), {
