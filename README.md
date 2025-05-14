@@ -33,7 +33,10 @@ MicroPatterns allows you to define simple rules and use environment variables (t
 
 ---
 
-## MicroPatterns DSL Specification v1.2 (Added FILL_PIXEL)
+## MicroPatterns DSL Specification v1.3 
+
+1.2 FILL_PIXEL
+1.3 Remove TIMES from REPEAT
 
 ### Overview
 
