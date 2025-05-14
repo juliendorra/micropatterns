@@ -272,85 +272,68 @@ MicroPatterns is a mini-language designed for creating generative pixel art, pri
 
 ### Example Script
 
-```micropatterns
-# Define patterns first (names are case-insensitive)
-DEFINE PATTERN NAME="Checker" WIDTH=4 HEIGHT=4 DATA="1010010110100101"
-DEFINE PATTERN NAME="stripes" WIDTH=4 HEIGHT=4 DATA="1111000011110000"
-DEFINE PATTERN NAME="Arrow" WIDTH=5 HEIGHT=8 DATA="00100011100010001111100100001000010000100"
+```DEFINE PATTERN NAME="zigzag" WIDTH=20 HEIGHT=20 DATA="0000000000011000000000000011000011000000100000011100011000001110000011100011000001110000011000000000011110001111000000000011100001111000000000001110001110000100000011110000110011000000001110001110000001100011100101110000001000011100001110000000000011100000100001000000011100000110011000000011100000110011000000001100000100011100000001100000000011100000000100000000011100000000000000000001100000000000"
 
-# Variables with initialization (names are case-insensitive after $)
-# Angle for minute hand (uses $MINUTE)
-VAR $Angle = $MINUTE * 6
-# Radius pulsates slightly (uses $SECOND)
-VAR $Radius = 10 + ($second % 10) * 2
+VAR $center_x
+VAR $center_y
+VAR $secondplus = 30 + $SECOND
+VAR $secondplusone = 1 + $SECOND
+VAR $rotation
+VAR $size
+VAR $counterplusmod = 12 + $counter % $secondplusone
 
-# --- Draw filled background based on counter ---
-RESET_TRANSFORMS
-IF $COUNTER % 2 == 0 THEN
-   # Case-insensitive lookup  
-   FILL NAME="checker" 
-ELSE
-   # Case-insensitive lookup
-   FILL NAME="Stripes" 
-ENDIF
-# Fill whole screen (uses $WIDTH, $HEIGHT)
-FILL_RECT X=0 Y=0 WIDTH=$width HEIGHT=$HEIGHT 
-
-# --- Draw Hour Markers ---
+# fill background
 COLOR NAME=BLACK
-# Use solid color for markers
-FILL NAME=SOLID 
-REPEAT COUNT=12
-   RESET_TRANSFORMS
-   # Center origin (assuming 200x200 display)
-   TRANSLATE DX=100 DY=100 
-   # Rotate per hour (uses $INDEX)
-   ROTATE DEGREES=($index * 30) 
-   # Move out
-   TRANSLATE DX=0 DY=-90 
-   # Draw marker
-   FILL_RECT X=-2 Y=-5 WIDTH=4 HEIGHT=10 
-ENDREPEAT
-
-# --- Draw pulsating circle ---
-RESET_TRANSFORMS
-TRANSLATE DX=100 DY=100
-# Draw on top of pattern
-COLOR NAME=WHITE
 FILL NAME=SOLID
-# Uses variable RADIUS (case-insensitive)
-FILL_CIRCLE X=0 Y=0 RADIUS=$radius 
+FILL_RECT WIDTH=$WIDTH HEIGHT=$HEIGHT X=0 Y=0
 
-# --- Draw Minute Hand (using DRAW with a defined pattern) ---
-RESET_TRANSFORMS
-TRANSLATE DX=100 DY=100
-# Uses variable Angle (case-insensitive)
-ROTATE DEGREES=$Angle 
-# Example: Make pattern larger
-# SCALE FACTOR=2 
+LET $center_x = $WIDTH / 2
+LET $center_y = $HEIGHT / 2
+
+TRANSLATE DX=$center_x DY=$center_y
+
+LET $rotation = 720 * 89 / $secondplus
+ROTATE DEGREES=$rotation
+
+LET $size = 10 + $COUNTER % 10
+VAR $halfsize = $size/2
+
+FILL NAME="zigzag"
 COLOR NAME=BLACK
-DRAW NAME="arrow" X=-2 Y=-30 # Position pattern (case-insensitive lookup)
 
-# --- Draw Counter Value ---
-# (Simple example: draw pixels based on counter)
-RESET_TRANSFORMS
-COLOR NAME=WHITE
-# Declare and initialize position variables using VAR
-VAR $x_pos = $counter % $WIDTH
-VAR $y_pos = ($COUNTER / $width) % $HEIGHT
-PIXEL X=$x_pos Y=$y_pos # Uses variables x_pos, y_pos
+REPEAT COUNT=$counterplusmod
 
-# --- Draw a diagonal line using FILL_PIXEL ---
-# This line will only appear where the background 'checker' or 'stripes' pattern allows
-# Draw white pixels on top of the patterned background
-COLOR NAME=WHITE
- # Temporarily set fill to SOLID so pattern check uses COLOR
-FILL NAME=SOLID
-# Declare loop variable (initialized to 0 by default)
-VAR $diag_pos 
-REPEAT COUNT=50
-    LET $diag_pos = $INDEX * 2 + 50 # Update inside loop
-    # Use FILL_PIXEL: only draws if the background pattern at (diag_pos, diag_pos) is '1'
-    FILL_PIXEL X=$diag_pos Y=$diag_pos
+ ROTATE DEGREES=$rotation
+ VAR $shift = $MINUTE / $secondplusone
+ TRANSLATE dx=$shift dy=$shift
+
+ VAR $radius = $INDEX * 10 % 50
+ VAR $Xposition= $INDEX
+ VAR $Yposition= $INDEX
+
+ IF $INDEX % 2 == 0 THEN
+  COLOR NAME=WHITE
+  SCALE FACTOR=$size
+ ELSE
+  COLOR NAME=BLACK
+  SCALE FACTOR=$halfsize
+ ENDIF
+ 
+ FILL_RECT WIDTH=$INDEX HEIGHT=$INDEX X=$Xposition Y=$Yposition
+ 
+ IF $INDEX % 3 == 0 THEN
+  COLOR NAME=WHITE
+  SCALE FACTOR=$size
+ ELSE
+  COLOR NAME=BLACK
+  SCALE FACTOR=$halfsize
+ ENDIF
+ 
+ ROTATE DEGREES=$rotation
+ FILL_RECT WIDTH=$INDEX HEIGHT=$INDEX X=$Xposition Y=$Yposition
+
+ 
+ DRAW name="zigzag" x=$Xposition y=$Yposition
+ 
 ENDREPEAT
 ```
