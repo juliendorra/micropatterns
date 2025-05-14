@@ -77,10 +77,40 @@ The server exposes the following endpoints:
     *   **Response:** `200 OK` with a JSON array:
         ```json
         [
-          { "id": "script-id-1", "name": "Cool Pattern" },
-          { "id": "script-id-2", "name": "Another One" }
+          { "id": "script-id-1", "name": "Cool Pattern", "lastModified": "2023-10-27T10:00:00.000Z" },
+          { "id": "script-id-2", "name": "Another One", "lastModified": "2023-10-28T11:00:00.000Z" }
         ]
         ```
+
+*   **`GET /api/device/scripts`**
+    *   **Description:** Retrieves the list of scripts that have been selected for synchronization with devices. This list is a subset of all available scripts.
+    *   **Response:** `200 OK` with a JSON array:
+        ```json
+        [
+          { "id": "script-id-1", "name": "Cool Pattern", "lastModified": "2023-10-27T10:00:00.000Z" },
+          { "id": "script-id-3", "name": "Device Favorite", "lastModified": "2023-10-29T12:00:00.000Z" }
+        ]
+        ```
+    *   If the device-specific index doesn't exist or is empty, returns an empty array `[]`.
+
+*   **`PUT /api/device/scripts`**
+    *   **Description:** Updates the list of scripts selected for device synchronization. This overwrites the existing `scripts-device.json` index file in the S3 bucket.
+    *   **Request Body:** JSON object:
+        ```json
+        {
+          "selectedIds": ["script-id-1", "script-id-3"]
+        }
+        ```
+    *   **Response:**
+        *   `200 OK` on success:
+            ```json
+            {
+              "success": true,
+              "count": 2 // Number of scripts in the updated device list
+            }
+            ```
+        *   `400 Bad Request` if `selectedIds` is missing or not an array.
+        *   `500 Internal Server Error` if saving to S3 fails.
 
 *   **`GET /api/scripts/:id`**
     *   **Description:** Retrieves the full data for a specific script.

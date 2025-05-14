@@ -142,7 +142,7 @@ async function handler(req: Request): Promise<Response> {
             // Update the index
             let index = await s3.getScriptsIndex();
             const existingIndex = index.findIndex(item => item.id === scriptId);
-            const indexEntry = { id: scriptId, name: scriptData.name };
+            const indexEntry = { id: scriptId, name: scriptData.name, lastModified: scriptData.lastModified };
 
             if (existingIndex !== -1) {
                 index[existingIndex] = indexEntry; // Update existing entry
