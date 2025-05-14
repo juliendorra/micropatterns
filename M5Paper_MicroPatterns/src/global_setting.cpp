@@ -14,7 +14,7 @@ volatile bool g_wakeup_handled = false; // Initialize the wakeup handled flag
 // Last time a button interrupt was triggered
 volatile uint32_t g_last_button_time = 0;
 // Debounce time in milliseconds
-const uint32_t DEBOUNCE_TIME_MS = 300;
+const uint32_t DEBOUNCE_TIME_MS = 150;
 
 // ISR for button interrupts
 void IRAM_ATTR button_isr(void *arg) {
@@ -22,12 +22,22 @@ void IRAM_ATTR button_isr(void *arg) {
     uint8_t expected_wakeup_pin_val = 0; // We only want to set wakeup_pin if it's currently 0
     uint8_t desired_wakeup_pin_val = (uint8_t)gpio_num_val;
 
-    // Atomically set wakeup_pin to gpio_num_val ONLY if wakeup_pin is currently 0.
-    // This prevents a rapid second interrupt from overwriting the first if it hasn't been processed yet
-    // by the main loop, and ensures the ISR is very fast.
-    // The 'false' means this is a "weak" compare-exchange, which is fine here.
-    // __ATOMIC_SEQ_CST provides the strongest memory ordering guarantees.
-    __atomic_compare_exchange_n(&wakeup_pin, &expected_wakeup_pin_val, desired_wakeup_pin_val, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+    // Get current time for immediate debounce check in ISR
+    uint32_t current_time = millis();
+    
+    // Only set wakeup_pin if enough time has passed since last button press
+    // This provides hardware-level debouncing in the ISR itself
+    if ((current_time - g_last_button_time) >= (DEBOUNCE_TIME_MS/2)) {
+        // Atomically set wakeup_pin to gpio_num_val ONLY if wakeup_pin is currently 0.
+        // This prevents a rapid second interrupt from overwriting the first if it hasn't been processed yet
+        // by the main loop, and ensures the ISR is very fast.
+        // The 'false' means this is a "weak" compare-exchange, which is fine here.
+        // __ATOMIC_SEQ_CST provides the strongest memory ordering guarantees.
+        if (__atomic_compare_exchange_n(&wakeup_pin, &expected_wakeup_pin_val, desired_wakeup_pin_val, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)) {
+            // Only update last button time if we actually set the wakeup_pin
+            __atomic_store_n(&g_last_button_time, current_time, __ATOMIC_SEQ_CST);
+        }
+    }
 }
 
 // --- Constants ---

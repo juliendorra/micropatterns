@@ -250,9 +250,17 @@ void setup()
         log_i("Fresh Start: Counter is 1 (first boot cycle or RTC reset). Intending full data refresh.");
         g_full_refresh_intended = true; // Set the RTC flag
         if (canvas.frameBuffer()) { // Display message about full refresh intent
-            canvas.fillCanvas(0);
-            displayMessage("Full Refresh Pending...", 100, 15);
-            canvas.pushCanvas(0, 0, UPDATE_MODE_GC16);
+            // Draw a semi-transparent background for the message to ensure readability
+            // without completely clearing the screen
+            int msgX = canvas.width() / 2;
+            int msgY = 100;
+            int msgWidth = 400; // Approximate width for the message
+            int msgHeight = 40; // Approximate height for the message
+            
+            // Draw a white rectangle behind the message for better visibility
+            canvas.fillRect(msgX - msgWidth/2, msgY - msgHeight/2, msgWidth, msgHeight, 0);
+            displayMessage("Full Refresh Pending...", msgY, 15);
+            canvas.pushCanvas(0, 0, UPDATE_MODE_DU4); // Use DU4 for faster update
             vTaskDelay(pdMS_TO_TICKS(1000)); // Show message
         }
     }
@@ -263,9 +271,17 @@ void setup()
         freshStartCounter = 1; // Reset counter to 1 to restart the cycle towards threshold
         log_i("Fresh Start: Counter reset to 1.");
         if (canvas.frameBuffer()) { // Display message
-            canvas.fillCanvas(0);
-            displayMessage("Full Refresh Pending...", 100, 15);
-            canvas.pushCanvas(0, 0, UPDATE_MODE_GC16);
+            // Draw a semi-transparent background for the message to ensure readability
+            // without completely clearing the screen
+            int msgX = canvas.width() / 2;
+            int msgY = 100;
+            int msgWidth = 400; // Approximate width for the message
+            int msgHeight = 40; // Approximate height for the message
+            
+            // Draw a white rectangle behind the message for better visibility
+            canvas.fillRect(msgX - msgWidth/2, msgY - msgHeight/2, msgWidth, msgHeight, 0);
+            displayMessage("Full Refresh Pending...", msgY, 15);
+            canvas.pushCanvas(0, 0, UPDATE_MODE_DU4); // Use DU4 for faster update
             vTaskDelay(pdMS_TO_TICKS(1000)); // Show message
         }
     }
@@ -325,24 +341,79 @@ void loop()
     // Reset watchdog at the start of each loop iteration
     esp_task_wdt_reset();
 
+    // Check for button presses first for maximum responsiveness
+    // Atomically load the current value of wakeup_pin set by ISR
+    uint8_t pin_val_from_isr = __atomic_load_n(&wakeup_pin, __ATOMIC_SEQ_CST);
+    
+    if (pin_val_from_isr != 0) {
+        // Verify this is a real button press by checking the actual GPIO state
+        bool is_real_press = false;
+        
+        if (pin_val_from_isr == BUTTON_UP_PIN) {
+            is_real_press = (digitalRead(BUTTON_UP_PIN) == LOW);
+        } else if (pin_val_from_isr == BUTTON_DOWN_PIN) {
+            is_real_press = (digitalRead(BUTTON_DOWN_PIN) == LOW);
+        } else if (pin_val_from_isr == BUTTON_PUSH_PIN) {
+            is_real_press = (digitalRead(BUTTON_PUSH_PIN) == LOW);
+        }
+        
+        if (is_real_press) {
+            // Button press detected and verified - handle it immediately
+            log_i("Loop: Button press detected and verified (GPIO %d), handling immediately.", pin_val_from_isr);
+            g_wakeup_handled = false; // Force handling even if we already handled a wakeup this cycle
+        } else {
+            // This is a phantom button press - clear the wakeup_pin
+            log_w("Loop: Phantom button press detected (GPIO %d). Clearing.", pin_val_from_isr);
+            uint8_t expected_pin_val = pin_val_from_isr;
+            __atomic_compare_exchange_n(&wakeup_pin, &expected_pin_val, (uint8_t)0, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+        }
+    }
+
     // Process any messages from the fetch task for display
     DisplayMsg msg;
     if (g_displayMessageQueue != NULL && xQueueReceive(g_displayMessageQueue, &msg, 0) == pdTRUE)
     { // Non-blocking check
+        esp_task_wdt_reset();
         if (msg.clear_canvas_first)
             canvas.fillCanvas(0); // Usually white
         displayMessage(msg.text, msg.y_offset, msg.color);
         canvas.pushCanvas(0, 0, msg.push_full_update ? UPDATE_MODE_GC16 : UPDATE_MODE_DU4);
-
-        // Reset watchdog after potentially expensive canvas push
         esp_task_wdt_reset();
+
+        // Brief delay for important messages, but use vTaskDelay instead of blocking delay
 
         // Brief delay for important messages, but use vTaskDelay instead of blocking delay
         if (msg.push_full_update && (strcmp(msg.text, "Fetch OK!") == 0 || strstr(msg.text, "Failed") != NULL || strstr(msg.text, "Interrupted") != NULL))
         {
             // Use vTaskDelay instead of delay to allow other tasks to run
-            vTaskDelay(pdMS_TO_TICKS(500)); // Reduced from 1000ms to 500ms
+            vTaskDelay(pdMS_TO_TICKS(200)); // Reduced from 500ms to 200ms for better responsiveness
             esp_task_wdt_reset();           // Reset watchdog after delay
+        }
+        
+        // Check for button presses again after display operations
+        pin_val_from_isr = __atomic_load_n(&wakeup_pin, __ATOMIC_SEQ_CST);
+        if (pin_val_from_isr != 0) {
+            // Verify this is a real button press by checking the actual GPIO state
+            bool is_real_press = false;
+            
+            if (pin_val_from_isr == BUTTON_UP_PIN) {
+                is_real_press = (digitalRead(BUTTON_UP_PIN) == LOW);
+            } else if (pin_val_from_isr == BUTTON_DOWN_PIN) {
+                is_real_press = (digitalRead(BUTTON_DOWN_PIN) == LOW);
+            } else if (pin_val_from_isr == BUTTON_PUSH_PIN) {
+                is_real_press = (digitalRead(BUTTON_PUSH_PIN) == LOW);
+            }
+            
+            if (is_real_press) {
+                // Button press detected and verified during display operations
+                log_i("Loop: Button press detected and verified after display operations, handling immediately.");
+                g_wakeup_handled = false; // Force handling
+            } else {
+                // This is a phantom button press - clear the wakeup_pin
+                log_w("Loop: Phantom button press detected after display operations (GPIO %d). Clearing.", pin_val_from_isr);
+                uint8_t expected_pin_val = pin_val_from_isr;
+                __atomic_compare_exchange_n(&wakeup_pin, &expected_pin_val, (uint8_t)0, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+            }
         }
     }
 
@@ -352,13 +423,14 @@ void loop()
     // Process wakeup if either:
     // 1. We haven't handled it yet this wake cycle
     // 2. We just came out of sleep (g_wakeup_handled is reset in goToLightSleep after waking up)
+    // 3. A button press was detected above (g_wakeup_handled was set to false)
     // This ensures we catch button presses even if they happen during fetches
 
-    // Atomically load the current value of wakeup_pin set by ISR
-    uint8_t pin_val_from_isr = __atomic_load_n(&wakeup_pin, __ATOMIC_SEQ_CST);
-
     if (!g_wakeup_handled)
-    { // Process wakeup only once per cycle
+    { // Process wakeup only once per cycle (unless forced by button press)
+        // Reload pin_val_from_isr to get the latest value
+        pin_val_from_isr = __atomic_load_n(&wakeup_pin, __ATOMIC_SEQ_CST);
+        
         // Pass the pin_val_from_isr (could be 0 if timer wakeup or ISR didn't set)
         // handleWakeupAndScriptExecution will perform debouncing and clear the pin if handled.
         handleWakeupAndScriptExecution(pin_val_from_isr);
@@ -371,7 +443,7 @@ void loop()
         log_i("Loop: Fetch task is in progress, delaying sleep.");
         // Yield for a short period to allow fetch task to run
         esp_task_wdt_reset(); // Reset watchdog before delay
-        vTaskDelay(pdMS_TO_TICKS(50));
+        vTaskDelay(pdMS_TO_TICKS(20)); // Reduced from 50ms to 20ms to check for button presses more frequently
     }
     else
     {
@@ -385,6 +457,7 @@ void loop()
 void displayParseErrors()
 {
     const auto &errors = parser.getErrors();
+    esp_task_wdt_reset();
     canvas.fillCanvas(0); // White background
     displayMessage("Parse Error: " + currentScriptId, 50, 15);
     int y_pos = 100;
@@ -397,6 +470,7 @@ void displayParseErrors()
             break;
     }
     canvas.pushCanvas(0, 0, UPDATE_MODE_GC16);
+    esp_task_wdt_reset();
 }
 
 void handleWakeupAndScriptExecution(uint8_t raw_gpio_from_isr) // Modified signature
@@ -404,62 +478,48 @@ void handleWakeupAndScriptExecution(uint8_t raw_gpio_from_isr) // Modified signa
     bool scriptChangeRequest = false;
     bool moveUpDirection = false;
     // Fetch triggering is now handled in setup() and after timer wakeups in goToLightSleep()
-    // bool fetchFromServerAfterExecution = false; // Removed
 
     // Capture initial fetch task state to make decisions based on state at entry
-    // This is still useful for deciding whether to signal a restart if a button is pressed *during* a fetch.
     bool initial_fetch_task_state_is_progress = g_fetch_task_in_progress;
     bool signaled_restart_to_existing_fetch_this_cycle = false;
 
     uint8_t processed_gpio_event = 0; // Will hold the pin if it's a valid, debounced button event
+    bool script_was_just_selected = false; // Flag to indicate if selectNextScript was called in this invocation
 
     // 1. Determine Wakeup Reason & Intent (includes debouncing)
     if (raw_gpio_from_isr != 0)
     {
-        // Attempt to "claim" this specific pin event from the ISR.
-        // We try to change wakeup_pin from raw_gpio_from_isr to 0.
-        // If successful, we own this event for debouncing.
         uint8_t expected_pin_val = raw_gpio_from_isr;
         if (__atomic_compare_exchange_n(&wakeup_pin, &expected_pin_val, (uint8_t)0, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST))
         {
-            // Successfully claimed and cleared the global wakeup_pin. Now debounce.
-            uint32_t current_time = millis(); // Safe to call millis() in task context
-            // Check debounce time OR handle millis() overflow
+            uint32_t current_time = millis();
             if (((current_time - g_last_button_time) >= DEBOUNCE_TIME_MS || current_time < g_last_button_time))
             {
-                g_last_button_time = current_time;        // Update time of last valid press
-                processed_gpio_event = raw_gpio_from_isr; // This is a valid, debounced button event
+                g_last_button_time = current_time;
+                processed_gpio_event = raw_gpio_from_isr;
                 log_i("Wakeup: Button event for GPIO %d accepted (debounced).", processed_gpio_event);
             }
             else
             {
                 log_i("Wakeup: Debounced out GPIO %d event.", raw_gpio_from_isr);
-                // Event is debounced out, processed_gpio_event remains 0.
             }
         }
         else
         {
-            // wakeup_pin was not raw_gpio_from_isr when we tried to clear it.
-            // This means it might have been cleared by another call to this function (if g_wakeup_handled was false),
-            // or changed by another ISR if the first ISR was slow to be processed by loop().
-            // Given current ISR logic (only sets if wakeup_pin is 0), this case should be rare.
-            // Treat as no valid button event for *this specific call*.
             log_w("Wakeup: Button event for GPIO %d was stale or changed during processing, ignoring.", raw_gpio_from_isr);
-            // processed_gpio_event remains 0.
         }
     }
 
     // Proceed with logic based on processed_gpio_event
     if (processed_gpio_event != 0)
     {
-        // This log is slightly redundant if the one above fired, but confirms it's being handled.
         log_i("Handling action for debounced GPIO %d.", processed_gpio_event);
 
-        if (initial_fetch_task_state_is_progress) // Check against the state at the beginning of this function call
+        if (initial_fetch_task_state_is_progress)
         {
             log_i("User action during fetch. Signaling fetch task to restart.");
-            g_fetch_restart_pending = true;                       // Signal a graceful restart
-            signaled_restart_to_existing_fetch_this_cycle = true; // Mark that this cycle signaled a restart
+            g_fetch_restart_pending = true;
+            signaled_restart_to_existing_fetch_this_cycle = true;
         }
 
         if (processed_gpio_event == BUTTON_UP_PIN)
@@ -467,14 +527,12 @@ void handleWakeupAndScriptExecution(uint8_t raw_gpio_from_isr) // Modified signa
             log_i("Button UP (GPIO %d) detected.", processed_gpio_event);
             scriptChangeRequest = true;
             moveUpDirection = true;
-            // fetchFromServerAfterExecution = true; // Removed - Fetch not triggered by script change
         }
         else if (processed_gpio_event == BUTTON_DOWN_PIN)
         {
             log_i("Button DOWN (GPIO %d) detected.", processed_gpio_event);
             scriptChangeRequest = true;
             moveUpDirection = false;
-            // fetchFromServerAfterExecution = true; // Removed - Fetch not triggered by script change
         }
         else if (processed_gpio_event == BUTTON_PUSH_PIN)
         {
@@ -486,7 +544,6 @@ void handleWakeupAndScriptExecution(uint8_t raw_gpio_from_isr) // Modified signa
                 signaled_restart_to_existing_fetch_this_cycle = true;
                 esp_task_wdt_reset();
             }
-            // For PUSH, just re-run current script. No fetch by default.
         }
     }
     else
@@ -500,6 +557,14 @@ void handleWakeupAndScriptExecution(uint8_t raw_gpio_from_isr) // Modified signa
         if (!selectNextScript(moveUpDirection))
         {
             log_e("Failed to select next script. Will attempt to run current/default.");
+        } else {
+            script_was_just_selected = true; // Mark that a script selection attempt was made
+            
+            // Force a reload of the current script ID from SPIFFS to ensure we get the newly selected one
+            String tempId;
+            if (loadCurrentScriptId(tempId)) {
+                log_i("Successfully reloaded current script ID after selection: %s", tempId.c_str());
+            }
         }
     }
 
@@ -539,36 +604,36 @@ void handleWakeupAndScriptExecution(uint8_t raw_gpio_from_isr) // Modified signa
     // 5. Execute Script (if runtime is valid)
     if (runtime)
     {
-        // Reset watchdog timer before executing script to avoid timeouts
         esp_task_wdt_reset();
 
         int counterForThisExecution;
         int hourForThisExecution, minuteForThisExecution, secondForThisExecution;
-        bool isResumeWakeup = (processed_gpio_event == 0); // True if timer wakeup, false if button press
+        bool isResumeWakeup = (processed_gpio_event == 0 && !scriptChangeRequest); // Timer wakeup AND no script change requested this call
 
-        // Attempt to load persisted state for the current script
         bool stateLoaded = loadScriptExecutionState(currentScriptId.c_str(), counterForThisExecution, hourForThisExecution, minuteForThisExecution, secondForThisExecution);
 
         if (isResumeWakeup && stateLoaded) {
-            // Resume wakeup and state was loaded: use the persisted state directly
-            log_i("Resuming script '%s' with persisted state: C=%d, T=%02d:%02d:%02d",
+            // For timer wakeups with loaded state, increment the counter AND update time
+            counterForThisExecution++;
+            // Update time from RTC for timer wakeups too, just like with button presses
+            M5.RTC.getTime(&time_struct);
+            hourForThisExecution = time_struct.hour;
+            minuteForThisExecution = time_struct.min;
+            secondForThisExecution = time_struct.sec;
+            log_i("Resuming script '%s' with persisted state, incrementing counter and updating time: C=%d, T=%02d:%02d:%02d",
                   currentScriptId.c_str(), counterForThisExecution, hourForThisExecution, minuteForThisExecution, secondForThisExecution);
-            // Time and counter are already set from loaded state.
         } else {
-            // Button press, or no persisted state, or first run for this script:
-            // Use current RTC time.
             M5.RTC.getTime(&time_struct);
             hourForThisExecution = time_struct.hour;
             minuteForThisExecution = time_struct.min;
             secondForThisExecution = time_struct.sec;
 
-            if (stateLoaded) {
-                // State was loaded, but it's a button press, so increment the counter for this new execution.
+            if (stateLoaded && (processed_gpio_event != 0 || scriptChangeRequest)) { // If button press or script change, increment counter
                 counterForThisExecution++;
-            } else {
-                // No state loaded (e.g., new script, or script_states.json cleared), start counter from 0.
+            } else if (!stateLoaded) { // No state loaded, start from 0
                 counterForThisExecution = 0;
             }
+            // If !stateLoaded and timer wakeup, counter is 0, time is current.
             log_i("Executing script '%s' with new/updated state: C=%d, T=%02d:%02d:%02d",
                   currentScriptId.c_str(), counterForThisExecution, hourForThisExecution, minuteForThisExecution, secondForThisExecution);
         }
@@ -579,19 +644,52 @@ void handleWakeupAndScriptExecution(uint8_t raw_gpio_from_isr) // Modified signa
         log_i("Executing script '%s' - Using Counter: %d, Time: %02d:%02d:%02d",
               currentScriptId.c_str(), counterForThisExecution, hourForThisExecution, minuteForThisExecution, secondForThisExecution);
 
+        // Check for button interrupts before execution
+        uint8_t pre_execution_pin_val = __atomic_load_n(&wakeup_pin, __ATOMIC_SEQ_CST);
+        if (pre_execution_pin_val != 0 && !script_was_just_selected) {
+            // Verify this is a real button press by checking the actual GPIO state
+            // This helps filter out phantom button presses
+            bool is_real_press = false;
+            
+            if (pre_execution_pin_val == BUTTON_UP_PIN) {
+                is_real_press = (digitalRead(BUTTON_UP_PIN) == LOW);
+            } else if (pre_execution_pin_val == BUTTON_DOWN_PIN) {
+                is_real_press = (digitalRead(BUTTON_DOWN_PIN) == LOW);
+            } else if (pre_execution_pin_val == BUTTON_PUSH_PIN) {
+                is_real_press = (digitalRead(BUTTON_PUSH_PIN) == LOW);
+            }
+            
+            if (is_real_press) {
+                // If a button was pressed AND we didn't *just* select a new script due to a previous button press in *this current function call*,
+                // then skip execution to handle the new button press.
+                // If script_was_just_selected is true, we ignore pre_execution_pin_val here
+                // to ensure the selected script runs. The new pin_val will be handled by the main loop later.
+                log_i("Button press detected and verified before script execution. Skipping execution to handle button.");
+                return;
+            } else {
+                // This is a phantom button press - clear the wakeup_pin and continue
+                log_w("Phantom button press detected (GPIO %d). Clearing and continuing with script execution.", pre_execution_pin_val);
+                uint8_t expected_pin_val = pre_execution_pin_val;
+                __atomic_compare_exchange_n(&wakeup_pin, &expected_pin_val, (uint8_t)0, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+            }
+        }
+
         unsigned long executionStartTime = millis();
         runtime->execute(); // This includes drawing and pushing canvas
         unsigned long executionEndTime = millis();
         unsigned long executionDuration = executionEndTime - executionStartTime;
 
         log_i("Script '%s' execution and rendering took %lu ms.", currentScriptId.c_str(), executionDuration);
-
-        // Save the state that was *used* for this execution.
-        // This counter (counterForThisExecution) is the one that produced the current image.
-        // If resumed, it's the same. If button pressed, it's the incremented one.
+        
+        // Check for button interrupts immediately after execution
+        // This log is informational; the main loop will handle the interrupt.
+        uint8_t post_execution_pin_val = __atomic_load_n(&wakeup_pin, __ATOMIC_SEQ_CST);
+        if (post_execution_pin_val != 0) {
+            log_i("Button press detected during/after script execution. Will handle in next loop iteration.");
+        }
+        
         saveScriptExecutionState(currentScriptId.c_str(), counterForThisExecution, hourForThisExecution, minuteForThisExecution, secondForThisExecution);
 
-        // Reset watchdog timer after execution and state saving
         esp_task_wdt_reset();
         log_i("Finished execution for script '%s', counter %d.", currentScriptId.c_str(), counterForThisExecution);
     }
@@ -599,19 +697,30 @@ void handleWakeupAndScriptExecution(uint8_t raw_gpio_from_isr) // Modified signa
     {
         log_e("Runtime not initialized, skipping execution. Check for parse errors.");
     }
-
-    // 6. Trigger Fetch from Server if Requested - REMOVED
-    // Fetch triggering is now handled in setup() and after timer wakeups in goToLightSleep()
 }
 
 void displayMessage(const String &msg, int y_offset, uint16_t color)
 {
     if (!canvas.frameBuffer())
         return;
+    
+    // Calculate text dimensions for background rectangle
     canvas.setTextSize(3);
     canvas.setTextDatum(TC_DATUM);
+    
+    // Draw a white background rectangle for better visibility
+    // Approximate width based on message length (this is an estimation)
+    int msgWidth = msg.length() * 15; // Rough estimate: 15 pixels per character at size 3
+    int msgHeight = 30; // Approximate height for text at size 3
+    int msgX = canvas.width() / 2;
+    
+    // Draw background rectangle
+    canvas.fillRect(msgX - msgWidth/2, y_offset - msgHeight/2, msgWidth, msgHeight, 0);
+    
+    // Draw the text
     canvas.setTextColor(color);
-    canvas.drawString(msg, canvas.width() / 2, y_offset);
+    canvas.drawString(msg, msgX, y_offset);
+    
     log_i("Displaying message: %s", msg.c_str());
 }
 
@@ -683,7 +792,7 @@ void fetchTaskFunction(void *pvParameters)
                     msg_to_send.text[sizeof(msg_to_send.text) - 1] = '\0';
                     msg_to_send.y_offset = 50;
                     msg_to_send.color = 15;
-                    msg_to_send.clear_canvas_first = false;
+                    msg_to_send.clear_canvas_first = false; // Never clear the canvas for fetch messages
                     msg_to_send.push_full_update = false; // DU4 for quick message
                     xQueueSend(g_displayMessageQueue, &msg_to_send, pdMS_TO_TICKS(100));
                 }
@@ -1307,12 +1416,14 @@ bool selectNextScript(bool moveUp)
             if (saveCurrentScriptId(nextId))
             {
                 vTaskDelay(pdMS_TO_TICKS(10)); // Yield after SPIFFS save
+                esp_task_wdt_reset(); // WDT reset before canvas operations
                 canvas.fillCanvas(0);
                 displayMessage((nextName ? nextName : nextId), 150, 15);
                 canvas.pushCanvas(0, 0, UPDATE_MODE_GC16);
-                vTaskDelay(pdMS_TO_TICKS(10));   // Yield after push
-                vTaskDelay(pdMS_TO_TICKS(1500)); // Changed from delay()
-                return true;
+                esp_task_wdt_reset(); // WDT reset after canvas operations
+                // Brief delay to allow EPD to start processing, but not long enough to cause interrupt issues
+                vTaskDelay(pdMS_TO_TICKS(50));
+                return true; // Crucial fix: return true on success
             }
             else
             {
@@ -1325,6 +1436,13 @@ bool selectNextScript(bool moveUp)
             log_e("Script at index %d has no ID.", nextIndex);
             return false;
         }
+        // If saveCurrentScriptId was successful, it would have returned true.
+        // If it failed, it would have returned false.
+        // If nextId was null, it would have returned false.
+        // This part of the function should ideally not be reached if nextId was processed.
+        // However, to be safe and ensure all paths return a value:
+        log_w("selectNextScript: Reached unexpected location, implies logic error or unhandled case for nextId processing. Returning false.");
+        return false;
     }
     else
     {
