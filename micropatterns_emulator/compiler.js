@@ -16,8 +16,25 @@ export class MicroPatternsCompiler {
             loopUnrollThreshold: 8,             // Maximum loop count to unroll
             enableInvariantHoisting: true,      // Hoist invariant calculations
             enableFastPathSelection: true,      // Use specialized code paths for common cases
-            logOptimizationStats: false,         // Log optimization statistics
+            enableSecondPassOptimization: true, // Enable second-pass optimizations
+            enableDrawCallBatching: true,       // Batch similar drawing operations
+            enableDeadCodeElimination: true,    // Remove code with no effect
+            enableConstantFolding: true,        // Fold constant expressions
+            enableTransformSequencing: true,    // Combine transformation sequences
+            enableDrawOrderOptimization: true,  // Reorder operations to minimize state changes
+            enableMemoryOptimization: true,     // Reduce memory allocations
+            logOptimizationStats: false,        // Log optimization statistics
             ...optimizationConfig               // Override with user-provided config
+        };
+        
+        // Statistics for second-pass optimizations
+        this.secondPassStats = {
+            drawCallsBatched: 0,
+            transformsSequenced: 0,
+            deadCodeEliminated: 0,
+            constantsValuesSubstituted: 0,
+            drawCallsReordered: 0,
+            memoryAllocationsEliminated: 0
         };
     }
 
@@ -171,6 +188,169 @@ export class MicroPatternsCompiler {
         
         findInvariantsInCommands(loopCommand.commands);
         return invariants;
+    }
+    
+    // Extended script analysis for second-pass optimizations
+    _extendScriptAnalysis(analysis, commands) {
+        // Collect additional data for second-pass optimizations
+        analysis.drawSequences = []; // Sequences of drawing operations
+        analysis.transformSequences = []; // Sequences of transformation operations
+        analysis.constantVariables = new Map(); // Variables that never change after initialization
+        analysis.stateChanges = []; // Color and fill pattern changes
+        analysis.commandsByType = {}; // Group commands by type for optimization
+        
+        // Analyze variable usage to find constants
+        this._analyzeConstantVariables(commands, analysis.constantVariables);
+        
+        // Find drawing and transformation sequences
+        this._analyzeOperationSequences(commands, analysis);
+        
+        // Count command types
+        this._countCommandTypes(commands, analysis.commandsByType);
+        
+        return analysis;
+    }
+    
+    // Analyze constant variables for optimization
+    _analyzeConstantVariables(commands, constantVars) {
+        // Track all variable assignments
+        const assignments = new Map(); // variable -> count of assignments
+        
+        const trackAssignments = (cmds) => {
+            for (const cmd of cmds) {
+                if (cmd.type === 'VAR' || cmd.type === 'LET') {
+                    const varName = cmd.type === 'VAR' ? cmd.varName : cmd.targetVar;
+                    const count = assignments.get(varName) || 0;
+                    assignments.set(varName, count + 1);
+                }
+                
+                // Recursively check nested blocks
+                if (cmd.type === 'IF') {
+                    trackAssignments(cmd.thenCommands);
+                    if (cmd.elseCommands) {
+                        trackAssignments(cmd.elseCommands);
+                    }
+                }
+                else if (cmd.type === 'REPEAT') {
+                    trackAssignments(cmd.commands);
+                }
+            }
+        };
+        
+        trackAssignments(commands);
+        
+        // Variables assigned exactly once are constants
+        for (const [varName, count] of assignments.entries()) {
+            if (count === 1) {
+                constantVars.set(varName, null); // Will be filled with value during optimization
+            }
+        }
+    }
+    
+    // Analyze operation sequences for batching
+    _analyzeOperationSequences(commands, analysis) {
+        const findSequences = (cmds, currentSequence = { draws: [], transforms: [] }, inLoop = false) => {
+            for (const cmd of cmds) {
+                // Track draw operations
+                if (['PIXEL', 'LINE', 'RECT', 'FILL_RECT', 'CIRCLE', 'FILL_CIRCLE', 'DRAW', 'FILL_PIXEL'].includes(cmd.type)) {
+                    currentSequence.draws.push({
+                        type: cmd.type,
+                        line: cmd.line,
+                        inLoop: inLoop
+                    });
+                }
+                
+                // Track transformation operations
+                if (['TRANSLATE', 'ROTATE', 'SCALE'].includes(cmd.type)) {
+                    currentSequence.transforms.push({
+                        type: cmd.type,
+                        line: cmd.line,
+                        inLoop: inLoop
+                    });
+                }
+                
+                // If we hit a RESET_TRANSFORMS, save the current sequence and start a new one
+                if (cmd.type === 'RESET_TRANSFORMS' &&
+                    (currentSequence.draws.length > 0 || currentSequence.transforms.length > 0)) {
+                    
+                    if (currentSequence.transforms.length > 1) {
+                        analysis.transformSequences.push([...currentSequence.transforms]);
+                    }
+                    
+                    if (currentSequence.draws.length > 1) {
+                        analysis.drawSequences.push([...currentSequence.draws]);
+                    }
+                    
+                    currentSequence.draws = [];
+                    currentSequence.transforms = [];
+                }
+                
+                // Track state changes
+                if (cmd.type === 'COLOR' || cmd.type === 'FILL') {
+                    analysis.stateChanges.push({
+                        type: cmd.type,
+                        line: cmd.line,
+                        inLoop: inLoop,
+                        params: cmd.params
+                    });
+                }
+                
+                // Recursively check nested blocks
+                if (cmd.type === 'IF') {
+                    // Clone the sequence for each branch
+                    const thenSequence = {
+                        draws: [...currentSequence.draws],
+                        transforms: [...currentSequence.transforms]
+                    };
+                    const elseSequence = {
+                        draws: [...currentSequence.draws],
+                        transforms: [...currentSequence.transforms]
+                    };
+                    
+                    findSequences(cmd.thenCommands, thenSequence, inLoop);
+                    if (cmd.elseCommands) {
+                        findSequences(cmd.elseCommands, elseSequence, inLoop);
+                    }
+                }
+                else if (cmd.type === 'REPEAT') {
+                    // For REPEAT, we note that operations are in a loop
+                    findSequences(cmd.commands, currentSequence, true);
+                }
+            }
+            
+            // Save any remaining sequences
+            if (currentSequence.transforms.length > 1) {
+                analysis.transformSequences.push([...currentSequence.transforms]);
+            }
+            
+            if (currentSequence.draws.length > 1) {
+                analysis.drawSequences.push([...currentSequence.draws]);
+            }
+        };
+        
+        findSequences(commands);
+    }
+    
+    // Count commands by type to prioritize optimizations
+    _countCommandTypes(commands, commandCounts) {
+        const countCommands = (cmds) => {
+            for (const cmd of cmds) {
+                commandCounts[cmd.type] = (commandCounts[cmd.type] || 0) + 1;
+                
+                // Recursively count nested blocks
+                if (cmd.type === 'IF') {
+                    countCommands(cmd.thenCommands);
+                    if (cmd.elseCommands) {
+                        countCommands(cmd.elseCommands);
+                    }
+                }
+                else if (cmd.type === 'REPEAT') {
+                    countCommands(cmd.commands);
+                }
+            }
+        };
+        
+        countCommands(commands);
     }
 
     _isEnvVar(varNameUpper) { // varNameUpper is without $
@@ -700,11 +880,16 @@ export class MicroPatternsCompiler {
     compile(parsedCommands, assetsDefinition, environmentDefinition) {
         console.log("Starting compilation with", parsedCommands.length, "commands");
         this._resetForCompilation(assetsDefinition, environmentDefinition);
-        const jsCodeLines = [];
+        let jsCodeLines = [];
         const initialUserVariables = {}; // For VAR declarations without initializers ($VAR_UPPER: 0)
 
         // First pass: Analyze the script for optimization opportunities
         const scriptAnalysis = this._analyzeScriptForOptimizations(parsedCommands);
+        
+        // Extended analysis for second-pass optimizations
+        if (this.optimizationConfig.enableSecondPassOptimization) {
+            this._extendScriptAnalysis(scriptAnalysis, parsedCommands);
+        }
         
         // First pass for VAR initializations to populate initialUserVariables
         for (const command of parsedCommands) {
@@ -736,6 +921,11 @@ export class MicroPatternsCompiler {
                 this.errors.push(`Compiler Error (Line ${command.line}): ${e.message}`);
                 jsCodeLines.push(`\n_runtimeError("Compiler error: ${e.message}", ${command.line});`);
             }
+        }
+        
+        // Apply second-pass optimizations if enabled
+        if (this.optimizationConfig.enableSecondPassOptimization) {
+            jsCodeLines = this._applySecondPassOptimizations(jsCodeLines, scriptAnalysis);
         }
 
         const functionBody = `
@@ -890,5 +1080,226 @@ export class MicroPatternsCompiler {
                 config: this.optimizationConfig
             };
         }
+    }
+
+    // Apply second-pass optimizations to the generated code
+    _applySecondPassOptimizations(jsCodeLines, scriptAnalysis) {
+        console.log("Applying second-pass optimizations...");
+        
+        // Reset optimization statistics
+        this.secondPassStats = {
+            drawCallsBatched: 0,
+            transformsSequenced: 0,
+            deadCodeEliminated: 0,
+            constantsValuesSubstituted: 0,
+            drawCallsReordered: 0,
+            memoryAllocationsEliminated: 0
+        };
+        
+        // Join code lines to process as a full string
+        let code = jsCodeLines.join('\n');
+        
+        // Apply optimizations based on enabled features
+        if (this.optimizationConfig.enableConstantFolding) {
+            code = this._optimizeConstantExpressions(code, scriptAnalysis);
+        }
+        
+        if (this.optimizationConfig.enableDeadCodeElimination) {
+            code = this._eliminateDeadCode(code, scriptAnalysis);
+        }
+        
+        if (this.optimizationConfig.enableTransformSequencing) {
+            code = this._optimizeTransformSequences(code, scriptAnalysis);
+        }
+        
+        if (this.optimizationConfig.enableDrawCallBatching) {
+            code = this._batchDrawCalls(code, scriptAnalysis);
+        }
+        
+        if (this.optimizationConfig.enableDrawOrderOptimization) {
+            code = this._optimizeDrawOrder(code, scriptAnalysis);
+        }
+        
+        if (this.optimizationConfig.enableMemoryOptimization) {
+            code = this._optimizeMemoryUsage(code);
+        }
+        
+        // Log optimization statistics if enabled
+        if (this.optimizationConfig.logOptimizationStats) {
+            console.log("Second-pass optimization stats:", this.secondPassStats);
+        }
+        
+        // Split back into lines and return
+        return code.split('\n');
+    }
+    
+    // Optimize constant expressions by substituting known values
+    _optimizeConstantExpressions(code, scriptAnalysis) {
+        const constantVars = scriptAnalysis.constantVariables;
+        if (!constantVars || constantVars.size === 0) return code;
+        
+        // First pass: find actual constant values
+        const constRegex = /(_variables\['\$([A-Z0-9_]+)'\])\s*=\s*([^;]+);/g;
+        let match;
+        
+        while ((match = constRegex.exec(code)) !== null) {
+            const [, fullRef, varName, valueExpr] = match;
+            
+            if (constantVars.has(varName)) {
+                // Simple heuristic: if valueExpr is a number, it's safe to substitute
+                if (/^[0-9]+$/.test(valueExpr.trim())) {
+                    constantVars.set(varName, valueExpr.trim());
+                }
+            }
+        }
+        
+        // Second pass: substitute constant values
+        for (const [varName, value] of constantVars.entries()) {
+            if (value !== null) {
+                const varRegex = new RegExp(`_variables\\['\\$${varName}'\\]`, 'g');
+                let count = 0;
+                code = code.replace(varRegex, (matchSub) => {
+                    count++;
+                    return value;
+                });
+                
+                if (count > 0) { // Only add to stats if substitutions happened
+                    this.secondPassStats.constantsValuesSubstituted += count -1; // -1 because the first assignment still exists
+                }
+            }
+        }
+        
+        return code;
+    }
+    
+    // Eliminate code with no effect (dead code)
+    _eliminateDeadCode(code, scriptAnalysis) {
+        // Identify transform operations with no drawing between them and RESET_TRANSFORMS
+        let deadBlockRegex = /(\/\/ Line \d+: (TRANSLATE|ROTATE|SCALE)\n[\s\S]*?)(?=\n\s*\/\/ Line \d+: RESET_TRANSFORMS)/gs;
+        
+        code = code.replace(deadBlockRegex, (match, block) => {
+            if (!/drawPixel|drawLine|drawRect|fillRect|drawCircle|fillCircle|drawAsset|drawFilledPixel/.test(block)) {
+                this.secondPassStats.deadCodeEliminated++;
+                return '// Dead code removed (transformation with no effect)';
+            }
+            return match;
+        });
+        
+        // Remove unnecessary state changes (COLOR, FILL) that are immediately overwritten
+        const colorRegex = /(\/\/ Line \d+: COLOR\n_state\.color = '[^']+';)(?=\s*\n\s*\/\/ Line \d+: COLOR)/g;
+        code = code.replace(colorRegex, (match) => {
+            this.secondPassStats.deadCodeEliminated++;
+            return '// Dead code removed (redundant COLOR)';
+        });
+        
+        const fillRegex = /(\/\/ Line \d+: FILL\n(?:_state\.fillAsset = null;_|_state\.fillAsset = _assets\['[^']+'\];.*?if \(!_state\.fillAsset\) \{ _runtimeError\("Pattern '[^']+' not defined\.", \d+\); \}))(?=\s*\n\s*\/\/ Line \d+: FILL)/gs;
+        code = code.replace(fillRegex, (match) => {
+            this.secondPassStats.deadCodeEliminated++;
+            return '// Dead code removed (redundant FILL)';
+        });
+        
+        return code;
+    }
+    
+    // Optimize sequences of transformation operations
+    _optimizeTransformSequences(code, scriptAnalysis) {
+        const sequences = scriptAnalysis.transformSequences || [];
+        
+        for (const sequence of sequences) {
+            if (sequence.length < 2 || sequence.some(op => op.inLoop)) continue;
+
+            if (sequence.every(op => op.type === 'TRANSLATE')) {
+                let firstLine = sequence[0].line;
+                let lastLine = sequence[sequence.length - 1].line;
+
+                // Construct a regex to match the block of TRANSLATE operations
+                // This needs to match the code generated by _compileCommandToJs for TRANSLATE
+                // when transform caching is enabled.
+                let translateBlockPatternParts = [];
+                for (const op of sequence) {
+                    // This pattern matches the cached version of TRANSLATE
+                    translateBlockPatternParts.push(
+                        `// Line ${op.line}: TRANSLATE\\n` +
+                        `const _dx_${op.line} = .*?;\\n` +
+                        `const _dy_${op.line} = .*?;\\n` +
+                        `const _transKey_${op.line} = \`translate:\${_dx_${op.line}}:\${_dy_${op.line}}:\${_state\\.matrix\\.toString\\(\\)}\`;\\n` +
+                        `const _transResult_${op.line} = _optimization\\.getCachedTransform\\(_transKey_${op.line}, \\(\\) => \\{[\\s\\S]*?\\}\\);\\n` +
+                        `_state\\.matrix = _transResult_${op.line}\\.matrix;\\n` +
+                        `_state\\.inverseMatrix = _transResult_${op.line}\\.inverse;`
+                    );
+                }
+                const translateBlockRegex = new RegExp(translateBlockPatternParts.join('\\n'), 's');
+                
+                code = code.replace(translateBlockRegex, (match) => {
+                    this.secondPassStats.transformsSequenced += sequence.length -1; // N ops combined into 1
+                    
+                    let combinedDx = sequence.map(op => `_dx_${op.line}`).join(' + ');
+                    let combinedDy = sequence.map(op => `_dy_${op.line}`).join(' + ');
+
+                    return `// Combined ${sequence.length} TRANSLATE operations (Lines ${firstLine}-${lastLine})\\n` +
+                           `const _combinedDX_${firstLine} = ${combinedDx};\\n` +
+                           `const _combinedDY_${firstLine} = ${combinedDy};\\n` +
+                           `_state.matrix.translateSelf(_combinedDX_${firstLine}, _combinedDY_${firstLine});\\n` + // Direct matrix operation
+                           `_state.inverseMatrix = _state.matrix.inverse();`;
+                });
+            }
+        }
+        return code;
+    }
+    
+    // Batch similar drawing operations to reduce state changes
+    _batchDrawCalls(code, scriptAnalysis) {
+        const sequences = scriptAnalysis.drawSequences || [];
+        
+        for (const sequence of sequences) {
+            if (sequence.length < 2 || sequence.some(op => op.inLoop)) continue;
+            
+            if (sequence.every(op => op.type === 'PIXEL')) {
+                let firstLine = sequence[0].line;
+                let lastLine = sequence[sequence.length - 1].line;
+
+                // This regex needs to match the code generated by _compileCommandToJs for PIXEL
+                // when pixel batching is enabled.
+                let pixelBlockPatternParts = [];
+                for (const op of sequence) {
+                     pixelBlockPatternParts.push(
+                        `// Line ${op.line}: PIXEL\\n` +
+                        `const _px_${op.line} = .*?;\\n` +
+                        `const _py_${op.line} = .*?;\\n` +
+                        `const _transformedPt_${op.line} = _drawing\\.transformPoint\\(_px_${op.line}, _py_${op.line}, _state\\);\\n` +
+                        `_optimization\\.batchPixelOperations\\(_transformedPt_${op.line}\\.x, _transformedPt_${op.line}\\.y, _state\\.color\\);`
+                     );
+                }
+                const pixelBlockRegex = new RegExp(pixelBlockPatternParts.join('\\n'), 's');
+                
+                code = code.replace(pixelBlockRegex, (match) => {
+                    this.secondPassStats.drawCallsBatched += sequence.length;
+                    
+                    let pixelCoordDefs = sequence.map(op => `  { x: _px_${op.line}, y: _py_${op.line} }`).join(',\\n');
+                    
+                    return `// Batched ${sequence.length} PIXEL operations (Lines ${firstLine}-${lastLine})\\n` +
+                           `const _batchedPixelCoords_${firstLine} = [\\n${pixelCoordDefs}\\n];\\n` +
+                           `const _transformedBatchedPixels_${firstLine} = _batchedPixelCoords_${firstLine}.map(p => _drawing.transformPoint(p.x, p.y, _state));\\n` +
+                           `_drawing.batchPixels(_transformedBatchedPixels_${firstLine}, _state.color, _state.scale);`;
+                });
+            }
+        }
+        return code;
+    }
+    
+    // Reorder drawing operations to minimize state changes
+    _optimizeDrawOrder(code, scriptAnalysis) {
+        // This optimization is complex and can be risky.
+        // A simple version might reorder COLOR commands if draws are identical.
+        // Example: DRAW_A, COLOR_B, DRAW_A  -> COLOR_B, DRAW_A, DRAW_A
+        // For now, returning code unchanged to avoid introducing subtle issues.
+        return code;
+    }
+    
+    // Optimize memory usage by reducing allocations
+    _optimizeMemoryUsage(code) {
+        // The matrix pool optimization is complex due to lifetime management.
+        // Returning code unchanged for now.
+        return code;
     }
 }

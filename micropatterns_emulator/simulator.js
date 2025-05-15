@@ -322,6 +322,13 @@ document.addEventListener('DOMContentLoaded', async () => {
             { id: 'enablePixelBatching', configKey: 'enablePixelBatching', label: 'Pixel batching' },
             { id: 'enableLoopUnrolling', configKey: 'enableLoopUnrolling', label: 'Loop unrolling' },
             { id: 'enableInvariantHoisting', configKey: 'enableInvariantHoisting', label: 'Invariant hoisting' },
+            { id: 'enableSecondPassOptimization', configKey: 'enableSecondPassOptimization', label: 'Second-pass optimization' },
+            { id: 'enableDrawCallBatching', configKey: 'enableDrawCallBatching', label: 'Draw call batching' },
+            { id: 'enableDeadCodeElimination', configKey: 'enableDeadCodeElimination', label: 'Dead code elimination' },
+            { id: 'enableConstantFolding', configKey: 'enableConstantFolding', label: 'Constant folding' },
+            { id: 'enableTransformSequencing', configKey: 'enableTransformSequencing', label: 'Transform sequencing' },
+            { id: 'enableDrawOrderOptimization', configKey: 'enableDrawOrderOptimization', label: 'Draw order optimization' },
+            { id: 'enableMemoryOptimization', configKey: 'enableMemoryOptimization', label: 'Memory optimization' },
             { id: 'logOptimizationStats', configKey: 'logOptimizationStats', label: 'Log optimization stats' },
             { id: 'logProfilingReport', configKey: 'logProfilingReport', label: 'Log profiling report' }
         ];

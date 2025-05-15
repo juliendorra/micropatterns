@@ -65,12 +65,34 @@ export class MicroPatternsCompiledRunner {
                 throw new Error("Compiled output does not contain an executable function.");
             }
             
+            // Initialize performance timers if statistics are enabled
+            const startTime = compiledOutput.config && compiledOutput.config.logOptimizationStats ?
+                              performance.now() : null;
+            
             // Pass additional optimization methods to the compiled function
             const optimizationHelpers = {
                 getCachedTransform: this.getCachedTransform.bind(this),
                 getCachedPatternTile: this.getCachedPatternTile.bind(this),
                 batchPixelOperations: this.batchPixelOperations.bind(this),
-                flushPixelBatch: this.flushPixelBatch.bind(this)
+                flushPixelBatch: this.flushPixelBatch.bind(this),
+                // Add new optimization helpers for second-pass support
+                precomputeTransforms: this.precomputeTransforms.bind(this),
+                executeDrawBatch: this.executeDrawBatch.bind(this)
+            };
+            
+            // Prepare execution state with expanded caching
+            const executionState = {
+                state: {
+                    color: 'black',
+                    fillAsset: null,
+                    scale: 1.0,
+                    matrix: new DOMMatrix(),
+                    inverseMatrix: new DOMMatrix(),
+                    // Add caches for second-pass optimization
+                    transformCache: new Map(),
+                    patternTileCache: new Map(),
+                    drawBatches: new Map()
+                }
             };
             
             // The compiledOutput.execute function will manage its own state
@@ -85,7 +107,8 @@ export class MicroPatternsCompiledRunner {
                 this.drawing,     // _drawing
                 assets,           // _assets (assets.assets from parser)
                 compiledOutput.initialVariables, // _initialUserVariables
-                optimizationHelpers // _optimization helpers
+                optimizationHelpers, // _optimization helpers
+                executionState    // _executionState for sharing state across optimizations
             );
             
             // Ensure any remaining batched operations are executed
@@ -93,10 +116,22 @@ export class MicroPatternsCompiledRunner {
             
             // Optionally log optimization statistics
             if (compiledOutput.config && compiledOutput.config.logOptimizationStats) {
+                const endTime = performance.now();
+                const executionTime = endTime - startTime;
+                
                 let statsReport = "\n--- Optimization Stats ---\n";
+                statsReport += `Execution Time: ${executionTime.toFixed(2)}ms\n`;
                 statsReport += `Transform Cache Hits: ${this.stats.transformCacheHits}\n`;
                 statsReport += `Pattern Cache Hits: ${this.stats.patternCacheHits}\n`;
                 statsReport += `Batched Operations: ${this.stats.batchedOperations}\n`;
+                
+                // Add second-pass statistics if available
+                if (compiledOutput.secondPassStats) {
+                    statsReport += "\n--- Second-Pass Optimization Stats ---\n";
+                    for (const [key, value] of Object.entries(compiledOutput.secondPassStats)) {
+                        statsReport += `${key}: ${value}\n`;
+                    }
+                }
 
                 console.log(statsReport); // Log to console as a formatted string
 
@@ -170,16 +205,168 @@ export class MicroPatternsCompiledRunner {
         }
         
         const { operations, lastColor } = this.pixelBatchBuffer;
-        this.ctx.fillStyle = lastColor;
         
-        // Use a single path for all pixels of the same color
-        this.ctx.beginPath();
-        for (const op of operations) {
-            this.ctx.rect(Math.trunc(op.x), Math.trunc(op.y), 1, 1);
+        // Optimization: For large batches (>1000 pixels), use ImageData for better performance
+        if (operations.length > 1000) {
+            this._executeBatchWithImageData(operations, lastColor);
+        } else {
+            this.ctx.fillStyle = lastColor;
+            
+            // Use a single path for all pixels of the same color
+            this.ctx.beginPath();
+            for (const op of operations) {
+                this.ctx.rect(Math.trunc(op.x), Math.trunc(op.y), 1, 1);
+            }
+            this.ctx.fill();
         }
-        this.ctx.fill();
         
         // Reset the batch
         this.pixelBatchBuffer.operations = [];
+    }
+    
+    // Optimized batch execution using ImageData
+    _executeBatchWithImageData(operations, color) {
+        // First pass: find bounds
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        for (const op of operations) {
+            const x = Math.trunc(op.x);
+            const y = Math.trunc(op.y);
+            minX = Math.min(minX, x);
+            minY = Math.min(minY, y);
+            maxX = Math.max(maxX, x);
+            maxY = Math.max(maxY, y);
+        }
+        
+        // Clip to canvas boundaries
+        minX = Math.max(0, minX);
+        minY = Math.max(0, minY);
+        maxX = Math.min(this.drawing.display_width - 1, maxX);
+        maxY = Math.min(this.drawing.display_height - 1, maxY);
+        
+        // Calculate dimensions
+        const width = maxX - minX + 1;
+        const height = maxY - minY + 1;
+        
+        // Skip if dimensions are invalid
+        if (width <= 0 || height <= 0) return;
+        
+        // Prepare color values
+        let r, g, b, a;
+        if (color === 'black') {
+            r = 0; g = 0; b = 0; a = 255;
+        } else if (color === 'white') {
+            r = 255; g = 255; b = 255; a = 255;
+        } else {
+            // Parse any other color format
+            const tempCanvas = document.createElement('canvas');
+            const tempCtx = tempCanvas.getContext('2d');
+            tempCtx.fillStyle = color;
+            r = parseInt(tempCtx.fillStyle.slice(1, 3), 16);
+            g = parseInt(tempCtx.fillStyle.slice(3, 5), 16);
+            b = parseInt(tempCtx.fillStyle.slice(5, 7), 16);
+            a = 255;
+        }
+        
+        // Create ImageData
+        const imageData = this.ctx.createImageData(width, height);
+        const data = imageData.data;
+        
+        // Initialize all pixels as transparent
+        for (let i = 0; i < data.length; i += 4) {
+            data[i + 3] = 0; // Alpha = 0 (transparent)
+        }
+        
+        // Set only the pixels we need
+        for (const op of operations) {
+            const x = Math.trunc(op.x) - minX;
+            const y = Math.trunc(op.y) - minY;
+            
+            // Skip out-of-bounds pixels
+            if (x < 0 || x >= width || y < 0 || y >= height) continue;
+            
+            const index = (y * width + x) * 4;
+            data[index] = r;
+            data[index + 1] = g;
+            data[index + 2] = b;
+            data[index + 3] = a;
+        }
+        
+        // Draw the ImageData
+        this.ctx.putImageData(imageData, minX, minY);
+    }
+    
+    // Precompute transformations for a sequence of operations
+    precomputeTransforms(transformSequence, initialState) {
+        const resultMatrix = new DOMMatrix();
+        
+        // Start with the initial matrix if provided
+        if (initialState && initialState.matrix) {
+            resultMatrix.a = initialState.matrix.a;
+            resultMatrix.b = initialState.matrix.b;
+            resultMatrix.c = initialState.matrix.c;
+            resultMatrix.d = initialState.matrix.d;
+            resultMatrix.e = initialState.matrix.e;
+            resultMatrix.f = initialState.matrix.f;
+        }
+        
+        // Apply each transformation in sequence
+        for (const transform of transformSequence) {
+            if (transform.type === 'translate') {
+                resultMatrix.translateSelf(transform.dx, transform.dy);
+            } else if (transform.type === 'rotate') {
+                resultMatrix.rotateSelf(transform.degrees);
+            } else if (transform.type === 'scale') {
+                resultMatrix.scaleSelf(transform.factor, transform.factor);
+            }
+        }
+        
+        // Return the combined transformation matrix
+        return {
+            matrix: resultMatrix,
+            inverse: resultMatrix.inverse()
+        };
+    }
+    
+    // Execute a batch of drawing operations with the same state
+    executeDrawBatch(drawOperations, state) {
+        if (!drawOperations || drawOperations.length === 0) return;
+        
+        // Group operations by type
+        const operationsByType = {};
+        for (const op of drawOperations) {
+            if (!operationsByType[op.type]) {
+                operationsByType[op.type] = [];
+            }
+            operationsByType[op.type].push(op);
+        }
+        
+        // Handle each type of operation in batch
+        for (const [type, ops] of Object.entries(operationsByType)) {
+            if (type === 'PIXEL') {
+                this._executePixelBatch(ops, state);
+            }
+            // Add more batch handlers for other types as needed
+        }
+        
+        // Record statistics
+        this.stats.batchedOperations += drawOperations.length;
+    }
+    
+    // Execute a batch of PIXEL operations
+    _executePixelBatch(pixelOperations, state) {
+        // Extract coordinates
+        const pixels = pixelOperations.map(op => ({
+            x: op.x,
+            y: op.y
+        }));
+        
+        // Transform all pixels
+        const transformedPixels = pixels.map(p => {
+            const tp = this.drawing.transformPoint(p.x, p.y, state);
+            return { x: tp.x, y: tp.y };
+        });
+        
+        // Draw all pixels at once
+        this.drawing.batchPixels(transformedPixels, state.color, state.scale);
     }
 }
