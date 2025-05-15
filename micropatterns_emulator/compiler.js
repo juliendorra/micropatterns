@@ -1063,7 +1063,8 @@ export class MicroPatternsCompiler {
                 execute: compiledFunction,
                 initialVariables: initialUserVariables, // Pass this to runner
                 errors: this.errors,
-                config: this.optimizationConfig // Include optimization configuration
+                config: this.optimizationConfig, // Include optimization configuration
+                secondPassStats: this.secondPassStats // Include second-pass optimization statistics
             };
         } catch (e) {
             this.errors.push(`Compiler Error: Failed to create function from generated code - ${e.message}. Code:\n${functionBody}`);
@@ -1077,7 +1078,8 @@ export class MicroPatternsCompiler {
                 },
                 initialVariables: {},
                 errors: this.errors,
-                config: this.optimizationConfig
+                config: this.optimizationConfig,
+                secondPassStats: this.secondPassStats // Also include stats in error case
             };
         }
     }

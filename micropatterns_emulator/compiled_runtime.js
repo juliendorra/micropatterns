@@ -120,6 +120,37 @@ export class MicroPatternsCompiledRunner {
                 const executionTime = endTime - startTime;
                 
                 let statsReport = "\n--- Optimization Stats ---\n";
+
+                // Add list of enabled optimizations
+                statsReport += "--- Enabled Optimizations ---\n";
+                const optimizationFlags = {
+                    enableTransformCaching: "Transform Caching",
+                    enablePatternTileCaching: "Pattern Tile Caching",
+                    enablePixelBatching: "Pixel Batching",
+                    enableLoopUnrolling: "Loop Unrolling",
+                    enableInvariantHoisting: "Invariant Hoisting",
+                    enableFastPathSelection: "Fast Path Selection",
+                    enableSecondPassOptimization: "Second-Pass Optimization",
+                    enableDrawCallBatching: "Draw Call Batching (Second Pass)",
+                    enableDeadCodeElimination: "Dead Code Elimination (Second Pass)",
+                    enableConstantFolding: "Constant Folding (Second Pass)",
+                    enableTransformSequencing: "Transform Sequencing (Second Pass)",
+                    enableDrawOrderOptimization: "Draw Order Optimization (Second Pass)",
+                    enableMemoryOptimization: "Memory Optimization (Second Pass)"
+                };
+
+                let hasEnabledOptimizations = false;
+                for (const key in compiledOutput.config) {
+                    if (optimizationFlags[key] && compiledOutput.config[key] === true) {
+                        statsReport += `${optimizationFlags[key]}: Enabled\n`;
+                        hasEnabledOptimizations = true;
+                    }
+                }
+                if (!hasEnabledOptimizations) {
+                    statsReport += "None\n";
+                }
+                statsReport += "\n"; // Add a newline for separation
+
                 statsReport += `Execution Time: ${executionTime.toFixed(2)}ms\n`;
                 statsReport += `Transform Cache Hits: ${this.stats.transformCacheHits}\n`;
                 statsReport += `Pattern Cache Hits: ${this.stats.patternCacheHits}\n`;
@@ -129,7 +160,9 @@ export class MicroPatternsCompiledRunner {
                 if (compiledOutput.secondPassStats) {
                     statsReport += "\n--- Second-Pass Optimization Stats ---\n";
                     for (const [key, value] of Object.entries(compiledOutput.secondPassStats)) {
-                        statsReport += `${key}: ${value}\n`;
+                        // Make stat keys more readable
+                        const readableKey = key.replace(/([A-Z])/g, ' $1').replace(/^./, str => str.toUpperCase());
+                        statsReport += `${readableKey}: ${value}\n`;
                     }
                 }
 
