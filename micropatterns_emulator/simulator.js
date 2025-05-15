@@ -6,7 +6,7 @@ import { MicroPatternsRuntime } from './runtime.js';
 document.addEventListener('DOMContentLoaded', async () => {
 
     // Toggle between interpreter (false) and compiler (true) execution paths
-    let USE_COMPILER = false; // Changed from const to let
+    let USE_COMPILER = true; // Set compiler as default
     let currentRuntimeInstance = null; // Store runtime instance for profiling access
     let currentCompilerInstance = null; // For compiler instance access
     let currentCompiledRunnerInstance = null; // For compiled runner instance access
