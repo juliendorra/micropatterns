@@ -1,4 +1,6 @@
-class MicroPatternsRuntime {
+import { MicroPatternsDrawing } from './drawing.js';
+
+export class MicroPatternsRuntime {
     constructor(ctx, assets, environment, errorCallback) {
         this.ctx = ctx;
         this.assets = assets; // { assets: {UPPER_NAME: data} } - Unified storage

@@ -1,10 +1,12 @@
 import { MicroPatternsCompiler } from './compiler.js';
 import { MicroPatternsCompiledRunner } from './compiled_runtime.js';
+import { MicroPatternsParser } from './parser.js';
+import { MicroPatternsRuntime } from './runtime.js';
 
 document.addEventListener('DOMContentLoaded', async () => {
 
     // Toggle between interpreter (false) and compiler (true) execution paths
-    const USE_COMPILER = false;
+    let USE_COMPILER = false; // Changed from const to let
     let currentRuntimeInstance = null; // Store runtime instance for profiling access
     let currentCompilerInstance = null; // For compiler instance access
     let currentCompiledRunnerInstance = null; // For compiled runner instance access
@@ -34,15 +36,22 @@ document.addEventListener('DOMContentLoaded', async () => {
     const themeStylesheet = document.getElementById('themeStylesheet');
     const themeSelect = document.getElementById('themeSelect');
 
-    // Script Management UI
-    const scriptListSelect = document.getElementById('scriptList');
-    const loadScriptButton = document.getElementById('loadScriptButton');
-    const scriptNameInput = document.getElementById('scriptName');
+    // Optimization UI
+    // const optimizationContainer = document.getElementById('optimizationSettings') ||
+    //                            document.createElement('div'); // This is not strictly needed as index.html is the source of truth for the structure
+
+    // --- End Configuration ---
+
+    // --- Drag Drawing State ---
+    let isDrawing = false;
+    const scriptNameInput = document.getElementById('scriptName'); // Added: Get reference to script name input
     const saveScriptButton = document.getElementById('saveScriptButton');
     const newScriptButton = document.getElementById('newScriptButton');
     const scriptMgmtStatus = document.getElementById('scriptMgmtStatus');
     const deviceScriptListContainer = document.getElementById('deviceScriptListContainer');
     const userIdInput = document.getElementById('userId'); // Added User ID input
+    const scriptListSelect = document.getElementById('scriptList'); // Added: Get reference to script list select
+    const loadScriptButton = document.getElementById('loadScriptButton'); // Added: Get reference to load script button
 
     // Global configuration object
     const globalConfig = {
@@ -92,10 +101,23 @@ document.addEventListener('DOMContentLoaded', async () => {
     } else {
         API_BASE_URL = 'https://micropatterns-api.deno.dev';
     }
+    
+    // Compiler optimization configuration
+    const optimizationConfig = {
+        enableTransformCaching: true,
+        enablePatternTileCaching: true,
+        enablePixelBatching: true,
+        enableLoopUnrolling: true,
+        loopUnrollThreshold: 8,
+        enableInvariantHoisting: true,
+        enableFastPathSelection: true,
+        logOptimizationStats: false,
+        logProfilingReport: false // Added: controls display of general profiling report
+    };
     // --- End Configuration ---
 
     // --- Drag Drawing State ---
-    let isDrawing = false;
+    // let isDrawing = false; // Removed duplicate declaration, already declared earlier
     let drawColor = 0; // 0 for white, 1 for black
     let lastDrawnPixel = { x: -1, y: -1 };
     // --- End Drag Drawing State ---
@@ -275,6 +297,52 @@ document.addEventListener('DOMContentLoaded', async () => {
         console.error("Theme select or stylesheet element not found. Theme switching disabled.");
     }
     // --- End Theme Switcher Logic ---
+    
+    // --- Optimization Settings UI Logic ---
+    function setupOptimizationUI() {
+        // The #optimizationSettings div and its content are expected to be in index.html.
+        // This function will now primarily sync initial states and attach listeners.
+
+        const enableCompilerCheckbox = document.getElementById('enableCompiler');
+        if (enableCompilerCheckbox) {
+            enableCompilerCheckbox.checked = USE_COMPILER; // USE_COMPILER is a global let variable
+            enableCompilerCheckbox.addEventListener('change', function(e) {
+                USE_COMPILER = e.target.checked;
+                console.log(`Compiler checkbox changed. USE_COMPILER is now: ${USE_COMPILER}`);
+                // Optional: Re-log full optimizationConfig if needed for debugging compiler path changes
+                // console.log("Current optimization settings:", JSON.stringify(optimizationConfig, null, 2));
+            });
+        } else {
+            console.warn("Checkbox with ID 'enableCompiler' not found in HTML.");
+        }
+
+        const checkboxesConfig = [
+            { id: 'enableTransformCaching', configKey: 'enableTransformCaching', label: 'Transform caching' },
+            { id: 'enablePatternTileCaching', configKey: 'enablePatternTileCaching', label: 'Pattern tile caching' },
+            { id: 'enablePixelBatching', configKey: 'enablePixelBatching', label: 'Pixel batching' },
+            { id: 'enableLoopUnrolling', configKey: 'enableLoopUnrolling', label: 'Loop unrolling' },
+            { id: 'enableInvariantHoisting', configKey: 'enableInvariantHoisting', label: 'Invariant hoisting' },
+            { id: 'logOptimizationStats', configKey: 'logOptimizationStats', label: 'Log optimization stats' },
+            { id: 'logProfilingReport', configKey: 'logProfilingReport', label: 'Log profiling report' }
+        ];
+
+        checkboxesConfig.forEach(cbConfig => {
+            const checkbox = document.getElementById(cbConfig.id);
+            if (checkbox) {
+                // Set initial checked state from the optimizationConfig object
+                checkbox.checked = optimizationConfig[cbConfig.configKey];
+                
+                // Add event listener to update the optimizationConfig object on change
+                checkbox.addEventListener('change', function(e) {
+                    optimizationConfig[cbConfig.configKey] = e.target.checked;
+                    console.log(`${cbConfig.label} changed to: ${e.target.checked}`);
+                });
+            } else {
+                console.warn(`Checkbox with ID '${cbConfig.id}' not found in HTML.`);
+            }
+        });
+    }
+    // --- End Optimization Settings UI Logic ---
 
     // --- Autocompletion Logic ---
 
@@ -488,6 +556,12 @@ document.addEventListener('DOMContentLoaded', async () => {
         errorLog.textContent = ''; // Clear previous errors
         clearDisplay();
 
+        // Directly read checkbox state at the time of running the script
+        const enableCompilerCheckbox = document.getElementById('enableCompiler');
+        const shouldUseCompiler = enableCompilerCheckbox ? enableCompilerCheckbox.checked : false; // Default to false if element not found
+        
+        console.log(`runScript: shouldUseCompiler (from checkbox) = ${shouldUseCompiler}, current USE_COMPILER variable = ${USE_COMPILER}`);
+
         const scriptText = codeMirrorEditor.getValue(); // Get text from CodeMirror
         const environment = getEnvironmentVariables();
         const parser = new MicroPatternsParser();
@@ -536,11 +610,29 @@ document.addEventListener('DOMContentLoaded', async () => {
 
 
         // --- Runtime Phase ---
-        if (USE_COMPILER) {
+        if (shouldUseCompiler) { // Use the directly read value from the checkbox
+            console.log("Taking Compiler Path");
+            console.log("Current optimization settings:", JSON.stringify(optimizationConfig, null, 2));
             // --- Compiler Path ---
             // Module imports handle class availability. If imports fail, an error occurs before this.
             currentRuntimeInstance = null; // Reset runtime instance when using compiler path
-            currentCompilerInstance = new MicroPatternsCompiler();
+            
+            // Get current optimization settings from checkboxes
+            const currentOptimizationConfig = {
+                enableTransformCaching: document.getElementById('enableTransformCaching')?.checked ?? optimizationConfig.enableTransformCaching,
+                enablePatternTileCaching: document.getElementById('enablePatternTileCaching')?.checked ?? optimizationConfig.enablePatternTileCaching,
+                enablePixelBatching: document.getElementById('enablePixelBatching')?.checked ?? optimizationConfig.enablePixelBatching,
+                enableLoopUnrolling: document.getElementById('enableLoopUnrolling')?.checked ?? optimizationConfig.enableLoopUnrolling,
+                loopUnrollThreshold: optimizationConfig.loopUnrollThreshold, // Keep the threshold from config
+                enableInvariantHoisting: document.getElementById('enableInvariantHoisting')?.checked ?? optimizationConfig.enableInvariantHoisting,
+                enableFastPathSelection: optimizationConfig.enableFastPathSelection, // Keep this from config
+                logOptimizationStats: document.getElementById('logOptimizationStats')?.checked ?? optimizationConfig.logOptimizationStats
+            };
+            
+            console.log("Using optimization settings from UI:", JSON.stringify(currentOptimizationConfig, null, 2));
+            
+            // Create compiler with current optimization configuration from UI
+            currentCompilerInstance = new MicroPatternsCompiler(currentOptimizationConfig);
             let compiledOutput;
 
             if (profilingEnabled) wrapForProfiling(currentCompilerInstance, 'compile', profilingData);
@@ -568,7 +660,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             currentCompiledRunnerInstance = new MicroPatternsCompiledRunner(ctx, (runtimeErrorMessage) => {
                 displayError(runtimeErrorMessage, "CompiledRuntime");
                 hasErrors = true;
-            });
+            }, errorLog); // Pass the errorLog div
 
             if (profilingEnabled) wrapForProfiling(currentCompiledRunnerInstance, 'execute', profilingData);
 
@@ -582,6 +674,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
 
         } else {
+            console.log("Taking Interpreter Path");
             // --- Interpreter Path ---
             const runtime = new MicroPatternsRuntime(
                 ctx,
@@ -625,10 +718,6 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
         }
         // --- End Runtime Phase ---
-
-        if (profilingEnabled) {
-            displayProfilingResults();
-        }
 
         // Display profiling results if enabled
         if (profilingEnabled) {
@@ -1466,6 +1555,22 @@ FILL_RECT X=0 Y=0 WIDTH=$WIDTH HEIGHT=$HEIGHT
     // --- End Script Management Logic ---
 
     // --- Profiling System ---
+    function displayProfilingResults() {
+        // Check if profiling is enabled AND if the report logging is enabled via UI
+        if (!profilingEnabled || !optimizationConfig.logProfilingReport) return;
+
+        let report = "--- Profiling Report ---\n";
+        const sortedData = Object.entries(profilingData).sort(([, a], [, b]) => b.totalTime - a.totalTime);
+
+        for (const [methodName, stats] of sortedData) {
+            const avgTime = stats.totalTime / stats.calls;
+            report += `${methodName}: ${stats.calls} calls, ${stats.totalTime.toFixed(2)}ms total, ${avgTime.toFixed(3)}ms avg, ${stats.minTime.toFixed(3)}ms min, ${stats.maxTime.toFixed(3)}ms max\n`;
+        }
+
+        console.log(report);
+        errorLog.textContent += "\n" + report;
+    }
+
     // Ensure wrapForProfiling is defined before it's potentially called in runScript
     function wrapForProfiling(instance, methodName, dataStore) {
         if (!instance || typeof instance[methodName] !== 'function') return;
@@ -1491,25 +1596,11 @@ FILL_RECT X=0 Y=0 WIDTH=$WIDTH HEIGHT=$HEIGHT
             return result;
         };
     }
-
-    function displayProfilingResults() {
-        if (!profilingEnabled) return;
-
-        let report = "--- Profiling Report ---\n";
-        const sortedData = Object.entries(profilingData).sort(([, a], [, b]) => b.totalTime - a.totalTime);
-
-        for (const [methodName, stats] of sortedData) {
-            const avgTime = stats.totalTime / stats.calls;
-            report += `${methodName}: ${stats.calls} calls, ${stats.totalTime.toFixed(2)}ms total, ${avgTime.toFixed(3)}ms avg, ${stats.minTime.toFixed(3)}ms min, ${stats.maxTime.toFixed(3)}ms max\n`;
-        }
-
-        console.log(report);
-        errorLog.textContent += "\n" + report;
-    }
     // --- End Profiling System ---
 
     // Run once on load
     initializeUserId(); // Initialize User ID first
+    setupOptimizationUI(); // Set up optimization UI controls
     runScript();
     fetchScriptList(); // Fetch scripts when the page loads (will use currentUserId)
 });

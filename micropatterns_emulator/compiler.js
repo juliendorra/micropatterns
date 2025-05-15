@@ -1,11 +1,24 @@
 // micropatterns_emulator/compiler.js
 
 export class MicroPatternsCompiler {
-    constructor() {
+    constructor(optimizationConfig = {}) {
         this.errors = [];
         this.declaredVariables = new Set(); // Tracks variables declared with VAR ($VARNAME_UPPER)
         this.assetsDefinition = null; // Will be set during compile
         this.environmentDefinition = null; // Will be set during compile
+        
+        // Default optimization configuration
+        this.optimizationConfig = {
+            enableTransformCaching: true,       // Cache transformation matrices
+            enablePatternTileCaching: true,     // Cache pattern tiles
+            enablePixelBatching: true,          // Batch pixel operations
+            enableLoopUnrolling: true,          // Unroll small loops
+            loopUnrollThreshold: 8,             // Maximum loop count to unroll
+            enableInvariantHoisting: true,      // Hoist invariant calculations
+            enableFastPathSelection: true,      // Use specialized code paths for common cases
+            logOptimizationStats: false,         // Log optimization statistics
+            ...optimizationConfig               // Override with user-provided config
+        };
     }
 
     _resetForCompilation(assetsDef, envDef) {
@@ -13,6 +26,151 @@ export class MicroPatternsCompiler {
         this.declaredVariables = new Set();
         this.assetsDefinition = assetsDef;
         this.environmentDefinition = envDef; // Store for context if needed by helpers
+    }
+    
+    // Analyze the script to identify optimization opportunities
+    _analyzeScriptForOptimizations(commands) {
+        const analysis = {
+            repeatLoops: [], // Track REPEAT loops for unrolling or invariant hoisting
+            commonTransforms: new Set(), // Common transformation sequences
+            commonPatternFills: new Set(), // Common pattern fills
+            invariantExpressions: new Map(), // Expressions that don't change within loops
+            conditionalPatterns: new Map(), // Common conditional patterns
+        };
+        
+        // Helper for traversing nested commands
+        const analyzeCommands = (cmds, context = { inLoop: false, loopVars: new Set() }) => {
+            for (const cmd of cmds) {
+                // Track REPEAT loops
+                if (cmd.type === 'REPEAT') {
+                    const loopInfo = {
+                        line: cmd.line,
+                        count: cmd.count,
+                        canUnroll: this._canUnrollLoop(cmd),
+                        invariants: this._findLoopInvariants(cmd)
+                    };
+                    analysis.repeatLoops.push(loopInfo);
+                    
+                    // Recursively analyze loop body with updated context
+                    const loopContext = {
+                        inLoop: true,
+                        loopVars: new Set([...context.loopVars, '$INDEX'])
+                    };
+                    analyzeCommands(cmd.commands, loopContext);
+                }
+                // Track transformation sequences
+                else if (['TRANSLATE', 'ROTATE', 'SCALE'].includes(cmd.type)) {
+                    // Track common transform sequences that could be cached
+                    if (context.currentTransformSeq) {
+                        context.currentTransformSeq.push(cmd.type);
+                    } else {
+                        context.currentTransformSeq = [cmd.type];
+                    }
+                }
+                // Track fill patterns
+                else if (cmd.type === 'FILL') {
+                    if (cmd.params && cmd.params.NAME !== 'SOLID') {
+                        analysis.commonPatternFills.add(cmd.params.NAME);
+                    }
+                }
+                // Track conditional patterns (IF/ELSE structures)
+                else if (cmd.type === 'IF') {
+                    // Recursively analyze IF/ELSE blocks
+                    analyzeCommands(cmd.thenCommands, context);
+                    if (cmd.elseCommands) {
+                        analyzeCommands(cmd.elseCommands, context);
+                    }
+                    
+                    // Track common conditional patterns for optimization
+                    if (cmd.condition && cmd.condition.type === 'modulo' &&
+                        typeof cmd.condition.literal === 'number') {
+                        const key = `${cmd.condition.leftVar}%${cmd.condition.literal}${cmd.condition.operator}`;
+                        if (!analysis.conditionalPatterns.has(key)) {
+                            analysis.conditionalPatterns.set(key, 0);
+                        }
+                        analysis.conditionalPatterns.set(key, analysis.conditionalPatterns.get(key) + 1);
+                    }
+                }
+                
+                // If we hit a RESET_TRANSFORMS, clear the current transform sequence
+                if (cmd.type === 'RESET_TRANSFORMS' && context.currentTransformSeq) {
+                    delete context.currentTransformSeq;
+                }
+            }
+        };
+        
+        analyzeCommands(commands);
+        
+        // Convert sets to arrays for easier serialization/inspection
+        analysis.commonTransforms = Array.from(analysis.commonTransforms);
+        analysis.commonPatternFills = Array.from(analysis.commonPatternFills);
+        analysis.conditionalPatterns = Object.fromEntries(analysis.conditionalPatterns);
+        
+        return analysis;
+    }
+    
+    // Determine if a loop can be safely unrolled
+    _canUnrollLoop(loopCommand) {
+        // Only unroll loops with constant counts below threshold
+        if (typeof loopCommand.count === 'number' &&
+            loopCommand.count <= this.optimizationConfig.loopUnrollThreshold) {
+            return true;
+        }
+        
+        // For variable counts, we need to determine if it's a constant expression
+        // (This is a simplified approach - a full expression evaluator would be needed for all cases)
+        return false;
+    }
+    
+    // Find expressions that don't change inside a loop (invariants)
+    _findLoopInvariants(loopCommand) {
+        const invariants = [];
+        const loopVarRefs = new Set(['$INDEX']); // Variables that change during the loop
+        
+        // Track expressions that don't use loop variables
+        const checkExpressionInvariance = (tokens) => {
+            if (!tokens) return false;
+            
+            // Check if any token references the loop variable
+            for (const token of tokens) {
+                if (token.type === 'var' && loopVarRefs.has(token.value)) {
+                    return false;
+                }
+            }
+            return true; // No loop variable references found
+        };
+        
+        // Track commands in the loop body that define invariant calculations
+        const findInvariantsInCommands = (commands) => {
+            for (const cmd of commands) {
+                if (cmd.type === 'LET') {
+                    const isInvariant = checkExpressionInvariance(cmd.expression);
+                    if (isInvariant) {
+                        invariants.push({
+                            type: 'expression',
+                            target: cmd.targetVar,
+                            expression: cmd.expression
+                        });
+                    } else {
+                        // This variable is modified by a loop-dependent expression
+                        loopVarRefs.add(`$${cmd.targetVar}`);
+                    }
+                }
+                // Recursively check nested blocks
+                else if (cmd.type === 'IF') {
+                    findInvariantsInCommands(cmd.thenCommands);
+                    if (cmd.elseCommands) {
+                        findInvariantsInCommands(cmd.elseCommands);
+                    }
+                }
+                else if (cmd.type === 'REPEAT') {
+                    findInvariantsInCommands(cmd.commands);
+                }
+            }
+        };
+        
+        findInvariantsInCommands(loopCommand.commands);
+        return invariants;
     }
 
     _isEnvVar(varNameUpper) { // varNameUpper is without $
@@ -280,8 +438,9 @@ export class MicroPatternsCompiler {
         }
     }
 
-    _compileCommandToJs(command) {
+    _compileCommandToJs(command, scriptAnalysis = {}) {
         let js = `// Line ${command.line}: ${command.type}`;
+        // Apply optimizations based on command type and script analysis
         switch (command.type) {
             case 'VAR':
                 // VARs without initializers are handled by populating initialUserVariables.
@@ -308,8 +467,28 @@ export class MicroPatternsCompiler {
                     js += `\n_state.fillAsset = null;`;
                 } else {
                     const patternNameUpper = command.params.NAME.toUpperCase();
-                    js += `\n_state.fillAsset = _assets['${patternNameUpper}'];`;
-                    js += `\nif (!_state.fillAsset) { _runtimeError("Pattern '${patternNameUpper}' not defined.", ${command.line}); }`;
+                    
+                    if (this.optimizationConfig.enablePatternTileCaching) {
+                        js += `\n// Use pattern tile caching`;
+                        js += `\nconst _pattern_${command.line} = _assets['${patternNameUpper}'];`;
+                        js += `\nif (!_pattern_${command.line}) { _runtimeError("Pattern '${patternNameUpper}' not defined.", ${command.line}); }`;
+                        js += `\nelse {`;
+                        js += `\n  const _patternKey_${command.line} = \`pattern:${patternNameUpper}:\${_state.color}\`;`;
+                        js += `\n  _pattern_${command.line}.cachedTile = _optimization.getCachedPatternTile(_patternKey_${command.line}, () => {`;
+                        js += `\n    // Pre-compute lookup table for this pattern`;
+                        js += `\n    return {`;
+                        js += `\n      lookup: new Uint8Array(_pattern_${command.line}.width * _pattern_${command.line}.height),`;
+                        js += `\n      width: _pattern_${command.line}.width,`;
+                        js += `\n      height: _pattern_${command.line}.height,`;
+                        js += `\n      color: _state.color`;
+                        js += `\n    };`;
+                        js += `\n  });`;
+                        js += `\n  _state.fillAsset = _pattern_${command.line};`;
+                        js += `\n}`;
+                    } else {
+                        js += `\n_state.fillAsset = _assets['${patternNameUpper}'];`;
+                        js += `\nif (!_state.fillAsset) { _runtimeError("Pattern '${patternNameUpper}' not defined.", ${command.line}); }`;
+                    }
                 }
                 break;
             case 'RESET_TRANSFORMS':
@@ -318,18 +497,55 @@ export class MicroPatternsCompiler {
             case 'TRANSLATE':
                 const dx = this._generateValueCode(command.params.DX, command.line);
                 const dy = this._generateValueCode(command.params.DY, command.line);
-                js += `\n_state.matrix.translateSelf(${dx}, ${dy}); _state.inverseMatrix = _state.matrix.inverse();`;
+                
+                if (this.optimizationConfig.enableTransformCaching) {
+                    js += `\n// Use transform caching for translation`;
+                    js += `\nconst _dx_${command.line} = ${dx};`;
+                    js += `\nconst _dy_${command.line} = ${dy};`;
+                    js += `\nconst _transKey_${command.line} = \`translate:\${_dx_${command.line}}:\${_dy_${command.line}}:\${_state.matrix.toString()}\`;`;
+                    js += `\nconst _transResult_${command.line} = _optimization.getCachedTransform(_transKey_${command.line}, () => {`;
+                    js += `\n  const newMatrix = new DOMMatrix(_state.matrix);`;
+                    js += `\n  newMatrix.translateSelf(_dx_${command.line}, _dy_${command.line});`;
+                    js += `\n  return { matrix: newMatrix, inverse: newMatrix.inverse() };`;
+                    js += `\n});`;
+                    js += `\n_state.matrix = _transResult_${command.line}.matrix;`;
+                    js += `\n_state.inverseMatrix = _transResult_${command.line}.inverse;`;
+                } else {
+                    js += `\n_state.matrix.translateSelf(${dx}, ${dy}); _state.inverseMatrix = _state.matrix.inverse();`;
+                }
                 break;
             case 'ROTATE':
                 const degrees = this._generateValueCode(command.params.DEGREES, command.line);
-                js += `\n_state.matrix.rotateSelf(${degrees}); _state.inverseMatrix = _state.matrix.inverse();`;
+                
+                if (this.optimizationConfig.enableTransformCaching) {
+                    js += `\n// Use transform caching for rotation`;
+                    js += `\nconst _degrees_${command.line} = ${degrees};`;
+                    js += `\nconst _rotKey_${command.line} = \`rotate:\${_degrees_${command.line}}:\${_state.matrix.toString()}\`;`;
+                    js += `\nconst _rotResult_${command.line} = _optimization.getCachedTransform(_rotKey_${command.line}, () => {`;
+                    js += `\n  const newMatrix = new DOMMatrix(_state.matrix);`;
+                    js += `\n  newMatrix.rotateSelf(_degrees_${command.line});`;
+                    js += `\n  return { matrix: newMatrix, inverse: newMatrix.inverse() };`;
+                    js += `\n});`;
+                    js += `\n_state.matrix = _rotResult_${command.line}.matrix;`;
+                    js += `\n_state.inverseMatrix = _rotResult_${command.line}.inverse;`;
+                } else {
+                    js += `\n_state.matrix.rotateSelf(${degrees}); _state.inverseMatrix = _state.matrix.inverse();`;
+                }
                 break;
             case 'SCALE':
                 const factor = this._generateValueCode(command.params.FACTOR, command.line);
                 js += `\n_state.scale = (${factor} >= 1) ? ${factor} : 1.0;`;
                 break;
             case 'PIXEL':
-                js += `\n_drawing.drawPixel(${this._generateValueCode(command.params.X, command.line)}, ${this._generateValueCode(command.params.Y, command.line)}, _state);`;
+                if (this.optimizationConfig.enablePixelBatching) {
+                    js += `\n// Use pixel batching`;
+                    js += `\nconst _px_${command.line} = ${this._generateValueCode(command.params.X, command.line)};`;
+                    js += `\nconst _py_${command.line} = ${this._generateValueCode(command.params.Y, command.line)};`;
+                    js += `\nconst _transformedPt_${command.line} = _drawing.transformPoint(_px_${command.line}, _py_${command.line}, _state);`;
+                    js += `\n_optimization.batchPixelOperations(_transformedPt_${command.line}.x, _transformedPt_${command.line}.y, _state.color);`;
+                } else {
+                    js += `\n_drawing.drawPixel(${this._generateValueCode(command.params.X, command.line)}, ${this._generateValueCode(command.params.Y, command.line)}, _state);`;
+                }
                 break;
             case 'LINE':
                 js += `\n_drawing.drawLine(${this._generateValueCode(command.params.X1, command.line)}, ${this._generateValueCode(command.params.Y1, command.line)}, ${this._generateValueCode(command.params.X2, command.line)}, ${this._generateValueCode(command.params.Y2, command.line)}, _state);`;
@@ -363,18 +579,74 @@ export class MicroPatternsCompiler {
                 // Save the current $INDEX value to restore after the loop
                 js += `\nconst _savedIndex_${command.line} = _variables['$INDEX'];`;
                 
-                js += `\nfor (let _i_${command.line} = 0; _i_${command.line} < _repeatCount_${command.line}; _i_${command.line}++) {`;
-                js += `\n  // Set INDEX for this iteration`;
-                js += `\n  _variables['$INDEX'] = _i_${command.line};`;
+                // Find loop invariants if optimization is enabled
+                if (this.optimizationConfig.enableInvariantHoisting && scriptAnalysis.repeatLoops) {
+                    const loopInfo = scriptAnalysis.repeatLoops.find(l => l.line === command.line);
+                    if (loopInfo && loopInfo.invariants && loopInfo.invariants.length > 0) {
+                        js += `\n// Hoist loop invariants`;
+                        for (const inv of loopInfo.invariants) {
+                            if (inv.type === 'expression') {
+                                js += `\nconst _inv_${command.line}_${inv.target} = ${this._generateExpressionCode(inv.expression, command.line)};`;
+                            }
+                        }
+                    }
+                }
                 
-                // Add runtime validation that $INDEX is properly set for each iteration
-                js += `\n  if (_variables['$INDEX'] === undefined) {`;
-                js += `\n    console.warn("INDEX variable undefined in REPEAT at line ${command.line}, iteration " + _i_${command.line});`;
-                js += `\n    _variables['$INDEX'] = _i_${command.line}; // Force correction`;
-                js += `\n  }`;
-                
-                js += this._compileCommandsToString(command.commands);
-                js += `\n}`;
+                // Check if this loop can be unrolled
+                const canUnroll = this.optimizationConfig.enableLoopUnrolling &&
+                                 scriptAnalysis.repeatLoops &&
+                                 scriptAnalysis.repeatLoops.some(l => l.line === command.line && l.canUnroll);
+                                 
+                if (canUnroll && typeof command.count === 'number') {
+                    // Unroll the loop for small constant counts
+                    js += `\n// Unrolled loop (${command.count} iterations)`;
+                    
+                    for (let i = 0; i < command.count; i++) {
+                        js += `\n// Iteration ${i}`;
+                        js += `\n_variables['$INDEX'] = ${i};`;
+                        
+                        // Use invariants if available
+                        if (this.optimizationConfig.enableInvariantHoisting) {
+                            const loopInfo = scriptAnalysis.repeatLoops.find(l => l.line === command.line);
+                            if (loopInfo && loopInfo.invariants) {
+                                for (const inv of loopInfo.invariants) {
+                                    if (inv.type === 'expression') {
+                                        js += `\n_variables['$${inv.target}'] = _inv_${command.line}_${inv.target};`;
+                                    }
+                                }
+                            }
+                        }
+                        
+                        js += this._compileCommandsToString(command.commands, scriptAnalysis);
+                    }
+                } else {
+                    // Standard loop implementation with optimization hooks
+                    js += `\nfor (let _i_${command.line} = 0; _i_${command.line} < _repeatCount_${command.line}; _i_${command.line}++) {`;
+                    js += `\n  // Set INDEX for this iteration`;
+                    js += `\n  _variables['$INDEX'] = _i_${command.line};`;
+                    
+                    // Add runtime validation that $INDEX is properly set for each iteration
+                    js += `\n  if (_variables['$INDEX'] === undefined) {`;
+                    js += `\n    console.warn("INDEX variable undefined in REPEAT at line ${command.line}, iteration " + _i_${command.line});`;
+                    js += `\n    _variables['$INDEX'] = _i_${command.line}; // Force correction`;
+                    js += `\n  }`;
+                    
+                    // Use invariants if available
+                    if (this.optimizationConfig.enableInvariantHoisting) {
+                        const loopInfo = scriptAnalysis.repeatLoops.find(l => l.line === command.line);
+                        if (loopInfo && loopInfo.invariants && loopInfo.invariants.length > 0) {
+                            js += `\n  // Use pre-calculated invariants`;
+                            for (const inv of loopInfo.invariants) {
+                                if (inv.type === 'expression') {
+                                    js += `\n  _variables['$${inv.target}'] = _inv_${command.line}_${inv.target};`;
+                                }
+                            }
+                        }
+                    }
+                    
+                    js += this._compileCommandsToString(command.commands, scriptAnalysis);
+                    js += `\n}`;
+                }
                 
                 // Restore the previous $INDEX value after the loop
                 js += `\n_variables['$INDEX'] = _savedIndex_${command.line};`;
@@ -431,6 +703,9 @@ export class MicroPatternsCompiler {
         const jsCodeLines = [];
         const initialUserVariables = {}; // For VAR declarations without initializers ($VAR_UPPER: 0)
 
+        // First pass: Analyze the script for optimization opportunities
+        const scriptAnalysis = this._analyzeScriptForOptimizations(parsedCommands);
+        
         // First pass for VAR initializations to populate initialUserVariables
         for (const command of parsedCommands) {
             if (command.type === 'VAR' && !command.initialExpression) {
@@ -444,6 +719,7 @@ export class MicroPatternsCompiler {
         
         console.log("Declared variables:", Array.from(this.declaredVariables));
         console.log("Initial user variables:", initialUserVariables);
+        console.log("Script analysis:", scriptAnalysis);
         
         // Second pass to generate code for all commands
         for (const command of parsedCommands) {
@@ -453,7 +729,7 @@ export class MicroPatternsCompiler {
                     console.log(`Processing IF command at line ${command.line}:`, command);
                 }
                 
-                const commandJs = this._compileCommandToJs(command);
+                const commandJs = this._compileCommandToJs(command, scriptAnalysis);
                 jsCodeLines.push(commandJs);
             } catch (e) {
                 console.error(`Error compiling command at line ${command.line}:`, command, e);
@@ -464,7 +740,7 @@ export class MicroPatternsCompiler {
 
         const functionBody = `
             // --- Compiled MicroPatterns Script ---
-            // Arguments: _environment, _drawing, _assets, _initialUserVariables
+            // Arguments: _environment, _drawing, _assets, _initialUserVariables, _optimization
             
             // Initialize _variables as an empty object
             let _variables = {};
@@ -486,6 +762,11 @@ export class MicroPatternsCompiler {
                 matrix: new DOMMatrix(),
                 inverseMatrix: new DOMMatrix()
             };
+            
+            // Performance tracking variables
+            let _transformCacheHits = 0;
+            let _patternLookupHits = 0;
+            let _batchedDraws = 0;
 
             const _runtimeError = (message, lineNumber) => {
                 const lineInfo = (typeof lineNumber === 'number' && lineNumber > 0) ? \` (Line \${lineNumber})\` : '';
@@ -587,11 +868,12 @@ export class MicroPatternsCompiler {
         }
 
         try {
-            const compiledFunction = new Function('_environment', '_drawing', '_assets', '_initialUserVariables', functionBody);
+            const compiledFunction = new Function('_environment', '_drawing', '_assets', '_initialUserVariables', '_optimization', functionBody);
             return {
                 execute: compiledFunction,
                 initialVariables: initialUserVariables, // Pass this to runner
-                errors: this.errors
+                errors: this.errors,
+                config: this.optimizationConfig // Include optimization configuration
             };
         } catch (e) {
             this.errors.push(`Compiler Error: Failed to create function from generated code - ${e.message}. Code:\n${functionBody}`);
@@ -604,7 +886,8 @@ export class MicroPatternsCompiler {
                     else throw new Error(errorMsg);
                 },
                 initialVariables: {},
-                errors: this.errors
+                errors: this.errors,
+                config: this.optimizationConfig
             };
         }
     }

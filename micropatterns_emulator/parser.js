@@ -1,5 +1,5 @@
 // Custom Error for Parsing Issues
-class ParseError extends Error {
+export class ParseError extends Error {
     constructor(message, lineNumber) {
         super(`Parse Error (Line ${lineNumber}): ${message}`);
         this.name = "ParseError";
@@ -7,7 +7,7 @@ class ParseError extends Error {
     }
 }
 
-class MicroPatternsParser {
+export class MicroPatternsParser {
     constructor() {
         this.reset();
     }

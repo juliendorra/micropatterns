@@ -92,6 +92,34 @@ ENDREPEAT
                     
         </textarea>
         <button id="runButton"><span>Run Script</span></button>
+
+        <div id="optimizationSettings" class="settings-section">
+            <h3>Optimization Settings</h3>
+            <div class="setting-row">
+                <label><input type="checkbox" id="enableCompiler"> Use Compiler</label>
+            </div>
+            <div class="setting-row">
+                <label><input type="checkbox" id="enableTransformCaching" checked> Transform Caching</label>
+            </div>
+            <div class="setting-row">
+                <label><input type="checkbox" id="enablePatternTileCaching" checked> Pattern Caching</label>
+            </div>
+            <div class="setting-row">
+                <label><input type="checkbox" id="enablePixelBatching" checked> Pixel Batching</label>
+            </div>
+            <div class="setting-row">
+                <label><input type="checkbox" id="enableLoopUnrolling" checked> Loop Unrolling</label>
+            </div>
+            <div class="setting-row">
+                <label><input type="checkbox" id="enableInvariantHoisting" checked> Invariant Hoisting</label>
+            </div>
+            <div class="setting-row">
+                <label><input type="checkbox" id="logOptimizationStats"> Log Optimization Stats</label>
+            </div>
+            <div class="setting-row">
+                <label><input type="checkbox" id="logProfilingReport"> Log Profiling Report</label>
+            </div>
+        </div>
         <div id="errorLog"></div>
     </div>
 
@@ -199,9 +227,9 @@ ENDREPEAT
     <!-- MicroPatterns Mode for CodeMirror -->
     <script src="micropatterns-mode.js"></script>
 
-    <script src="drawing.js"></script>
-    <script src="parser.js"></script>
-    <script src="runtime.js"></script>
+    <script type="module" src="drawing.js"></script>
+    <script type="module" src="parser.js"></script>
+    <script type="module" src="runtime.js"></script>
     <script type="module" src="simulator.js"></script>
     <script src="scroll-handler.js"></script> <!-- Add the new scroll handler -->
 </body>

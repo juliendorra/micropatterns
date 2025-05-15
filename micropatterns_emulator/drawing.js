@@ -1,9 +1,15 @@
-class MicroPatternsDrawing {
-    constructor(ctx) {
+export class MicroPatternsDrawing {
+    constructor(ctx, optimizationAPI = null) {
         this.ctx = ctx;
         this.display_width = ctx.canvas.width;
         this.display_height = ctx.canvas.height;
+        this.optimizationAPI = optimizationAPI;
+        this.optimizationConfig = null;
         // sinTable and cosTable are no longer needed with DOMMatrix
+    }
+
+    setOptimizationConfig(config) {
+        this.optimizationConfig = config;
     }
 
     // Internal Bresenham's line algorithm operating on SCREEN coordinates.
@@ -130,6 +136,25 @@ class MicroPatternsDrawing {
         const scale = Math.round(state.scale); // Use rounded scale
         this.ctx.fillStyle = color;
         this.ctx.fillRect(Math.trunc(screenX), Math.trunc(screenY), scale, scale);
+    }
+    
+    // Efficient batch pixel drawing - use for multiple pixels of the same color
+    // Takes an array of { x, y } screen coordinates and draws them all at once
+    batchPixels(pixelArray, color, scale = 1) {
+        if (pixelArray.length === 0) return;
+        
+        this.ctx.fillStyle = color;
+        this.ctx.beginPath();
+        
+        const scaledSize = Math.round(scale);
+        
+        for (const pixel of pixelArray) {
+            const x = Math.trunc(pixel.x);
+            const y = Math.trunc(pixel.y);
+            this.ctx.rect(x, y, scaledSize, scaledSize);
+        }
+        
+        this.ctx.fill();
     }
 
     // --- Drawing Primitives ---
@@ -302,10 +327,12 @@ class MicroPatternsDrawing {
 
                 if (dist_sq <= scaled_logical_radius_sq) {
                     const fillColor = this._getFillAssetPixelColor(screen_pixel_center_x, screen_pixel_center_y, state);
-                    // Removed: if (fillColor !== 'white')
-                    this.ctx.fillStyle = fillColor;
-                    this.ctx.fillRect(sx_iter, sy_iter, 1, 1); // Draw 1x1 screen pixel
-                    // Removed: }
+                    if (this.optimizationConfig && this.optimizationConfig.enablePixelBatching && this.optimizationAPI && this.optimizationAPI.batchPixelOperations) {
+                        this.optimizationAPI.batchPixelOperations(sx_iter, sy_iter, fillColor);
+                    } else {
+                        this.ctx.fillStyle = fillColor;
+                        this.ctx.fillRect(sx_iter, sy_iter, 1, 1); // Draw 1x1 screen pixel
+                    }
                 }
             }
         }
@@ -392,8 +419,12 @@ class MicroPatternsDrawing {
                     const asset_data_index = asset_iy * assetData.width + asset_ix;
 
                     if (asset_data_index >= 0 && asset_data_index < assetData.data.length && assetData.data[asset_data_index] === 1) {
-                        this.ctx.fillStyle = state.color;
-                        this.ctx.fillRect(sx_iter, sy_iter, 1, 1); // Draw 1x1 screen pixel
+                        if (this.optimizationConfig && this.optimizationConfig.enablePixelBatching && this.optimizationAPI && this.optimizationAPI.batchPixelOperations) {
+                            this.optimizationAPI.batchPixelOperations(sx_iter, sy_iter, state.color);
+                        } else {
+                            this.ctx.fillStyle = state.color;
+                            this.ctx.fillRect(sx_iter, sy_iter, 1, 1); // Draw 1x1 screen pixel
+                        }
                     }
                 }
             }
