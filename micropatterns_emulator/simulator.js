@@ -1,4 +1,17 @@
+import { MicroPatternsCompiler } from './compiler.js';
+import { MicroPatternsCompiledRunner } from './compiled_runtime.js';
+
 document.addEventListener('DOMContentLoaded', async () => {
+
+    // Toggle between interpreter (false) and compiler (true) execution paths
+    const USE_COMPILER = false;
+    let currentRuntimeInstance = null; // Store runtime instance for profiling access
+    let currentCompilerInstance = null; // For compiler instance access
+    let currentCompiledRunnerInstance = null; // For compiled runner instance access
+
+    let profilingEnabled = false; // Initialize profiling flag
+    let profilingData = {}; // Storage for profiling metrics
+
     const scriptInputTextArea = document.getElementById('scriptInput');
     const runButton = document.getElementById('runButton');
     const incrementCounterButton = document.getElementById('incrementCounterButton');
@@ -31,6 +44,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     const deviceScriptListContainer = document.getElementById('deviceScriptListContainer');
     const userIdInput = document.getElementById('userId'); // Added User ID input
 
+    // Global configuration object
+    const globalConfig = {
+        enableProfiling: true, // Enable profiling by default
+        enableTransformCaching: false,
+        enableRepeatOptimization: false,
+        enablePixelBatching: false
+    };
+
     // --- NanoID Import & Setup ---
     // Import nanoid
     // Note: Ensure this path is correct relative to your project structure or use a CDN.
@@ -50,7 +71,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // Define custom nanoid generator
     const NANOID_ALPHABET = "123456789bcdfghjkmnpqrstvwxyz";
-    const generatePeerId = customAlphabet ? customAlphabet(NANOID_ALPHABET, 10) : () => `fallback-${Date.now()}-${Math.random().toString(36).substring(2,8)}`;
+    const generatePeerId = customAlphabet ? customAlphabet(NANOID_ALPHABET, 10) : () => `fallback-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
 
 
     // --- Local Storage Keys ---
@@ -473,6 +494,18 @@ document.addEventListener('DOMContentLoaded', async () => {
         let parseResult;
         let hasErrors = false;
 
+        // Initialize profiling from globalConfig if it exists, otherwise default to false
+        // Ensure globalConfig is defined before accessing its properties
+        if (typeof globalConfig === 'undefined' || globalConfig === null) {
+            // This case should ideally not happen if globalConfig is defined above,
+            // but as a safeguard:
+            console.warn("globalConfig not found, defaulting profilingEnabled to false for this run.");
+            profilingEnabled = false;
+        } else {
+            profilingEnabled = globalConfig.enableProfiling === true;
+        }
+        profilingData = {}; // Reset profiling data for this run
+
         // --- Parsing Phase ---
         try {
             parseResult = parser.parse(scriptText);
@@ -503,29 +536,103 @@ document.addEventListener('DOMContentLoaded', async () => {
 
 
         // --- Runtime Phase ---
-        const runtime = new MicroPatternsRuntime(
-            ctx,
-            parseResult.assets, // Pass the whole assets object { assets: {...} }
-            environment,
-            (runtimeErrorMessage) => {
-                // Runtime errors should already be formatted with line numbers by runtimeError helper
-                displayError(runtimeErrorMessage, "Runtime");
+        if (USE_COMPILER) {
+            // --- Compiler Path ---
+            // Module imports handle class availability. If imports fail, an error occurs before this.
+            currentRuntimeInstance = null; // Reset runtime instance when using compiler path
+            currentCompilerInstance = new MicroPatternsCompiler();
+            let compiledOutput;
+
+            if (profilingEnabled) wrapForProfiling(currentCompilerInstance, 'compile', profilingData);
+
+            try {
+                // Pass assets.assets to compiler, not the whole parseResult.assets object
+                compiledOutput = currentCompilerInstance.compile(parseResult.commands, parseResult.assets.assets, environment);
+                if (compiledOutput.errors && compiledOutput.errors.length > 0) {
+                    compiledOutput.errors.forEach(err => displayError(err.message || err, "Compiler")); // Ensure err is string
+                    hasErrors = true;
+                    // Potentially return if compilation errors are critical
+                }
+            } catch (e) {
+                displayError(`Compiler Crash: ${e.message}`, "Fatal Compiler");
+                console.error(e);
+                hasErrors = true;
+                return; // Stop if compiler itself crashes
+            }
+
+            if (hasErrors && !compiledOutput.execute) { // If critical errors prevent execution
+                displayProfilingResults(); // Display any profiling data collected so far
+                return;
+            }
+
+            currentCompiledRunnerInstance = new MicroPatternsCompiledRunner(ctx, (runtimeErrorMessage) => {
+                displayError(runtimeErrorMessage, "CompiledRuntime");
+                hasErrors = true;
+            });
+
+            if (profilingEnabled) wrapForProfiling(currentCompiledRunnerInstance, 'execute', profilingData);
+
+            try {
+                // Pass assets.assets to compiled runner, not the whole parseResult.assets object
+                currentCompiledRunnerInstance.execute(compiledOutput, parseResult.assets.assets, environment);
+            } catch (e) {
+                console.error("Unhandled Compiled Execution Exception:", e);
+                displayError(`Unexpected Compiled Execution Crash: ${e.message}`, "Fatal CompiledRuntime");
                 hasErrors = true;
             }
-        );
 
-        try {
-            runtime.execute(parseResult.commands);
-        } catch (e) {
-            // Catch errors that might escape the runtime's internal try-catch
-            // (e.g., issues within the error callback itself)
-            // The runtime's error callback should have already displayed the formatted error.
-            // We log it here just in case.
-            console.error("Unhandled Runtime Exception:", e);
-            if (!e.isRuntimeError) { // Display if not already handled by callback
-                displayError(`Unexpected Runtime Crash: ${e.message}`, "Fatal Runtime");
+        } else {
+            // --- Interpreter Path ---
+            const runtime = new MicroPatternsRuntime(
+                ctx,
+                parseResult.assets,
+                environment,
+                (runtimeErrorMessage) => {
+                    displayError(runtimeErrorMessage, "Runtime");
+                    hasErrors = true;
+                }
+            );
+            currentRuntimeInstance = runtime; // Store for profiler access
+            currentCompilerInstance = null; // Ensure compiler instances are null
+            currentCompiledRunnerInstance = null; // Ensure compiler instances are null
+
+            // Wrap methods for profiling (Interpreter Path)
+            if (profilingEnabled) {
+                const runtimeMethodsToProfile = ['executeCommand', 'evaluateExpression', 'evaluateCondition', '_resolveValue'];
+                runtimeMethodsToProfile.forEach(method => wrapForProfiling(runtime, method, profilingData));
+
+                if (runtime.drawing) {
+                    const drawingMethodsToProfile = [
+                        'drawLine', 'drawRect', 'fillRect', 'drawPixel', 'fillCircle', 'drawCircle',
+                        'drawFilledPixel', 'drawAsset', 'transformPoint', 'screenToLogicalBase',
+                        '_getFillAssetPixelColor', 'setPixel', '_rawLine'
+                    ];
+                    drawingMethodsToProfile.forEach(method => wrapForProfiling(runtime.drawing, method, profilingData));
+                }
             }
-            hasErrors = true;
+
+            // No config object passed to runtime anymore
+            try {
+                runtime.execute(parseResult.commands);
+            } catch (e) {
+                // The runtime's internal try-catch calls the errorCallback, which sets hasErrors.
+                // This catch is for other unexpected errors during this block's execution.
+                if (!e.isRuntimeError) { // Avoid double-logging if runtime already called errorCallback
+                    displayError(`Unexpected Interpreter Crash: ${e.message}`, "Fatal Interpreter");
+                    console.error("Unhandled Interpreter Exception:", e);
+                    hasErrors = true; // Ensure hasErrors is set for these unexpected crashes
+                }
+            }
+        }
+        // --- End Runtime Phase ---
+
+        if (profilingEnabled) {
+            displayProfilingResults();
+        }
+
+        // Display profiling results if enabled
+        if (profilingEnabled) {
+            displayProfilingResults();
         }
 
         // Auto-increment counter if no errors occurred
@@ -955,7 +1062,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         try {
             const response = await fetch(`${API_BASE_URL}/api/scripts/${currentUserId}`);
             if (!response.ok) {
-                 if (response.status === 404) { // User might not have any scripts yet
+                if (response.status === 404) { // User might not have any scripts yet
                     console.log(`No scripts found for user ${currentUserId}. This might be a new user.`);
                     scriptListSelect.options.length = 1; // Clear previous options
                     populateDeviceScriptList([], []); // Empty device list
@@ -1356,7 +1463,50 @@ FILL_RECT X=0 Y=0 WIDTH=$WIDTH HEIGHT=$HEIGHT
     }
 
     // --- End Script Management Logic ---
+    // --- End Script Management Logic ---
 
+    // --- Profiling System ---
+    // Ensure wrapForProfiling is defined before it's potentially called in runScript
+    function wrapForProfiling(instance, methodName, dataStore) {
+        if (!instance || typeof instance[methodName] !== 'function') return;
+
+        const originalMethod = instance[methodName];
+        instance[methodName] = function (...args) {
+            if (!profilingEnabled) {
+                return originalMethod.apply(this, args);
+            }
+
+            const start = performance.now();
+            const result = originalMethod.apply(this, args);
+            const duration = performance.now() - start;
+
+            if (!dataStore[methodName]) {
+                dataStore[methodName] = { calls: 0, totalTime: 0, maxTime: 0, minTime: duration };
+            }
+            dataStore[methodName].calls++;
+            dataStore[methodName].totalTime += duration;
+            dataStore[methodName].maxTime = Math.max(dataStore[methodName].maxTime, duration);
+            dataStore[methodName].minTime = Math.min(dataStore[methodName].minTime, duration);
+
+            return result;
+        };
+    }
+
+    function displayProfilingResults() {
+        if (!profilingEnabled) return;
+
+        let report = "--- Profiling Report ---\n";
+        const sortedData = Object.entries(profilingData).sort(([, a], [, b]) => b.totalTime - a.totalTime);
+
+        for (const [methodName, stats] of sortedData) {
+            const avgTime = stats.totalTime / stats.calls;
+            report += `${methodName}: ${stats.calls} calls, ${stats.totalTime.toFixed(2)}ms total, ${avgTime.toFixed(3)}ms avg, ${stats.minTime.toFixed(3)}ms min, ${stats.maxTime.toFixed(3)}ms max\n`;
+        }
+
+        console.log(report);
+        errorLog.textContent += "\n" + report;
+    }
+    // --- End Profiling System ---
 
     // Run once on load
     initializeUserId(); // Initialize User ID first
