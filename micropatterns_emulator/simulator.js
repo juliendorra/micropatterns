@@ -1572,6 +1572,29 @@ FILL_RECT X=0 Y=0 WIDTH=$WIDTH HEIGHT=$HEIGHT
         for (const [methodName, stats] of sortedData) {
             const avgTime = stats.totalTime / stats.calls;
             report += `${methodName}: ${stats.calls} calls, ${stats.totalTime.toFixed(2)}ms total, ${avgTime.toFixed(3)}ms avg, ${stats.minTime.toFixed(3)}ms min, ${stats.maxTime.toFixed(3)}ms max\n`;
+            
+            // Add detailed breakdown for 'execute' method if available from compiled runner
+            if (methodName === 'execute' && currentCompiledRunnerInstance && currentCompiledRunnerInstance.executionStats) {
+                const execStats = currentCompiledRunnerInstance.executionStats;
+                report += "\n  --- Execution Breakdown ---\n";
+                report += `  Display Reset: ${execStats.resetTime.toFixed(2)}ms (${(execStats.resetTime / execStats.totalTime * 100).toFixed(1)}%)\n`;
+                report += `  Script Execution: ${execStats.compiledFunctionTime.toFixed(2)}ms (${(execStats.compiledFunctionTime / execStats.totalTime * 100).toFixed(1)}%)\n`;
+                report += `  Drawing Operations: ${execStats.drawingOperationsTime.toFixed(2)}ms (${(execStats.drawingOperationsTime / execStats.totalTime * 100).toFixed(1)}%)\n`;
+                report += `  Optimization Operations: ${execStats.optimizationTime.toFixed(2)}ms (${(execStats.optimizationTime / execStats.totalTime * 100).toFixed(1)}%)\n`;
+                report += `  Final Batch Flush: ${execStats.flushBatchTime.toFixed(2)}ms (${(execStats.flushBatchTime / execStats.totalTime * 100).toFixed(1)}%)\n`;
+                
+                report += "\n  --- Drawing Operation Counts ---\n";
+                report += `  Total Drawing Operations: ${execStats.drawingOperationCounts.total}\n`;
+                report += `  Pixels: ${execStats.drawingOperationCounts.pixel}\n`;
+                report += `  Lines: ${execStats.drawingOperationCounts.line}\n`;
+                report += `  Rectangles: ${execStats.drawingOperationCounts.rect}\n`;
+                report += `  Filled Rectangles: ${execStats.drawingOperationCounts.fillRect}\n`;
+                report += `  Circles: ${execStats.drawingOperationCounts.circle}\n`;
+                report += `  Filled Circles: ${execStats.drawingOperationCounts.fillCircle}\n`;
+                report += `  Pattern Draws: ${execStats.drawingOperationCounts.draw}\n`;
+                report += `  Filled Pixels: ${execStats.drawingOperationCounts.fillPixel}\n`;
+                report += `  Transformations: ${execStats.drawingOperationCounts.transform}\n`;
+            }
         }
 
         console.log(report);

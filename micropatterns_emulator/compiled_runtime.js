@@ -41,6 +41,28 @@ export class MicroPatternsCompiledRunner {
             patternCacheHits: 0,
             batchedOperations: 0
         };
+        
+        // Detailed execution timing measurements for profiling
+        this.executionStats = {
+            totalTime: 0,
+            resetTime: 0,
+            compiledFunctionTime: 0,
+            flushBatchTime: 0,
+            drawingOperationsTime: 0,
+            optimizationTime: 0,
+            drawingOperationCounts: {
+                pixel: 0,
+                line: 0,
+                rect: 0,
+                fillRect: 0,
+                circle: 0,
+                fillCircle: 0,
+                draw: 0,
+                fillPixel: 0,
+                transform: 0,
+                total: 0
+            }
+        };
     }
 
     resetDisplay() {
@@ -59,26 +81,155 @@ export class MicroPatternsCompiledRunner {
     }
 
     execute(compiledOutput, assets, environment) {
+        // Track overall execution time
+        const totalStartTime = performance.now();
+        
+        // Track reset display time
+        const resetStartTime = performance.now();
         this.resetDisplay();
+        const resetEndTime = performance.now();
+        this.executionStats.resetTime = resetEndTime - resetStartTime;
+        
         try {
             if (typeof compiledOutput.execute !== 'function') {
                 throw new Error("Compiled output does not contain an executable function.");
             }
             
-            // Initialize performance timers if statistics are enabled
-            const startTime = compiledOutput.config && compiledOutput.config.logOptimizationStats ?
-                              performance.now() : null;
+            // Initialize performance timers
+            const startTime = performance.now();
             
-            // Pass additional optimization methods to the compiled function
-            const optimizationHelpers = {
+            // Track drawing operations - we'll wrap drawing methods to collect stats
+            const originalDrawPixel = this.drawing.drawPixel;
+            const originalDrawLine = this.drawing.drawLine;
+            const originalDrawRect = this.drawing.drawRect;
+            const originalFillRect = this.drawing.fillRect;
+            const originalDrawCircle = this.drawing.drawCircle;
+            const originalFillCircle = this.drawing.fillCircle;
+            const originalDrawAsset = this.drawing.drawAsset;
+            const originalDrawFilledPixel = this.drawing.drawFilledPixel;
+            const originalTransformPoint = this.drawing.transformPoint;
+            
+            // Reset operation counts
+            this.executionStats.drawingOperationCounts = {
+                pixel: 0,
+                line: 0,
+                rect: 0,
+                fillRect: 0,
+                circle: 0,
+                fillCircle: 0,
+                draw: 0,
+                fillPixel: 0,
+                transform: 0,
+                total: 0
+            };
+            
+            // Wrap drawing methods to track counts and timing
+            let drawingOperationsTime = 0;
+            
+            this.drawing.drawPixel = (...args) => {
+                const drawStartTime = performance.now();
+                const result = originalDrawPixel.apply(this.drawing, args);
+                drawingOperationsTime += performance.now() - drawStartTime;
+                this.executionStats.drawingOperationCounts.pixel++;
+                this.executionStats.drawingOperationCounts.total++;
+                return result;
+            };
+            
+            this.drawing.drawLine = (...args) => {
+                const drawStartTime = performance.now();
+                const result = originalDrawLine.apply(this.drawing, args);
+                drawingOperationsTime += performance.now() - drawStartTime;
+                this.executionStats.drawingOperationCounts.line++;
+                this.executionStats.drawingOperationCounts.total++;
+                return result;
+            };
+            
+            this.drawing.drawRect = (...args) => {
+                const drawStartTime = performance.now();
+                const result = originalDrawRect.apply(this.drawing, args);
+                drawingOperationsTime += performance.now() - drawStartTime;
+                this.executionStats.drawingOperationCounts.rect++;
+                this.executionStats.drawingOperationCounts.total++;
+                return result;
+            };
+            
+            this.drawing.fillRect = (...args) => {
+                const drawStartTime = performance.now();
+                const result = originalFillRect.apply(this.drawing, args);
+                drawingOperationsTime += performance.now() - drawStartTime;
+                this.executionStats.drawingOperationCounts.fillRect++;
+                this.executionStats.drawingOperationCounts.total++;
+                return result;
+            };
+            
+            this.drawing.drawCircle = (...args) => {
+                const drawStartTime = performance.now();
+                const result = originalDrawCircle.apply(this.drawing, args);
+                drawingOperationsTime += performance.now() - drawStartTime;
+                this.executionStats.drawingOperationCounts.circle++;
+                this.executionStats.drawingOperationCounts.total++;
+                return result;
+            };
+            
+            this.drawing.fillCircle = (...args) => {
+                const drawStartTime = performance.now();
+                const result = originalFillCircle.apply(this.drawing, args);
+                drawingOperationsTime += performance.now() - drawStartTime;
+                this.executionStats.drawingOperationCounts.fillCircle++;
+                this.executionStats.drawingOperationCounts.total++;
+                return result;
+            };
+            
+            this.drawing.drawAsset = (...args) => {
+                const drawStartTime = performance.now();
+                const result = originalDrawAsset.apply(this.drawing, args);
+                drawingOperationsTime += performance.now() - drawStartTime;
+                this.executionStats.drawingOperationCounts.draw++;
+                this.executionStats.drawingOperationCounts.total++;
+                return result;
+            };
+            
+            this.drawing.drawFilledPixel = (...args) => {
+                const drawStartTime = performance.now();
+                const result = originalDrawFilledPixel.apply(this.drawing, args);
+                drawingOperationsTime += performance.now() - drawStartTime;
+                this.executionStats.drawingOperationCounts.fillPixel++;
+                this.executionStats.drawingOperationCounts.total++;
+                return result;
+            };
+            
+            this.drawing.transformPoint = (...args) => {
+                const drawStartTime = performance.now();
+                const result = originalTransformPoint.apply(this.drawing, args);
+                drawingOperationsTime += performance.now() - drawStartTime;
+                this.executionStats.drawingOperationCounts.transform++;
+                return result;
+            };
+            
+            // Track optimization operations time
+            let optimizationTime = 0;
+            
+            // Create wrapped optimization helpers that track timing
+            const originalOptimizationHelpers = {
                 getCachedTransform: this.getCachedTransform.bind(this),
                 getCachedPatternTile: this.getCachedPatternTile.bind(this),
                 batchPixelOperations: this.batchPixelOperations.bind(this),
                 flushPixelBatch: this.flushPixelBatch.bind(this),
-                // Add new optimization helpers for second-pass support
                 precomputeTransforms: this.precomputeTransforms.bind(this),
                 executeDrawBatch: this.executeDrawBatch.bind(this)
             };
+            
+            const optimizationHelpers = {};
+            
+            // Wrap each optimization method to track timing
+            for (const [methodName, method] of Object.entries(originalOptimizationHelpers)) {
+                optimizationHelpers[methodName] = (...args) => {
+                    const optStartTime = performance.now();
+                    const result = method(...args);
+                    optimizationTime += performance.now() - optStartTime;
+                    return result;
+                };
+            }
             
             // Prepare execution state with expanded caching
             const executionState = {
@@ -95,24 +246,48 @@ export class MicroPatternsCompiledRunner {
                 }
             };
             
-            // The compiledOutput.execute function will manage its own state
-            
             // Provide the drawing instance with the current optimization configuration
             if (this.drawing && compiledOutput.config) {
                 this.drawing.setOptimizationConfig(compiledOutput.config);
             }
 
+            // Execute the compiled function and track its execution time
+            const execStartTime = performance.now();
             compiledOutput.execute(
                 environment,      // _environment
                 this.drawing,     // _drawing
                 assets,           // _assets (assets.assets from parser)
                 compiledOutput.initialVariables, // _initialUserVariables
-                optimizationHelpers, // _optimization helpers
+                optimizationHelpers, // _optimization helpers (wrapped for timing)
                 executionState    // _executionState for sharing state across optimizations
             );
+            const execEndTime = performance.now();
+            this.executionStats.compiledFunctionTime = execEndTime - execStartTime - drawingOperationsTime - optimizationTime;
             
-            // Ensure any remaining batched operations are executed
+            // Restore original drawing methods
+            this.drawing.drawPixel = originalDrawPixel;
+            this.drawing.drawLine = originalDrawLine;
+            this.drawing.drawRect = originalDrawRect;
+            this.drawing.fillRect = originalFillRect;
+            this.drawing.drawCircle = originalDrawCircle;
+            this.drawing.fillCircle = originalFillCircle;
+            this.drawing.drawAsset = originalDrawAsset;
+            this.drawing.drawFilledPixel = originalDrawFilledPixel;
+            this.drawing.transformPoint = originalTransformPoint;
+            
+            // Track time for final flush
+            const flushStartTime = performance.now();
             this.flushPixelBatch();
+            const flushEndTime = performance.now();
+            this.executionStats.flushBatchTime = flushEndTime - flushStartTime;
+            
+            // Store the accumulated drawing and optimization times
+            this.executionStats.drawingOperationsTime = drawingOperationsTime;
+            this.executionStats.optimizationTime = optimizationTime;
+            
+            // Calculate and store total execution time
+            const totalEndTime = performance.now();
+            this.executionStats.totalTime = totalEndTime - totalStartTime;
             
             // Optionally log optimization statistics
             if (compiledOutput.config && compiledOutput.config.logOptimizationStats) {
@@ -151,10 +326,33 @@ export class MicroPatternsCompiledRunner {
                 }
                 statsReport += "\n"; // Add a newline for separation
 
+                // Add the detailed execution timing statistics
                 statsReport += `Execution Time: ${executionTime.toFixed(2)}ms\n`;
                 statsReport += `Transform Cache Hits: ${this.stats.transformCacheHits}\n`;
                 statsReport += `Pattern Cache Hits: ${this.stats.patternCacheHits}\n`;
                 statsReport += `Batched Operations: ${this.stats.batchedOperations}\n`;
+                
+                // Add detailed execution phase breakdown
+                statsReport += "\n--- Execution Timing Breakdown ---\n";
+                statsReport += `Total Execution: ${this.executionStats.totalTime.toFixed(2)}ms\n`;
+                statsReport += `Display Reset: ${this.executionStats.resetTime.toFixed(2)}ms (${(this.executionStats.resetTime / this.executionStats.totalTime * 100).toFixed(1)}%)\n`;
+                statsReport += `Script Execution: ${this.executionStats.compiledFunctionTime.toFixed(2)}ms (${(this.executionStats.compiledFunctionTime / this.executionStats.totalTime * 100).toFixed(1)}%)\n`;
+                statsReport += `Drawing Operations: ${this.executionStats.drawingOperationsTime.toFixed(2)}ms (${(this.executionStats.drawingOperationsTime / this.executionStats.totalTime * 100).toFixed(1)}%)\n`;
+                statsReport += `Optimization Operations: ${this.executionStats.optimizationTime.toFixed(2)}ms (${(this.executionStats.optimizationTime / this.executionStats.totalTime * 100).toFixed(1)}%)\n`;
+                statsReport += `Final Batch Flush: ${this.executionStats.flushBatchTime.toFixed(2)}ms (${(this.executionStats.flushBatchTime / this.executionStats.totalTime * 100).toFixed(1)}%)\n`;
+                
+                // Add drawing operation counts
+                statsReport += "\n--- Drawing Operation Counts ---\n";
+                statsReport += `Total Drawing Operations: ${this.executionStats.drawingOperationCounts.total}\n`;
+                statsReport += `Pixels: ${this.executionStats.drawingOperationCounts.pixel}\n`;
+                statsReport += `Lines: ${this.executionStats.drawingOperationCounts.line}\n`;
+                statsReport += `Rectangles: ${this.executionStats.drawingOperationCounts.rect}\n`;
+                statsReport += `Filled Rectangles: ${this.executionStats.drawingOperationCounts.fillRect}\n`;
+                statsReport += `Circles: ${this.executionStats.drawingOperationCounts.circle}\n`;
+                statsReport += `Filled Circles: ${this.executionStats.drawingOperationCounts.fillCircle}\n`;
+                statsReport += `Pattern Draws: ${this.executionStats.drawingOperationCounts.draw}\n`;
+                statsReport += `Filled Pixels: ${this.executionStats.drawingOperationCounts.fillPixel}\n`;
+                statsReport += `Transformations: ${this.executionStats.drawingOperationCounts.transform}\n`;
                 
                 // Add second-pass statistics if available
                 if (compiledOutput.secondPassStats) {
