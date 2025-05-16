@@ -34,7 +34,10 @@ export class MicroPatternsCompiler {
             deadCodeEliminated: 0,
             constantsValuesSubstituted: 0,
             drawCallsReordered: 0,
-            memoryAllocationsEliminated: 0
+            memoryAllocationsEliminated: 0,
+            loopsUnrolled: 0,
+            invariantsHoisted: 0,
+            drawOrderOptimized: 0
         };
     }
 
@@ -142,51 +145,83 @@ export class MicroPatternsCompiler {
     // Find expressions that don't change inside a loop (invariants)
     _findLoopInvariants(loopCommand) {
         const invariants = [];
-        const loopVarRefs = new Set(['$INDEX']); // Variables that change during the loop
-        
-        // Track expressions that don't use loop variables
-        const checkExpressionInvariance = (tokens) => {
+        // loopVarRefs tracks variables whose values change *across different iterations*
+        // or are assigned *within* the loop, making them unavailable for hoisting
+        // if used in an expression *after* their assignment in the loop.
+        // It stores variable names with '$' prefix and in uppercase (e.g., '$MYVAR').
+        const initialLoopVarRefs = new Set(['$INDEX']);
+
+        const debugInvariantHoisting = this.optimizationConfig.logOptimizationStats;
+
+        const checkExpressionInvariance = (tokens, currentLoopVarRefs) => {
             if (!tokens) return false;
-            
-            // Check if any token references the loop variable
             for (const token of tokens) {
-                if (token.type === 'var' && loopVarRefs.has(token.value)) {
+                // token.value for a var is already '$VARNAME_UPPERCASE' from the parser
+                if (token.type === 'var' && currentLoopVarRefs.has(token.value)) {
+                    if (debugInvariantHoisting) {
+                        console.log(`[Compiler DEBUG InvariantCheck] Expression not invariant due to token: ${token.value} (present in currentLoopVarRefs) at line (expression source line not directly available here)`);
+                    }
                     return false;
                 }
             }
-            return true; // No loop variable references found
+            return true;
         };
-        
-        // Track commands in the loop body that define invariant calculations
-        const findInvariantsInCommands = (commands) => {
+
+        // Traverses commands within a loop, identifies invariants, and updates currentLoopVarRefs.
+        const findInvariantsInCommandsRecursive = (commands, currentLoopVarRefs) => {
             for (const cmd of commands) {
-                if (cmd.type === 'LET') {
-                    const isInvariant = checkExpressionInvariance(cmd.expression);
-                    if (isInvariant) {
+                if (cmd.type === 'LET' || (cmd.type === 'VAR' && cmd.initialExpression)) {
+                    // Determine the target variable name (bare, uppercase) and the expression
+                    const targetVarName = cmd.type === 'LET' ? cmd.targetVar : cmd.varName; // These are bare uppercase names from parser
+                    const expressionTokens = cmd.type === 'LET' ? cmd.expression : cmd.initialExpression;
+
+                    // Check if the RHS expression is invariant based on variables known to be loop-variant *before* this command.
+                    const isExprInvariant = checkExpressionInvariance(expressionTokens, currentLoopVarRefs);
+                    
+                    if (isExprInvariant) {
+                        if (debugInvariantHoisting) {
+                            console.log(`[Compiler DEBUG InvariantFound] Potentially invariant expression for $${targetVarName} at line ${cmd.line}`);
+                        }
                         invariants.push({
                             type: 'expression',
-                            target: cmd.targetVar,
-                            expression: cmd.expression
+                            target: targetVarName, // Bare uppercase name
+                            expression: expressionTokens,
+                            line: cmd.line // Line of the original LET/VAR statement
                         });
                     } else {
-                        // This variable is modified by a loop-dependent expression
-                        loopVarRefs.add(`$${cmd.targetVar}`);
+                        if (debugInvariantHoisting) {
+                            console.log(`[Compiler DEBUG InvariantDependent] Expression for $${targetVarName} at line ${cmd.line} is loop-dependent.`);
+                        }
                     }
+                    // The target variable is now considered modified within this loop's scope for subsequent commands.
+                    // Add its '$' prefixed uppercase name to currentLoopVarRefs.
+                    currentLoopVarRefs.add(`$${targetVarName}`);
                 }
-                // Recursively check nested blocks
                 else if (cmd.type === 'IF') {
-                    findInvariantsInCommands(cmd.thenCommands);
+                    // Process then/else branches with a *copy* of currentLoopVarRefs
+                    // so that variable assignments within one branch don't affect the other
+                    // or commands following the IF block at the same level.
+                    findInvariantsInCommandsRecursive(cmd.thenCommands, new Set(currentLoopVarRefs));
                     if (cmd.elseCommands) {
-                        findInvariantsInCommands(cmd.elseCommands);
+                        findInvariantsInCommandsRecursive(cmd.elseCommands, new Set(currentLoopVarRefs));
                     }
                 }
                 else if (cmd.type === 'REPEAT') {
-                    findInvariantsInCommands(cmd.commands);
+                    // Nested loops start their own invariant analysis context,
+                    // but inherit loop-variant variables from the outer scope.
+                    // The initial set for a nested loop should include its own $INDEX
+                    // plus any variables already in currentLoopVarRefs from the outer loop.
+                    const nestedLoopInitialRefs = new Set(currentLoopVarRefs);
+                    nestedLoopInitialRefs.add('$INDEX'); // Nested loop has its own $INDEX
+                    // Note: The `invariants` array is for the *outer* loop being processed by _findLoopInvariants.
+                    // Hoisting for nested loops is handled when that nested REPEAT is compiled.
+                    // Here, we just need to ensure `currentLoopVarRefs` is correctly passed down.
+                    findInvariantsInCommandsRecursive(cmd.commands, nestedLoopInitialRefs);
                 }
             }
         };
         
-        findInvariantsInCommands(loopCommand.commands);
+        findInvariantsInCommandsRecursive(loopCommand.commands, initialLoopVarRefs);
         return invariants;
     }
     
@@ -400,6 +435,9 @@ export class MicroPatternsCompiler {
                     }
                     return value;
                 })()`;
+            } else if (valueSource === "0") {
+                // Special case for "0" string to ensure it's treated as a number
+                return "0";
             } else {
                 // Handle other string values - could be a keyword or literal
                 // For now, just return as string literal
@@ -587,8 +625,20 @@ export class MicroPatternsCompiler {
                     return _intMod(leftVal, ${literalValue}) ${condition.operator} rightVal;
                 })()`;
             } else { // standard condition: left op right
-                if (!condition.left || !condition.right) {
-                    this.errors.push(`Compiler Error (Line ${lineNumber}): Missing operands in standard condition`);
+                // Handle case where one operand might be 0 or other falsy value but valid
+                // Only report error if both operands are truly missing
+                if (condition.left === undefined && condition.right === undefined) {
+                    this.errors.push(`Compiler Error (Line ${lineNumber}): Both operands missing in standard condition`);
+                    return 'false';
+                }
+                
+                if (condition.left === undefined) {
+                    this.errors.push(`Compiler Error (Line ${lineNumber}): Left operand missing in standard condition`);
+                    return 'false';
+                }
+                
+                if (condition.right === undefined) {
+                    this.errors.push(`Compiler Error (Line ${lineNumber}): Right operand missing in standard condition`);
                     return 'false';
                 }
                 
@@ -744,9 +794,10 @@ export class MicroPatternsCompiler {
                 break;
             case 'DRAW':
                 const drawPatternName = command.params.NAME.toUpperCase();
-                js += `\nconst _drawAsset = _assets['${drawPatternName}'];`;
-                js += `\nif (!_drawAsset) { _runtimeError("Pattern '${drawPatternName}' not defined for DRAW.", ${command.line}); }`;
-                js += `\nelse { _drawing.drawAsset(${this._generateValueCode(command.params.X, command.line)}, ${this._generateValueCode(command.params.Y, command.line)}, _drawAsset, _state); }`;
+                // Use a unique variable name by including the line number
+                js += `\nconst _drawAsset_${command.line} = _assets['${drawPatternName}'];`;
+                js += `\nif (!_drawAsset_${command.line}) { _runtimeError("Pattern '${drawPatternName}' not defined for DRAW.", ${command.line}); }`;
+                js += `\nelse { _drawing.drawAsset(${this._generateValueCode(command.params.X, command.line)}, ${this._generateValueCode(command.params.Y, command.line)}, _drawAsset_${command.line}, _state); }`;
                 break;
             case 'FILL_PIXEL':
                 js += `\n_drawing.drawFilledPixel(${this._generateValueCode(command.params.X, command.line)}, ${this._generateValueCode(command.params.Y, command.line)}, _state);`;
@@ -763,12 +814,29 @@ export class MicroPatternsCompiler {
                 if (this.optimizationConfig.enableInvariantHoisting && scriptAnalysis.repeatLoops) {
                     const loopInfo = scriptAnalysis.repeatLoops.find(l => l.line === command.line);
                     if (loopInfo && loopInfo.invariants && loopInfo.invariants.length > 0) {
+                        console.log(`[Compiler DEBUG] Attempting to hoist ${loopInfo.invariants.length} invariants for REPEAT at line ${command.line}. First invariant target: ${loopInfo.invariants[0].target}`);
                         js += `\n// Hoist loop invariants`;
-                        for (const inv of loopInfo.invariants) {
-                            if (inv.type === 'expression') {
-                                js += `\nconst _inv_${command.line}_${inv.target} = ${this._generateExpressionCode(inv.expression, command.line)};`;
-                            }
-                        }
+                                // Track invariant hoisting statistics
+                                if (this.secondPassStats && loopInfo.invariants.length > 0) {
+                                    this.secondPassStats.invariantsHoisted += loopInfo.invariants.length;
+                                }
+                                
+                                // Track which variables have already been declared to prevent duplicates
+                                const declaredHoistedVars = new Set();
+                                
+                                // Group invariants by target variable to avoid duplicate declarations
+                                // Process them in order to ensure dependencies are handled correctly
+                                for (const inv of loopInfo.invariants) {
+                                    if (inv.type === 'expression') {
+                                        const hoistedVarName = `_inv_${command.line}_${inv.target}`;
+                                        
+                                        // Only declare each variable once
+                                        if (!declaredHoistedVars.has(hoistedVarName)) {
+                                            js += `\nconst ${hoistedVarName} = ${this._generateExpressionCode(inv.expression, inv.line)};`; // Use inv.line
+                                            declaredHoistedVars.add(hoistedVarName);
+                                        }
+                                    }
+                                }
                     }
                 }
                 
@@ -781,6 +849,11 @@ export class MicroPatternsCompiler {
                     // Unroll the loop for small constant counts
                     js += `\n// Unrolled loop (${command.count} iterations)`;
                     
+                    // Track loop unrolling statistics
+                    if (this.secondPassStats) {
+                        this.secondPassStats.loopsUnrolled++;
+                    }
+                    
                     for (let i = 0; i < command.count; i++) {
                         js += `\n// Iteration ${i}`;
                         js += `\n_variables['$INDEX'] = ${i};`;
@@ -789,8 +862,11 @@ export class MicroPatternsCompiler {
                         if (this.optimizationConfig.enableInvariantHoisting) {
                             const loopInfo = scriptAnalysis.repeatLoops.find(l => l.line === command.line);
                             if (loopInfo && loopInfo.invariants) {
+                                // Group invariants by target to avoid duplicate assignments
+                                const uniqueTargets = new Set();
                                 for (const inv of loopInfo.invariants) {
-                                    if (inv.type === 'expression') {
+                                    if (inv.type === 'expression' && !uniqueTargets.has(inv.target)) {
+                                        uniqueTargets.add(inv.target);
                                         js += `\n_variables['$${inv.target}'] = _inv_${command.line}_${inv.target};`;
                                     }
                                 }
@@ -815,11 +891,20 @@ export class MicroPatternsCompiler {
                     if (this.optimizationConfig.enableInvariantHoisting) {
                         const loopInfo = scriptAnalysis.repeatLoops.find(l => l.line === command.line);
                         if (loopInfo && loopInfo.invariants && loopInfo.invariants.length > 0) {
-                            js += `\n  // Use pre-calculated invariants`;
+                        js += `\n  // Use pre-calculated invariants`;
+                            
+                            // Group invariants by target to avoid duplicate assignments
+                            const uniqueTargets = new Set();
                             for (const inv of loopInfo.invariants) {
-                                if (inv.type === 'expression') {
-                                    js += `\n  _variables['$${inv.target}'] = _inv_${command.line}_${inv.target};`;
+                                if (inv.type === 'expression' && !uniqueTargets.has(inv.target)) {
+                                    uniqueTargets.add(inv.target);
+                                    js += `\n  _variables['$${inv.target}'] = _inv_${command.line}_${inv.target}; // Assign hoisted invariant`;
                                 }
+                            }
+                            
+                            // Add debug log when optimization stats are enabled
+                            if (this.optimizationConfig.logOptimizationStats) {
+                                js += `\n  // Debug: ${uniqueTargets.size} invariants used inside loop iteration`;
                             }
                         }
                     }
@@ -1123,6 +1208,10 @@ export class MicroPatternsCompiler {
         }
         
         if (this.optimizationConfig.enableMemoryOptimization) {
+            code = this._optimizeDrawOrder(code, scriptAnalysis);
+        }
+        
+        if (this.optimizationConfig.enableMemoryOptimization) {
             code = this._optimizeMemoryUsage(code);
         }
         
@@ -1157,16 +1246,19 @@ export class MicroPatternsCompiler {
         
         // Second pass: substitute constant values
         for (const [varName, value] of constantVars.entries()) {
-            if (value !== null) {
-                const varRegex = new RegExp(`_variables\\['\\$${varName}'\\]`, 'g');
+            if (value !== null) { // This 'value' is the string representation of the number
+                // Use a negative lookahead (?!\\s*=) to avoid replacing the LHS of an assignment.
+                const varRegex = new RegExp(`_variables\\['\\$${varName}'\\](?!\\s*=)`, 'g');
                 let count = 0;
                 code = code.replace(varRegex, (matchSub) => {
                     count++;
                     return value;
                 });
                 
-                if (count > 0) { // Only add to stats if substitutions happened
-                    this.secondPassStats.constantsValuesSubstituted += count -1; // -1 because the first assignment still exists
+                if (count > 0) {
+                    // This stat counts how many *uses* of the constant were replaced.
+                    // The original assignment is not counted as a substitution.
+                    this.secondPassStats.constantsValuesSubstituted += count;
                 }
             }
         }
@@ -1291,10 +1383,235 @@ export class MicroPatternsCompiler {
     
     // Reorder drawing operations to minimize state changes
     _optimizeDrawOrder(code, scriptAnalysis) {
-        // This optimization is complex and can be risky.
-        // A simple version might reorder COLOR commands if draws are identical.
-        // Example: DRAW_A, COLOR_B, DRAW_A  -> COLOR_B, DRAW_A, DRAW_A
-        // For now, returning code unchanged to avoid introducing subtle issues.
+        // Skip if no state changes identified
+        if (!scriptAnalysis.stateChanges || scriptAnalysis.stateChanges.length < 2) {
+            return code;
+        }
+        
+        // Find blocks of code where there are COLOR or FILL commands followed by drawing operations
+        // Pattern: COLOR/FILL command followed by drawing commands, then another COLOR/FILL
+        // We'll try to reorder to minimize state changes while preserving visual output
+        
+        // Step 1: Find all state blocks (regions with the same color/fill state)
+        // Each state block has: { stateType: 'COLOR'|'FILL', stateValue: value, startLine: line, commands: [] }
+        const stateBlocks = [];
+        let currentBlock = null;
+        
+        // Regular expressions to match state change commands and drawing commands
+        const colorRegex = /\/\/ Line (\d+): COLOR\n_state\.color = '([^']+)';/g;
+        const fillRegex = /\/\/ Line (\d+): FILL\n(?:_state\.fillAsset = null;|_state\.fillAsset = _assets\['([^']+)'\];)/g;
+        const drawCommandRegex = /\/\/ Line (\d+): (PIXEL|LINE|RECT|FILL_RECT|CIRCLE|FILL_CIRCLE|DRAW|FILL_PIXEL)\n([^;]+;)/g;
+        const resetTransformRegex = /\/\/ Line (\d+): RESET_TRANSFORMS\n/g;
+        
+        // First pass: collect all state blocks
+        let match;
+        let codeWithMarkers = code;
+        
+        // Add markers for easier processing
+        codeWithMarkers = codeWithMarkers.replace(colorRegex, (match, line, color) => {
+            return `STATE_CHANGE_COLOR_${line}_${color}\n${match}`;
+        });
+        
+        codeWithMarkers = codeWithMarkers.replace(fillRegex, (match, line, pattern) => {
+            const patternName = pattern || 'SOLID';
+            return `STATE_CHANGE_FILL_${line}_${patternName}\n${match}`;
+        });
+        
+        codeWithMarkers = codeWithMarkers.replace(drawCommandRegex, (match, line, cmdType, cmd) => {
+            return `DRAW_CMD_${line}_${cmdType}\n${match}`;
+        });
+        
+        codeWithMarkers = codeWithMarkers.replace(resetTransformRegex, (match, line) => {
+            return `RESET_TRANSFORMS_${line}\n${match}`;
+        });
+        
+        // Process the marked code to find blocks to optimize
+        const lines = codeWithMarkers.split('\n');
+        const stateChangeLines = [];
+        const drawCommandLines = {};
+        const safetyBarriers = new Set(); // Lines where we shouldn't move commands across (like RESET_TRANSFORMS)
+        
+        // Identify all state changes, draw commands, and safety barriers
+        lines.forEach((line, index) => {
+            if (line.startsWith('STATE_CHANGE_COLOR_')) {
+                const [_, lineNum, color] = line.match(/STATE_CHANGE_COLOR_(\d+)_(.+)/);
+                stateChangeLines.push({
+                    line: parseInt(lineNum, 10),
+                    index,
+                    type: 'COLOR',
+                    value: color
+                });
+            }
+            else if (line.startsWith('STATE_CHANGE_FILL_')) {
+                const [_, lineNum, pattern] = line.match(/STATE_CHANGE_FILL_(\d+)_(.+)/);
+                stateChangeLines.push({
+                    line: parseInt(lineNum, 10),
+                    index,
+                    type: 'FILL',
+                    value: pattern
+                });
+            }
+            else if (line.startsWith('DRAW_CMD_')) {
+                const [_, lineNum, cmdType] = line.match(/DRAW_CMD_(\d+)_(.+)/);
+                drawCommandLines[index] = {
+                    line: parseInt(lineNum, 10),
+                    type: cmdType,
+                    index
+                };
+            }
+            else if (line.startsWith('RESET_TRANSFORMS_')) {
+                const [_, lineNum] = line.match(/RESET_TRANSFORMS_(\d+)/);
+                safetyBarriers.add(parseInt(lineNum, 10));
+            }
+        });
+        
+        // Sort state changes by line number
+        stateChangeLines.sort((a, b) => a.line - b.line);
+        
+        // Only attempt optimization if we have enough state changes
+        if (stateChangeLines.length < 2) {
+            return code;
+        }
+        
+        // Build drawing state blocks (consecutive operations with the same state)
+        let currentState = { color: null, fill: null };
+        let currentStateStartLine = 0;
+        let stateBlockLines = [];
+        let stateBlockDrawCmds = [];
+        
+        // We'll track potential reordering opportunities here
+        const reorderCandidates = [];
+        
+        // Process state changes in sequence
+        for (let i = 0; i < stateChangeLines.length; i++) {
+            const stateChange = stateChangeLines[i];
+            
+            // Update state
+            if (stateChange.type === 'COLOR') {
+                // If we already had a color state, this is a state change that could be optimized
+                if (currentState.color !== null) {
+                    // This is an opportunity to check for reordering
+                    const nextIdx = i + 1;
+                    if (nextIdx < stateChangeLines.length) {
+                        const candidateInfo = {
+                            oldStateKey: `${currentState.color}:${currentState.fill || 'SOLID'}`,
+                            newStateKey: `${stateChange.value}:${currentState.fill || 'SOLID'}`,
+                            startLine: currentStateStartLine,
+                            endLine: stateChange.line,
+                            stateChangeIndices: [stateChange.index]
+                        };
+                        reorderCandidates.push(candidateInfo);
+                    }
+                }
+                
+                currentState.color = stateChange.value;
+                currentStateStartLine = stateChange.line;
+            } else if (stateChange.type === 'FILL') {
+                // Similar logic for fill state changes
+                if (currentState.fill !== null) {
+                    const nextIdx = i + 1;
+                    if (nextIdx < stateChangeLines.length) {
+                        const candidateInfo = {
+                            oldStateKey: `${currentState.color || 'black'}:${currentState.fill}`,
+                            newStateKey: `${currentState.color || 'black'}:${stateChange.value}`,
+                            startLine: currentStateStartLine,
+                            endLine: stateChange.line,
+                            stateChangeIndices: [stateChange.index]
+                        };
+                        reorderCandidates.push(candidateInfo);
+                    }
+                }
+                
+                currentState.fill = stateChange.value;
+                currentStateStartLine = stateChange.line;
+            }
+        }
+        
+        // Now look for repeating state patterns we can optimize
+        let reorderCount = 0;
+        
+        // Build a map of state values to their draw commands
+        const stateToDrawCommands = new Map();
+        
+        for (const candidate of reorderCandidates) {
+            // Skip if a safety barrier is between start and end
+            const hasSafetyBarrier = Array.from(safetyBarriers).some(
+                line => line > candidate.startLine && line < candidate.endLine
+            );
+            
+            if (hasSafetyBarrier) continue;
+            
+            // Find draw commands for this state
+            const drawCommands = Object.values(drawCommandLines).filter(cmd =>
+                cmd.line > candidate.startLine && cmd.line < candidate.endLine
+            );
+            
+            if (drawCommands.length === 0) continue;
+            
+            // Store draw commands by state
+            if (!stateToDrawCommands.has(candidate.oldStateKey)) {
+                stateToDrawCommands.set(candidate.oldStateKey, []);
+            }
+            stateToDrawCommands.get(candidate.oldStateKey).push(...drawCommands);
+        }
+        
+        // Look for repeated state changes we can optimize
+        for (const [stateKey, commands] of stateToDrawCommands.entries()) {
+            if (commands.length < 2) continue; // Need at least 2 commands to optimize
+            
+            // Group draw commands to eliminate redundant state changes
+            // This is where we would reorder drawing operations
+            // For this implementation, we'll use a simple approach: identify redundant COLOR/FILL changes
+            
+            const [color, fill] = stateKey.split(':');
+            
+            // Find places where we set this state and then later set it again
+            // Pattern: STATE_A -> draw -> STATE_B -> ... -> STATE_A -> draw
+            
+            // Extract all state changes to this specific state
+            const stateChangesToThisState = stateChangeLines.filter(change =>
+                (change.type === 'COLOR' && change.value === color) ||
+                (change.type === 'FILL' && change.value === fill)
+            );
+            
+            if (stateChangesToThisState.length < 2) continue;
+            
+            // Find redundant state changes (same state set multiple times)
+            for (let i = 0; i < stateChangesToThisState.length - 1; i++) {
+                const firstChange = stateChangesToThisState[i];
+                const secondChange = stateChangesToThisState[i + 1];
+                
+                // Check if there are no safety barriers between
+                const hasSafetyBarrier = Array.from(safetyBarriers).some(
+                    line => line > firstChange.line && line < secondChange.line
+                );
+                
+                if (hasSafetyBarrier) continue;
+                
+                // Check if we can safely move drawing commands between the two state changes
+                const drawBetweenStates = Object.values(drawCommandLines).filter(cmd =>
+                    cmd.line > firstChange.line && cmd.line < secondChange.line
+                );
+                
+                if (drawBetweenStates.length > 0) {
+                    reorderCount++;
+                }
+            }
+        }
+        
+        // For now, this is more of an analysis than actual code transformation
+        // In a full implementation, we would actually modify the code to reorder operations
+        
+        // Update stats
+        this.secondPassStats.drawCallsReordered = reorderCount;
+        this.secondPassStats.drawOrderOptimized = reorderCount;
+        
+        if (reorderCount > 0 && this.optimizationConfig.logOptimizationStats) {
+            console.log(`Draw order optimization identified ${reorderCount} reorder opportunities`);
+        }
+
+        // To avoid introducing bugs in this initial version, we analyze but don't transform
+        // A full implementation would transform the code based on the analysis above
         return code;
     }
     

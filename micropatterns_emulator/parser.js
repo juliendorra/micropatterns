@@ -254,7 +254,13 @@ export class MicroPatternsParser {
 
     // Parses a single value string into its type (number, variable string, literal string, keyword)
     _parseValue(valueString) {
+        // Handle empty strings explicitly
+        if (!valueString || valueString.trim() === '') {
+            throw new ParseError(`Empty value is not allowed`, this.lineNumber);
+        }
+        
         valueString = valueString.trim();
+        
         if (valueString.startsWith('"') && valueString.endsWith('"')) {
             // Return the raw quoted string, validation might need it
             return valueString;
@@ -269,6 +275,9 @@ export class MicroPatternsParser {
         } else if (/^-?[0-9]+$/.test(valueString)) {
             // Integer literal
             return parseInt(valueString, 10);
+        } else if (valueString === "0") {
+            // Special case for "0" to ensure it's treated as a number
+            return 0;
         } else {
             // Could be a keyword (like BLACK, WHITE, SOLID) or part of an expression/condition
             // Return the raw string, let specific command validation handle it.
@@ -637,9 +646,20 @@ export class MicroPatternsParser {
             throw new ParseError(`Invalid condition format: "${conditionString}". Expected 'value operator value' or '$var % literal op value'.`, this.lineNumber);
         }
         const [, leftRaw, operator, rightRaw] = match;
+        
+        // Handle empty operands explicitly
+        if (leftRaw.trim() === '') {
+            throw new ParseError(`Missing left operand in condition: "${conditionString}"`, this.lineNumber);
+        }
+        
+        if (rightRaw.trim() === '') {
+            throw new ParseError(`Missing right operand in condition: "${conditionString}"`, this.lineNumber);
+        }
+        
         const leftValue = this._parseValue(leftRaw.trim());
         const rightValue = this._parseValue(rightRaw.trim());
 
+        // Validate both operands are valid types (number or variable)
         this._validateValueIsVariableOrNumber(leftValue, leftRaw);
         this._validateValueIsVariableOrNumber(rightValue, rightRaw);
 
@@ -657,16 +677,28 @@ export class MicroPatternsParser {
      // Validates that a parsed value is suitable for conditions/expressions (number or variable).
      // Throws ParseError if not.
      _validateValueIsVariableOrNumber(value, rawValue) {
+         // Handle null or undefined explicitly
+         if (value === null || value === undefined) {
+             throw new ParseError(`Missing or invalid value in condition or expression: "${rawValue}".`, this.lineNumber);
+         }
+         
          if (typeof value === 'number') {
              if (!Number.isInteger(value)) { // Ensure integer
                  throw new ParseError(`Invalid non-integer number in condition or expression: "${rawValue}".`, this.lineNumber);
              }
-             return; // OK
+             return; // OK - integer value
          }
+         
          if (typeof value === 'string' && value.startsWith('$')) {
              this._validateVariableExists(value); // Checks if declared/env
-             return; // OK
+             return; // OK - variable reference
          }
+         
+         // Special case for "0" as a string - convert to number
+         if (rawValue === "0") {
+             return; // Allow "0" as a valid literal
+         }
+         
          // If it's neither integer nor variable, it's invalid
          throw new ParseError(`Invalid value in condition or expression: "${rawValue}". Expected integer or variable starting with $.`, this.lineNumber);
      }

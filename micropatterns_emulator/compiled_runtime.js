@@ -133,10 +133,10 @@ export class MicroPatternsCompiledRunner {
                     enableSecondPassOptimization: "Second-Pass Optimization",
                     enableDrawCallBatching: "Draw Call Batching (Second Pass)",
                     enableDeadCodeElimination: "Dead Code Elimination (Second Pass)",
-                    enableConstantFolding: "Constant Folding (Second Pass)",
-                    enableTransformSequencing: "Transform Sequencing (Second Pass)",
-                    enableDrawOrderOptimization: "Draw Order Optimization (Second Pass)",
-                    enableMemoryOptimization: "Memory Optimization (Second Pass)"
+                        enableConstantFolding: "Constant Folding (Second Pass)",
+                        enableTransformSequencing: "Transform Sequencing (Second Pass)",
+                        enableDrawOrderOptimization: "Draw Order Optimization (Second Pass)",
+                        enableMemoryOptimization: "Memory Optimization (Second Pass)"
                 };
 
                 let hasEnabledOptimizations = false;
