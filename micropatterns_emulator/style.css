@@ -435,6 +435,7 @@ button.secondary:active {
     background-color: var(--error-color-bg);
     color: var(--error-color-fg);
     font-weight: 600;
+    max-height: min-content;
 }
 
 .controls-group {
@@ -729,7 +730,8 @@ button.secondary:active {
 .script-mgmt-row input[type="text"] {
     flex-grow: 1;
     min-width: 150px;
-    font-family: var(--font-family-monospace); /* Ensure monospace for User ID */
+    font-family: var(--font-family-monospace);
+    /* Ensure monospace for User ID */
 }
 
 #scriptMgmtStatus {
@@ -762,9 +764,17 @@ button.secondary:active {
 
 /* Highlight animation for script name input when needed */
 @keyframes highlight-pulse {
-    0% { box-shadow: 0 0 0 0 rgba(255, 235, 59, 0.7); }
-    70% { box-shadow: 0 0 0 10px rgba(255, 235, 59, 0); }
-    100% { box-shadow: 0 0 0 0 rgba(255, 235, 59, 0); }
+    0% {
+        box-shadow: 0 0 0 0 rgba(255, 235, 59, 0.7);
+    }
+
+    70% {
+        box-shadow: 0 0 0 10px rgba(255, 235, 59, 0);
+    }
+
+    100% {
+        box-shadow: 0 0 0 0 rgba(255, 235, 59, 0);
+    }
 }
 
 .highlight-input {
