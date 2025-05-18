@@ -327,6 +327,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             { id: 'enableDeadCodeElimination', configKey: 'enableDeadCodeElimination', label: 'Dead code elimination' },
             { id: 'enableConstantFolding', configKey: 'enableConstantFolding', label: 'Constant folding' },
             { id: 'enableTransformSequencing', configKey: 'enableTransformSequencing', label: 'Transform sequencing' },
+            { id: 'enableConstantFolding', configKey: 'enableConstantFolding', label: 'Constant folding' },
+            { id: 'enableTransformSequencing', configKey: 'enableTransformSequencing', label: 'Transform sequencing' },
             { id: 'enableDrawOrderOptimization', configKey: 'enableDrawOrderOptimization', label: 'Draw order optimization' },
             { id: 'enableMemoryOptimization', configKey: 'enableMemoryOptimization', label: 'Memory optimization' },
             { id: 'logOptimizationStats', configKey: 'logOptimizationStats', label: 'Log optimization stats' },
@@ -366,9 +368,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             'enableDrawCallBatching',
             'enableDeadCodeElimination',
             'enableConstantFolding',
-            'enableTransformSequencing'
-            // Note: enableDrawOrderOptimization and enableMemoryOptimization are second-pass
-            // but do not have dedicated checkboxes in the current index.html
+            'enableTransformSequencing',
+            'enableDrawOrderOptimization',
+            'enableMemoryOptimization'
         ];
 
         dependentOptionIds.forEach(id => {
