@@ -348,8 +348,48 @@ document.addEventListener('DOMContentLoaded', async () => {
                 console.warn(`Checkbox with ID '${cbConfig.id}' not found in HTML.`);
             }
         });
+
+        // After all checkboxes are processed and listeners attached,
+        // set the initial state of dependent second-pass options.
+        updateSecondPassDependentOptionsUI();
     }
     // --- End Optimization Settings UI Logic ---
+
+    // --- Update UI for Second-Pass Dependent Options ---
+    function updateSecondPassDependentOptionsUI() {
+        const secondPassCheckbox = document.getElementById('enableSecondPassOptimization');
+        if (!secondPassCheckbox) return;
+
+        const isSecondPassEnabled = secondPassCheckbox.checked;
+
+        const dependentOptionIds = [
+            'enableDrawCallBatching',
+            'enableDeadCodeElimination',
+            'enableConstantFolding',
+            'enableTransformSequencing'
+            // Note: enableDrawOrderOptimization and enableMemoryOptimization are second-pass
+            // but do not have dedicated checkboxes in the current index.html
+        ];
+
+        dependentOptionIds.forEach(id => {
+            const checkbox = document.getElementById(id);
+            if (checkbox) {
+                checkbox.disabled = !isSecondPassEnabled;
+            }
+        });
+    }
+
+    // Initial setup for dependent options and listener for the master checkbox
+    // This should be called after the main optimization UI setup
+    const enableSecondPassOptimizationCheckbox = document.getElementById('enableSecondPassOptimization');
+    if (enableSecondPassOptimizationCheckbox) {
+        enableSecondPassOptimizationCheckbox.addEventListener('change', updateSecondPassDependentOptionsUI);
+        // Call it once to set initial state
+        // Ensure this is called after all checkboxes are potentially set by setupOptimizationUI
+        // Deferring this call to the end of setupOptimizationUI or after it.
+    }
+    // --- End Update UI for Second-Pass Dependent Options ---
+
 
     // --- Autocompletion Logic ---
 

@@ -1106,3 +1106,24 @@ button#runButton span {
     border: 1px solid var(--border-color);
     font-weight: 700;
 }
+
+/* Styles for disabled optimization checkboxes */
+#optimizationSettings .setting-row label input[type="checkbox"]:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+    accent-color: var(--memphis-medium-gray); /* Grey out the check mark */
+}
+
+/* Style the label text when its checkbox is disabled */
+/* Uses :has() for modern browsers. Ensure compatibility or provide fallback if needed. */
+#optimizationSettings .setting-row label:has(input[type="checkbox"]:disabled) {
+    color: var(--memphis-medium-gray) !important; /* Grey out label text */
+    cursor: not-allowed;
+    /* Optionally, reduce intensity of Memphis styling for disabled labels */
+    /* For example, make background less prominent or remove shadow */
+    /* background-color: var(--bg-color) !important; */
+    /* text-shadow: none !important; */
+    /* box-shadow: none !important; */
+    /* transform: none !important; */
+    /* border-color: var(--border-color-light) !important; */
+}
