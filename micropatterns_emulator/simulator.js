@@ -104,15 +104,22 @@ document.addEventListener('DOMContentLoaded', async () => {
     
     // Compiler optimization configuration
     const optimizationConfig = {
-        enableTransformCaching: true,
-        enablePatternTileCaching: true,
-        enablePixelBatching: true,
-        enableLoopUnrolling: true,
-        loopUnrollThreshold: 8,
-        enableInvariantHoisting: true,
-        enableFastPathSelection: true,
-        logOptimizationStats: false,
-        logProfilingReport: false // Added: controls display of general profiling report
+        enableTransformCaching: true,      // UI is checked by default
+        enablePatternTileCaching: true,    // UI is checked by default
+        enablePixelBatching: true,         // UI is checked by default
+        enableLoopUnrolling: true,         // UI is checked by default
+        loopUnrollThreshold: 8,            // No UI, compiler default is used
+        enableInvariantHoisting: true,     // UI is checked by default
+        enableFastPathSelection: true,     // UI is checked by default (newly added)
+        enableSecondPassOptimization: true,// UI is checked by default
+        enableDrawCallBatching: true,      // UI is checked by default (second pass sub-option)
+        enableDeadCodeElimination: true,   // UI is checked by default (second pass sub-option)
+        enableConstantFolding: true,       // UI is checked by default (second pass sub-option)
+        enableTransformSequencing: true,   // UI is checked by default (second pass sub-option)
+        enableDrawOrderOptimization: true, // UI is checked by default (second pass sub-option)
+        enableMemoryOptimization: true,    // UI is checked by default (second pass sub-option)
+        logOptimizationStats: false,       // UI is unchecked by default
+        logProfilingReport: false          // UI is unchecked by default
     };
     // --- End Configuration ---
 
@@ -322,6 +329,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             { id: 'enablePixelBatching', configKey: 'enablePixelBatching', label: 'Pixel batching' },
             { id: 'enableLoopUnrolling', configKey: 'enableLoopUnrolling', label: 'Loop unrolling' },
             { id: 'enableInvariantHoisting', configKey: 'enableInvariantHoisting', label: 'Invariant hoisting' },
+            { id: 'enableFastPathSelection', configKey: 'enableFastPathSelection', label: 'Fast path selection' },
             { id: 'enableSecondPassOptimization', configKey: 'enableSecondPassOptimization', label: 'Second-pass optimization' },
             { id: 'enableDrawCallBatching', configKey: 'enableDrawCallBatching', label: 'Draw call batching' },
             { id: 'enableDeadCodeElimination', configKey: 'enableDeadCodeElimination', label: 'Dead code elimination' },
@@ -661,27 +669,38 @@ document.addEventListener('DOMContentLoaded', async () => {
         // --- Runtime Phase ---
         if (shouldUseCompiler) { // Use the directly read value from the checkbox
             console.log("Taking Compiler Path");
-            console.log("Current optimization settings:", JSON.stringify(optimizationConfig, null, 2));
             // --- Compiler Path ---
             // Module imports handle class availability. If imports fail, an error occurs before this.
             currentRuntimeInstance = null; // Reset runtime instance when using compiler path
             
-            // Get current optimization settings from checkboxes
-            const currentOptimizationConfig = {
-                enableTransformCaching: document.getElementById('enableTransformCaching')?.checked ?? optimizationConfig.enableTransformCaching,
-                enablePatternTileCaching: document.getElementById('enablePatternTileCaching')?.checked ?? optimizationConfig.enablePatternTileCaching,
-                enablePixelBatching: document.getElementById('enablePixelBatching')?.checked ?? optimizationConfig.enablePixelBatching,
-                enableLoopUnrolling: document.getElementById('enableLoopUnrolling')?.checked ?? optimizationConfig.enableLoopUnrolling,
-                loopUnrollThreshold: optimizationConfig.loopUnrollThreshold, // Keep the threshold from config
-                enableInvariantHoisting: document.getElementById('enableInvariantHoisting')?.checked ?? optimizationConfig.enableInvariantHoisting,
-                enableFastPathSelection: optimizationConfig.enableFastPathSelection, // Keep this from config
-                logOptimizationStats: document.getElementById('logOptimizationStats')?.checked ?? optimizationConfig.logOptimizationStats
-            };
+            // Adjust optimizationConfig for second-pass sub-options
+            // If the master "Second-Pass Optimization" is enabled, check individual sub-option checkboxes.
+            // If a sub-option checkbox is unchecked, force its config flag to false.
+            if (optimizationConfig.enableSecondPassOptimization) {
+                const secondPassSubOptions = [
+                    { id: 'enableDrawCallBatching', key: 'enableDrawCallBatching' },
+                    { id: 'enableDeadCodeElimination', key: 'enableDeadCodeElimination' },
+                    { id: 'enableConstantFolding', key: 'enableConstantFolding' },
+                    { id: 'enableTransformSequencing', key: 'enableTransformSequencing' },
+                    { id: 'enableDrawOrderOptimization', key: 'enableDrawOrderOptimization' },
+                    { id: 'enableMemoryOptimization', key: 'enableMemoryOptimization' }
+                ];
+
+                secondPassSubOptions.forEach(subOption => {
+                    const checkbox = document.getElementById(subOption.id);
+                    if (checkbox && !checkbox.checked) {
+                        optimizationConfig[subOption.key] = false;
+                        console.log(`Second-pass sub-option ${subOption.key} forced to false because its checkbox is unchecked.`);
+                    }
+                });
+            }
             
-            console.log("Using optimization settings from UI:", JSON.stringify(currentOptimizationConfig, null, 2));
+            // The module-level 'optimizationConfig' is updated by setupOptimizationUI() and reflects checkbox states.
+            // Pass this directly to the compiler.
+            console.log("Using optimization settings from UI (module-level optimizationConfig, potentially adjusted for second-pass sub-options):", JSON.stringify(optimizationConfig, null, 2));
             
-            // Create compiler with current optimization configuration from UI
-            currentCompilerInstance = new MicroPatternsCompiler(currentOptimizationConfig);
+            // Create compiler with the full optimization configuration from the UI-connected object
+            currentCompilerInstance = new MicroPatternsCompiler(optimizationConfig);
             let compiledOutput;
 
             if (profilingEnabled) wrapForProfiling(currentCompilerInstance, 'compile', profilingData);
