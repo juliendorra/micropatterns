@@ -69,6 +69,16 @@ export class MicroPatternsCompiledRunner {
         this.ctx.fillStyle = 'white';
         this.ctx.fillRect(0, 0, this.drawing.display_width, this.drawing.display_height);
         
+        // Only call resetPixelOccupancyMap if it exists
+        if (this.drawing && typeof this.drawing.resetPixelOccupancyMap === 'function') {
+            this.drawing.resetPixelOccupancyMap(); // Reset for overdraw optimization
+        }
+        
+        // Reset overdraw stats if the method exists
+        if (this.drawing && typeof this.drawing.resetOverdrawStats === 'function') {
+            this.drawing.resetOverdrawStats();
+        }
+        
         // Reset caches on new execution
         this.transformCache.clear();
         this.patternTileCache.clear();
@@ -76,7 +86,8 @@ export class MicroPatternsCompiledRunner {
         this.stats = {
             transformCacheHits: 0,
             patternCacheHits: 0,
-            batchedOperations: 0
+            batchedOperations: 0,
+            overdrawSkippedPixels: 0
         };
     }
 
@@ -308,19 +319,46 @@ export class MicroPatternsCompiledRunner {
                     enableSecondPassOptimization: "Second-Pass Optimization",
                     enableDrawCallBatching: "Draw Call Batching (Second Pass)",
                     enableDeadCodeElimination: "Dead Code Elimination (Second Pass)",
-                        enableConstantFolding: "Constant Folding (Second Pass)",
-                        enableTransformSequencing: "Transform Sequencing (Second Pass)",
-                        enableDrawOrderOptimization: "Draw Order Optimization (Second Pass)",
-                        enableMemoryOptimization: "Memory Optimization (Second Pass)"
+                    enableConstantFolding: "Constant Folding (Second Pass)",
+                    enableTransformSequencing: "Transform Sequencing (Second Pass)",
+                    enableDrawOrderOptimization: "Draw Order Optimization (Second Pass)",
+                    enableMemoryOptimization: "Memory Optimization (Second Pass)",
+                    enableOverdrawOptimization: "Overdraw Optimization (Pixel Occupancy)" // Already present from previous thought, ensure it's correct
                 };
 
+                const secondPassSubOptionKeys = new Set([
+                    "enableDrawCallBatching",
+                    "enableDeadCodeElimination",
+                    "enableConstantFolding",
+                    "enableTransformSequencing",
+                    "enableDrawOrderOptimization",
+                    "enableMemoryOptimization"
+                ]);
+
+                const isMasterSecondPassEnabled = compiledOutput.config.enableSecondPassOptimization === true;
                 let hasEnabledOptimizations = false;
-                for (const key in compiledOutput.config) {
-                    if (optimizationFlags[key] && compiledOutput.config[key] === true) {
-                        statsReport += `${optimizationFlags[key]}: Enabled\n`;
-                        hasEnabledOptimizations = true;
+
+                for (const key in optimizationFlags) { // Iterate over defined flags to maintain order
+                    if (compiledOutput.config.hasOwnProperty(key)) {
+                        let effectivelyEnabled = compiledOutput.config[key] === true;
+
+                        // If this key is for a second-pass sub-option AND the master second-pass is disabled,
+                        // then this sub-option is effectively disabled for logging.
+                        if (secondPassSubOptionKeys.has(key) && !isMasterSecondPassEnabled) {
+                            effectivelyEnabled = false;
+                        }
+
+                        if (effectivelyEnabled) {
+                            statsReport += `${optimizationFlags[key]}: Enabled\n`;
+                            hasEnabledOptimizations = true;
+                        }
+                        // To explicitly log "Disabled" status for all flags:
+                        // else {
+                        //     statsReport += `${optimizationFlags[key]}: Disabled\n`;
+                        // }
                     }
                 }
+
                 if (!hasEnabledOptimizations) {
                     statsReport += "None\n";
                 }
@@ -331,6 +369,13 @@ export class MicroPatternsCompiledRunner {
                 statsReport += `Transform Cache Hits: ${this.stats.transformCacheHits}\n`;
                 statsReport += `Pattern Cache Hits: ${this.stats.patternCacheHits}\n`;
                 statsReport += `Batched Operations: ${this.stats.batchedOperations}\n`;
+                
+                // Add overdraw optimization stats if available
+                if (this.drawing && typeof this.drawing.getOverdrawStats === 'function') {
+                    const overdrawStats = this.drawing.getOverdrawStats();
+                    this.stats.overdrawSkippedPixels = overdrawStats.skippedPixels;
+                    statsReport += `Overdraw Skipped Pixels: ${this.stats.overdrawSkippedPixels}\n`;
+                }
                 
                 // Add detailed execution phase breakdown
                 statsReport += "\n--- Execution Timing Breakdown ---\n";
@@ -436,23 +481,130 @@ export class MicroPatternsCompiledRunner {
         }
         
         const { operations, lastColor } = this.pixelBatchBuffer;
-        
-        // Optimization: For large batches (>1000 pixels), use ImageData for better performance
-        if (operations.length > 1000) {
+
+        // Determine if we should use ImageData (which handles overdraw internally if enabled)
+        // or the path/fill method (which needs explicit overdraw handling here if enabled).
+        const useImageData = operations.length > 1000; // Threshold for using ImageData
+
+        if (useImageData) {
+            // _executeBatchWithImageData already handles overdraw optimization if enabled via this.drawing.optimizationConfig.
             this._executeBatchWithImageData(operations, lastColor);
         } else {
+            // Use path/fill method for smaller batches.
             this.ctx.fillStyle = lastColor;
             
-            // Use a single path for all pixels of the same color
-            this.ctx.beginPath();
-            for (const op of operations) {
-                this.ctx.rect(Math.trunc(op.x), Math.trunc(op.y), 1, 1);
+            if (this.drawing.optimizationConfig && this.drawing.optimizationConfig.enableOverdrawOptimization && this.drawing.pixelOccupancyMap) {
+                // Overdraw is ON, and not using ImageData path.
+                
+                // Sort operations by y-coordinate for better row-based processing
+                operations.sort((a, b) => {
+                    const yDiff = Math.trunc(a.y) - Math.trunc(b.y);
+                    return yDiff !== 0 ? yDiff : Math.trunc(a.x) - Math.trunc(b.x);
+                });
+                
+                // Process operations in rows for better efficiency
+                let currentY = null;
+                let rowSpans = [];
+                let currentSpan = null;
+                
+                for (let i = 0; i < operations.length; i++) {
+                    const op = operations[i];
+                    const sx = Math.trunc(op.x);
+                    const sy = Math.trunc(op.y);
+                    
+                    // Skip out-of-bounds pixels
+                    if (sx < 0 || sx >= this.drawing.display_width || sy < 0 || sy >= this.drawing.display_height) {
+                        continue;
+                    }
+                    
+                    // Check if we're starting a new row
+                    if (currentY !== sy) {
+                        // Draw any pending spans from the previous row
+                        this._drawRowSpans(rowSpans);
+                        rowSpans = [];
+                        currentSpan = null;
+                        currentY = sy;
+                    }
+                    
+                    // Check occupancy map
+                    const mapIndex = sy * this.drawing.display_width + sx;
+                    if (this.drawing.pixelOccupancyMap[mapIndex] === 0) {
+                        // This pixel is not occupied
+                        
+                        // If we have an active span and this pixel is adjacent, extend it
+                        if (currentSpan && sx === currentSpan.endX + 1) {
+                            currentSpan.endX = sx;
+                        } else {
+                            // Start a new span
+                            if (currentSpan) {
+                                rowSpans.push(currentSpan);
+                            }
+                            currentSpan = { startX: sx, endX: sx, y: sy };
+                        }
+                        
+                        // Mark as occupied
+                        this.drawing.pixelOccupancyMap[mapIndex] = 1;
+                    } else {
+                        // This pixel is already occupied
+                        
+                        // Close any active span
+                        if (currentSpan) {
+                            rowSpans.push(currentSpan);
+                            currentSpan = null;
+                        }
+                        
+                        this.drawing.overdrawSkippedPixels++;
+                    }
+                }
+                
+                // Draw any remaining spans
+                if (currentSpan) {
+                    rowSpans.push(currentSpan);
+                }
+                this._drawRowSpans(rowSpans);
+                
+            } else {
+                // Overdraw is OFF, or not using occupancy map. Use standard batch fill.
+                this.ctx.beginPath();
+                for (const op of operations) {
+                    this.ctx.rect(Math.trunc(op.x), Math.trunc(op.y), 1, 1);
+                }
+                this.ctx.fill();
             }
-            this.ctx.fill();
         }
         
         // Reset the batch
         this.pixelBatchBuffer.operations = [];
+    }
+    
+    // Helper method to draw row spans efficiently
+    _drawRowSpans(rowSpans) {
+        if (rowSpans.length === 0) return;
+        
+        // For very small number of spans, just draw them individually
+        if (rowSpans.length <= 3) {
+            for (const span of rowSpans) {
+                this.ctx.fillRect(
+                    span.startX,
+                    span.y,
+                    span.endX - span.startX + 1,
+                    1
+                );
+            }
+            return;
+        }
+        
+        // For larger number of spans, use path/fill for better performance
+        this.ctx.beginPath();
+        for (const span of rowSpans) {
+            this.ctx.rect(
+                span.startX,
+                span.y,
+                span.endX - span.startX + 1,
+                1
+            );
+        }
+        this.ctx.fill();
     }
     
     // Optimized batch execution using ImageData
@@ -509,17 +661,48 @@ export class MicroPatternsCompiledRunner {
         
         // Set only the pixels we need
         for (const op of operations) {
-            const x = Math.trunc(op.x) - minX;
-            const y = Math.trunc(op.y) - minY;
+            const screenX = Math.trunc(op.x);
+            const screenY = Math.trunc(op.y);
+
+            // Relative coordinates for imageData
+            const x_rel = screenX - minX;
+            const y_rel = screenY - minY;
             
-            // Skip out-of-bounds pixels
-            if (x < 0 || x >= width || y < 0 || y >= height) continue;
+            // Skip out-of-bounds pixels for imageData
+            if (x_rel < 0 || x_rel >= width || y_rel < 0 || y_rel >= height) continue;
             
-            const index = (y * width + x) * 4;
-            data[index] = r;
-            data[index + 1] = g;
-            data[index + 2] = b;
-            data[index + 3] = a;
+            const dataIndex = (y_rel * width + x_rel) * 4;
+
+            if (this.drawing.optimizationConfig && this.drawing.optimizationConfig.enableOverdrawOptimization && this.drawing.pixelOccupancyMap) {
+                // Absolute screen coordinates for occupancy map
+                if (screenX >= 0 && screenX < this.drawing.display_width && screenY >= 0 && screenY < this.drawing.display_height) {
+                    const occupancyMapIndex = screenY * this.drawing.display_width + screenX;
+                    const existingValue = this.drawing.pixelOccupancyMap[occupancyMapIndex];
+                    const newValue = color === 'black' ? 1 : 2; // Match _colorToOccupancyValue logic
+                    
+                    if (existingValue === 0 || existingValue !== newValue) {
+                        // Pixel is unoccupied or different color - draw it
+                        data[dataIndex] = r;
+                        data[dataIndex + 1] = g;
+                        data[dataIndex + 2] = b;
+                        data[dataIndex + 3] = a;
+                        this.drawing.pixelOccupancyMap[occupancyMapIndex] = newValue;
+                    } else {
+                        // Already painted with same color, make transparent
+                        data[dataIndex + 3] = 0;
+                        this.drawing.overdrawSkippedPixels++; // Count skipped pixel
+                    }
+                } else {
+                     // Outside canvas bounds for occupancy map, make transparent in imageData
+                    data[dataIndex + 3] = 0;
+                }
+            } else {
+                // Original logic without overdraw optimization
+                data[dataIndex] = r;
+                data[dataIndex + 1] = g;
+                data[dataIndex + 2] = b;
+                data[dataIndex + 3] = a;
+            }
         }
         
         // Draw the ImageData

@@ -104,6 +104,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     
     // Compiler optimization configuration
     const optimizationConfig = {
+        enableOverdrawOptimization: false, // UI is unchecked by default
         enableTransformCaching: true,      // UI is checked by default
         enablePatternTileCaching: true,    // UI is checked by default
         enablePixelBatching: true,         // UI is checked by default
@@ -324,6 +325,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
 
         const checkboxesConfig = [
+            { id: 'enableOverdrawOptimization', configKey: 'enableOverdrawOptimization', label: 'Overdraw optimization' }, // Added
             { id: 'enableTransformCaching', configKey: 'enableTransformCaching', label: 'Transform caching' },
             { id: 'enablePatternTileCaching', configKey: 'enablePatternTileCaching', label: 'Pattern tile caching' },
             { id: 'enablePixelBatching', configKey: 'enablePixelBatching', label: 'Pixel batching' },

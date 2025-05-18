@@ -23,6 +23,7 @@ export class MicroPatternsCompiler {
             enableTransformSequencing: true,    // Combine transformation sequences
             enableDrawOrderOptimization: true,  // Reorder operations to minimize state changes
             enableMemoryOptimization: true,     // Reduce memory allocations
+            enableOverdrawOptimization: false,  // Avoid redrawing already painted pixels (default false)
             logOptimizationStats: false,        // Log optimization statistics
             ...optimizationConfig               // Override with user-provided config
         };
@@ -767,15 +768,22 @@ export class MicroPatternsCompiler {
                 js += `\n_state.scale = (${factor} >= 1) ? ${factor} : 1.0;`;
                 break;
             case 'PIXEL':
-                if (this.optimizationConfig.enablePixelBatching) {
-                    js += `\n// Use pixel batching`;
-                    js += `\nconst _px_${command.line} = ${this._generateValueCode(command.params.X, command.line)};`;
-                    js += `\nconst _py_${command.line} = ${this._generateValueCode(command.params.Y, command.line)};`;
-                    js += `\nconst _transformedPt_${command.line} = _drawing.transformPoint(_px_${command.line}, _py_${command.line}, _state);`;
-                    js += `\n_optimization.batchPixelOperations(_transformedPt_${command.line}.x, _transformedPt_${command.line}.y, _state.color);`;
-                } else {
-                    js += `\n_drawing.drawPixel(${this._generateValueCode(command.params.X, command.line)}, ${this._generateValueCode(command.params.Y, command.line)}, _state);`;
-                }
+                // If overdraw optimization is enabled, bypass pixel batching and use drawPixel directly
+                // to ensure per-pixel occupancy checks handled by _drawing.setPixel.
+                // _drawing.optimizationConfig is set by the runner from compiledOutput.config.
+                js += `\nif (_drawing.optimizationConfig && _drawing.optimizationConfig.enableOverdrawOptimization) {`;
+                js += `\n  _drawing.drawPixel(${this._generateValueCode(command.params.X, command.line)}, ${this._generateValueCode(command.params.Y, command.line)}, _state);`;
+                // Check _drawing.optimizationConfig for batching, as compiler's this.optimizationConfig might differ from runtime.
+                js += `\n} else if (_drawing.optimizationConfig && _drawing.optimizationConfig.enablePixelBatching && _optimization && _optimization.batchPixelOperations) {`;
+                js += `\n  // Use pixel batching via _optimization object provided by runner`;
+                js += `\n  const _px_${command.line} = ${this._generateValueCode(command.params.X, command.line)};`;
+                js += `\n  const _py_${command.line} = ${this._generateValueCode(command.params.Y, command.line)};`;
+                js += `\n  const _transformedPt_${command.line} = _drawing.transformPoint(_px_${command.line}, _py_${command.line}, _state);`;
+                js += `\n  _optimization.batchPixelOperations(_transformedPt_${command.line}.x, _transformedPt_${command.line}.y, _state.color);`;
+                js += `\n} else {`;
+                js += `\n  // Fallback to direct drawPixel if batching is not enabled or not available`;
+                js += `\n  _drawing.drawPixel(${this._generateValueCode(command.params.X, command.line)}, ${this._generateValueCode(command.params.Y, command.line)}, _state);`;
+                js += `\n}`;
                 break;
             case 'LINE':
                 js += `\n_drawing.drawLine(${this._generateValueCode(command.params.X1, command.line)}, ${this._generateValueCode(command.params.Y1, command.line)}, ${this._generateValueCode(command.params.X2, command.line)}, ${this._generateValueCode(command.params.Y2, command.line)}, _state);`;
