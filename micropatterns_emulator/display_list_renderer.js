@@ -117,149 +117,167 @@ export class DisplayListRenderer {
 
     _calculateScreenBounds(item) {
         const { logicalParams, transformMatrix, scaleFactor, type } = item;
-        let minX, minY, maxX, maxY;
-        let isOffScreenResult;
-
+        let unclippedVisualMinX, unclippedVisualMinY, unclippedVisualMaxX, unclippedVisualMaxY;
+        let s_center_for_circle; // To store s_center for FILL_CIRCLE marking bounds adjustment
+        let effective_radius_for_circle; // To store effective_screen_radius for FILL_CIRCLE
+    
         // Local helper for transforming points for non-asset primitives
-        // Apply transform first, then scale for primitives
         const transformPrimitivePoint = (lx, ly) => {
-            // First transform the point using the matrix
-            const transformedPoint = transformMatrix.transformPoint({ x: lx, y: ly });
-            
-            // For primitives, we apply scale to the final position
-            // This matches the behavior in the interpreter and compiler
-            if (type !== 'DRAW' && type !== 'DRAW_ASSET') {
-                return {
-                    x: transformedPoint.x,
-                    y: transformedPoint.y
-                };
-            } else {
-                return transformedPoint;
-            }
+            const scaledX = lx * scaleFactor;
+            const scaledY = ly * scaleFactor;
+            return transformMatrix.transformPoint({ x: scaledX, y: scaledY });
         };
-
+    
         if (type === 'DRAW' || type === 'DRAW_ASSET') {
             const assetName = logicalParams.NAME;
             const asset = this.assets[assetName];
             if (!asset || asset.width <= 0 || asset.height <= 0) {
-                return { minX: 0, minY: 0, maxX: 0, maxY: 0, isOffScreen: true };
+                return { minX: 0, minY: 0, maxX: 0, maxY: 0, isOffScreen: true, markingBounds: { minX: 0, minY: 0, maxX: 0, maxY: 0 } };
             }
-            
-            // For DRAW commands, we need to handle scale differently
-            // Scale affects the asset size, not the position
-            const assetBounds = this.drawing.getAssetScreenBounds(
-                logicalParams.X,
-                logicalParams.Y,
-                asset,
-                transformMatrix,
-                scaleFactor
-            );
-            
-            minX = assetBounds.minX;
-            minY = assetBounds.minY;
-            maxX = assetBounds.maxX;
-            maxY = assetBounds.maxY;
-            
-            // Important: Only consider it off-screen if it's completely outside the canvas
-            isOffScreenResult = (maxX <= 0 || minX >= this.ctx.canvas.width ||
-                               maxY <= 0 || minY >= this.ctx.canvas.height);
+            const assetBounds = this.drawing.getAssetScreenBounds(logicalParams.X, logicalParams.Y, asset, transformMatrix, scaleFactor);
+            unclippedVisualMinX = assetBounds.minX;
+            unclippedVisualMinY = assetBounds.minY;
+            unclippedVisualMaxX = assetBounds.maxX;
+            unclippedVisualMaxY = assetBounds.maxY;
         } else {
-            // Calculate unclipped bounds for other primitive types
             if (type === 'FILL_RECT' || type === 'RECT') {
-                const w = logicalParams.WIDTH * scaleFactor;
-                const h = logicalParams.HEIGHT * scaleFactor;
-                if (w <= 0 || h <= 0) return { minX: 0, minY: 0, maxX: 0, maxY: 0, isOffScreen: true };
-
-                // Transform the corners
+                if (logicalParams.WIDTH <= 0 || logicalParams.HEIGHT <= 0) {
+                     return { minX: 0, minY: 0, maxX: 0, maxY: 0, isOffScreen: true, markingBounds: { minX: 0, minY: 0, maxX: 0, maxY: 0 } };
+                }
                 const p1 = transformPrimitivePoint(logicalParams.X, logicalParams.Y);
                 const p2 = transformPrimitivePoint(logicalParams.X + logicalParams.WIDTH, logicalParams.Y);
                 const p3 = transformPrimitivePoint(logicalParams.X + logicalParams.WIDTH, logicalParams.Y + logicalParams.HEIGHT);
                 const p4 = transformPrimitivePoint(logicalParams.X, logicalParams.Y + logicalParams.HEIGHT);
-
-                // Apply scale to the size
-                const scaledWidth = logicalParams.WIDTH * scaleFactor;
-                const scaledHeight = logicalParams.HEIGHT * scaleFactor;
-                
-                // Calculate the bounding box
-                minX = Math.min(p1.x, p2.x, p3.x, p4.x);
-                minY = Math.min(p1.y, p2.y, p3.y, p4.y);
-                maxX = Math.max(p1.x, p2.x, p3.x, p4.x);
-                maxY = Math.max(p1.y, p2.y, p3.y, p4.y);
-                
-                // Adjust for scale
-                if (scaleFactor > 1) {
-                    const centerX = (minX + maxX) / 2;
-                    const centerY = (minY + maxY) / 2;
-                    const width = maxX - minX;
-                    const height = maxY - minY;
-                    
-                    minX = centerX - (width * scaleFactor) / 2;
-                    minY = centerY - (height * scaleFactor) / 2;
-                    maxX = centerX + (width * scaleFactor) / 2;
-                    maxY = centerY + (height * scaleFactor) / 2;
-                }
-            } else if (type === 'FILL_CIRCLE' || type === 'CIRCLE') {
-                const center = transformPrimitivePoint(logicalParams.X, logicalParams.Y);
-                const r = logicalParams.RADIUS * scaleFactor;
-                if (r <= 0) return { minX: 0, minY: 0, maxX: 0, maxY: 0, isOffScreen: true };
-
-                // Apply scale to the radius
-                const screenRadius = r;
-
-                minX = center.x - screenRadius;
-                minY = center.y - screenRadius;
-                maxX = center.x + screenRadius;
-                maxY = center.y + screenRadius;
+                unclippedVisualMinX = Math.min(p1.x, p2.x, p3.x, p4.x);
+                unclippedVisualMinY = Math.min(p1.y, p2.y, p3.y, p4.y);
+                unclippedVisualMaxX = Math.max(p1.x, p2.x, p3.x, p4.x);
+                unclippedVisualMaxY = Math.max(p1.y, p2.y, p3.y, p4.y);
             } else if (type === 'LINE') {
                 const p1 = transformPrimitivePoint(logicalParams.X1, logicalParams.Y1);
                 const p2 = transformPrimitivePoint(logicalParams.X2, logicalParams.Y2);
-                
-                // Calculate the bounding box
-                minX = Math.min(p1.x, p2.x);
-                minY = Math.min(p1.y, p2.y);
-                maxX = Math.max(p1.x, p2.x);
-                maxY = Math.max(p1.y, p2.y);
-                
-                // Adjust for scale
-                if (scaleFactor > 1) {
-                    const centerX = (minX + maxX) / 2;
-                    const centerY = (minY + maxY) / 2;
-                    const width = maxX - minX;
-                    const height = maxY - minY;
-                    
-                    minX = centerX - (width * scaleFactor) / 2;
-                    minY = centerY - (height * scaleFactor) / 2;
-                    maxX = centerX + (width * scaleFactor) / 2;
-                    maxY = centerY + (height * scaleFactor) / 2;
-                }
+                unclippedVisualMinX = Math.min(p1.x, p2.x);
+                unclippedVisualMinY = Math.min(p1.y, p2.y);
+                unclippedVisualMaxX = Math.max(p1.x, p2.x);
+                unclippedVisualMaxY = Math.max(p1.y, p2.y);
             } else if (type === 'PIXEL' || type === 'FILL_PIXEL') {
                 const p = transformPrimitivePoint(logicalParams.X, logicalParams.Y);
-                
-                // For a pixel, the size is determined by the scale factor
                 const pixelSize = Math.max(1, scaleFactor);
-                
-                minX = p.x;
-                minY = p.y;
-                maxX = p.x + pixelSize;
-                maxY = p.y + pixelSize;
+                unclippedVisualMinX = p.x;
+                unclippedVisualMinY = p.y;
+                unclippedVisualMaxX = p.x + pixelSize;
+                unclippedVisualMaxY = p.y + pixelSize;
+            } else if (type === 'CIRCLE' || type === 'FILL_CIRCLE') {
+                if (logicalParams.RADIUS <= 0) {
+                    return { minX: 0, minY: 0, maxX: 0, maxY: 0, isOffScreen: true, markingBounds: { minX: 0, minY: 0, maxX: 0, maxY: 0 } };
+                }
+                s_center_for_circle = transformPrimitivePoint(logicalParams.X, logicalParams.Y);
+                const s_edge_on_x_axis = transformPrimitivePoint(logicalParams.X + logicalParams.RADIUS, logicalParams.Y);
+                const s_edge_on_y_axis = transformPrimitivePoint(logicalParams.X, logicalParams.Y + logicalParams.RADIUS);
+                const radius_projection_x = Math.hypot(s_edge_on_x_axis.x - s_center_for_circle.x, s_edge_on_x_axis.y - s_center_for_circle.y);
+                const radius_projection_y = Math.hypot(s_edge_on_y_axis.x - s_center_for_circle.x, s_edge_on_y_axis.y - s_center_for_circle.y);
+                effective_radius_for_circle = Math.max(radius_projection_x, radius_projection_y, 1.0);
+                unclippedVisualMinX = s_center_for_circle.x - effective_radius_for_circle;
+                unclippedVisualMaxX = s_center_for_circle.x + effective_radius_for_circle;
+                unclippedVisualMinY = s_center_for_circle.y - effective_radius_for_circle;
+                unclippedVisualMaxY = s_center_for_circle.y + effective_radius_for_circle;
             } else {
-                return { minX: 0, minY: 0, maxX: 0, maxY: 0, isOffScreen: true }; // Unknown type
+                return { minX: 0, minY: 0, maxX: 0, maxY: 0, isOffScreen: true, markingBounds: { minX: 0, minY: 0, maxX: 0, maxY: 0 } }; // Unknown type
             }
-
-            // For non-DRAW_ASSET types, determine isOffScreen based on their calculated (unclipped) bounds
-            // Important: Only consider it off-screen if it's completely outside the canvas
-            isOffScreenResult = (maxX <= 0 || minX >= this.ctx.canvas.width ||
-                               maxY <= 0 || minY >= this.ctx.canvas.height);
-            
-            // Then, clip these bounds to the canvas for rendering purposes
-            minX = Math.max(0, minX);
-            minY = Math.max(0, minY);
-            maxX = Math.min(this.ctx.canvas.width, maxX);
-            maxY = Math.min(this.ctx.canvas.height, maxY);
         }
-
-        const finalMinX = Math.trunc(minX);
-        const finalMinY = Math.trunc(minY);
+    
+        let isOffScreenResult = (unclippedVisualMaxX <= 0 || unclippedVisualMinX >= this.ctx.canvas.width ||
+                                 unclippedVisualMaxY <= 0 || unclippedVisualMinY >= this.ctx.canvas.height);
+    
+        // Calculate final visual bounds (clipped and integerized)
+        const finalVisualMinX = Math.trunc(Math.max(0, unclippedVisualMinX));
+        const finalVisualMinY = Math.trunc(Math.max(0, unclippedVisualMinY));
+        const finalVisualMaxX = Math.ceil(Math.min(this.ctx.canvas.width, unclippedVisualMaxX));
+        const finalVisualMaxY = Math.ceil(Math.min(this.ctx.canvas.height, unclippedVisualMaxY));
+    
+        if (finalVisualMinX >= finalVisualMaxX || finalVisualMinY >= finalVisualMaxY) {
+            isOffScreenResult = true;
+        }
+        
+        // Initialize unclipped marking bounds from unclipped visual bounds
+        let unclippedMarkingMinX = unclippedVisualMinX;
+        let unclippedMarkingMinY = unclippedVisualMinY;
+        let unclippedMarkingMaxX = unclippedVisualMaxX;
+        let unclippedMarkingMaxY = unclippedVisualMaxY;
+    
+        if (type === 'FILL_CIRCLE' && item.isOpaque && s_center_for_circle && effective_radius_for_circle > 0) {
+            const markingRadiusScaleFactor = Math.sqrt(Math.PI / 4); // approx 0.886
+            const markingRadius = effective_radius_for_circle * markingRadiusScaleFactor;
+            unclippedMarkingMinX = s_center_for_circle.x - markingRadius;
+            unclippedMarkingMaxX = s_center_for_circle.x + markingRadius;
+            unclippedMarkingMinY = s_center_for_circle.y - markingRadius;
+            unclippedMarkingMaxY = s_center_for_circle.y + markingRadius;
+        } else if (type === 'FILL_RECT' && item.isOpaque) {
+            const lw = logicalParams.WIDTH;
+            const lh = logicalParams.HEIGHT;
+    
+            if (lw > 0 && lh > 0) {
+                const currentItemScaleFactor = item.scaleFactor; // item.scaleFactor is the one applied before matrix
+                const matrix = item.transformMatrix;
+                
+                // Determinant of the 2x2 part of the matrix (m11, m12, m21, m22)
+                // This gives the area scaling factor of the matrix itself.
+                const matrixDeterminant = Math.abs(matrix.m11 * matrix.m22 - matrix.m12 * matrix.m21);
+                
+                // Actual screen area of the parallelogram
+                const actualScreenArea = lw * lh * currentItemScaleFactor * currentItemScaleFactor * matrixDeterminant;
+    
+                const visualAABBWidth = unclippedVisualMaxX - unclippedVisualMinX;
+                const visualAABBHeight = unclippedVisualMaxY - unclippedVisualMinY;
+                const visualAABBArea = visualAABBWidth * visualAABBHeight;
+    
+                if (actualScreenArea > 0 && visualAABBArea > 0) {
+                    const fillFactor = actualScreenArea / visualAABBArea;
+                    // Ensure fillFactor is not > 1 (due to float precision) and is positive
+                    const effectiveFillFactor = Math.max(0, Math.min(1.0, fillFactor));
+    
+                    // Only adjust if fill factor is low enough to matter (e.g., less than 0.85)
+                    if (effectiveFillFactor < 0.85 && effectiveFillFactor > 0) {
+                        const scaleDownFactor = Math.sqrt(effectiveFillFactor);
+                        
+                        const markingWidth = visualAABBWidth * scaleDownFactor;
+                        const markingHeight = visualAABBHeight * scaleDownFactor;
+    
+                        const centerX = (unclippedVisualMinX + unclippedVisualMaxX) / 2;
+                        const centerY = (unclippedVisualMinY + unclippedVisualMaxY) / 2;
+    
+                        unclippedMarkingMinX = centerX - markingWidth / 2;
+                        unclippedMarkingMaxX = centerX + markingWidth / 2;
+                        unclippedMarkingMinY = centerY - markingHeight / 2;
+                        unclippedMarkingMaxY = centerY + markingHeight / 2;
+                    }
+                    // Else, if fillFactor is high, marking bounds remain same as visual bounds
+                }
+                // Else (area is zero), marking bounds remain same as visual bounds
+            }
+            // Else (lw or lh is zero), marking bounds remain same as visual bounds
+        }
+    
+    
+        // Calculate final marking bounds (clipped and integerized)
+        const finalMarkingMinX = Math.trunc(Math.max(0, unclippedMarkingMinX));
+        const finalMarkingMinY = Math.trunc(Math.max(0, unclippedMarkingMinY));
+        const finalMarkingMaxX = Math.ceil(Math.min(this.ctx.canvas.width, unclippedMarkingMaxX));
+        const finalMarkingMaxY = Math.ceil(Math.min(this.ctx.canvas.height, unclippedMarkingMaxY));
+    
+        return {
+            minX: finalVisualMinX,
+            minY: finalVisualMinY,
+            maxX: finalVisualMaxX,
+            maxY: finalVisualMaxY,
+            isOffScreen: isOffScreenResult,
+            markingBounds: {
+                minX: finalMarkingMinX,
+                minY: finalMarkingMinY,
+                maxX: finalMarkingMaxX,
+                maxY: finalMarkingMaxY,
+            }
+        };
+    }
         const finalMaxX = Math.ceil(maxX);
         const finalMaxY = Math.ceil(maxY);
         

@@ -603,60 +603,83 @@ export class MicroPatternsDrawing {
                 this.ctx.rect(pixel.x, pixel.y, 1, 1);
             }
             this.ctx.fill();
-        this.ctx.putImageData(imageData, min_sx, min_sy);
-}
-        
-        for (let y = 0; y < height; y++) {
-            for (let x = 0; x < width; x++) {
-                const sx = min_sx + x;
-                const sy = min_sy + y;
-                
-                // Check pixel locking
-                if (this.pixelOccupationMap) {
-                    if (this.isPixelOccupied(sx, sy)) {
-                        this.overdrawSkippedPixels++;
-                        // Make this pixel transparent in the ImageData
-                        const idx = (y * width + x) * 4;
-                        data[idx + 3] = 0; // Transparent
-                        continue; // Skip to next pixel
-                    }
-                }
-                
-                const screen_pixel_center_x = sx + 0.5;
-                const screen_pixel_center_y = sy + 0.5;
-                
-                const scaled_logical_pixel = invMatrix.transformPoint(
-                    { x: screen_pixel_center_x, y: screen_pixel_center_y }
-                );
-                
-                const inBounds = scaled_logical_pixel.x >= sl_rect_x &&
-                                 scaled_logical_pixel.x < (sl_rect_x + sl_rect_w) &&
-                                 scaled_logical_pixel.y >= sl_rect_y &&
-                                 scaled_logical_pixel.y < (sl_rect_y + sl_rect_h);
-                
-                if (inBounds) {
-                    const fillColor = this._getFillAssetPixelColor(
-                        screen_pixel_center_x, screen_pixel_center_y, itemState
-                    );
-                    
-                    // Mark pixel as occupied
+        // End of batchPixelOperations
+    }
+    }
+
+    // Optimized rectangle filling using ImageData
+    _fillRectWithImageData(lx, ly, lw, lh, itemState, min_sx_bound, min_sy_bound, max_sx_bound, max_sy_bound) {
+        const currentTransformMatrix = itemState.transformMatrix || itemState.matrix;
+        const currentScaleFactor = (itemState.scaleFactor !== undefined ? itemState.scaleFactor : itemState.scale);
+        const invMatrix = itemState.inverseMatrix || (currentTransformMatrix ? currentTransformMatrix.inverse() : new DOMMatrix());
+
+        // Calculate dimensions for ImageData
+        const imgDataWidth = max_sx_bound - min_sx_bound;
+        const imgDataHeight = max_sy_bound - min_sy_bound;
+
+        if (imgDataWidth <= 0 || imgDataHeight <= 0) return;
+
+        const imageData = this.ctx.createImageData(imgDataWidth, imgDataHeight);
+        const data = imageData.data;
+
+        // Define the rectangle in scaled logical coordinates
+        const sl_rect_x = lx * currentScaleFactor;
+        const sl_rect_y = ly * currentScaleFactor;
+        const sl_rect_w = lw * currentScaleFactor;
+        const sl_rect_h = lh * currentScaleFactor;
+
+        for (let y_offset = 0; y_offset < imgDataHeight; ++y_offset) {
+            for (let x_offset = 0; x_offset < imgDataWidth; ++x_offset) {
+                const sx_iter = min_sx_bound + x_offset;
+                const sy_iter = min_sy_bound + y_offset;
+
+                const screen_pixel_center_x = sx_iter + 0.5;
+                const screen_pixel_center_y = sy_iter + 0.5;
+
+                const scaled_logical_pixel = invMatrix.transformPoint({ x: screen_pixel_center_x, y: screen_pixel_center_y });
+
+                if (scaled_logical_pixel.x >= sl_rect_x && scaled_logical_pixel.x < (sl_rect_x + sl_rect_w) &&
+                    scaled_logical_pixel.y >= sl_rect_y && scaled_logical_pixel.y < (sl_rect_y + sl_rect_h)) {
+
                     if (this.pixelOccupationMap) {
-                        this.markPixelOccupied(sx, sy, fillColor);
+                        if (this.isPixelOccupied(sx_iter, sy_iter)) {
+                            this.overdrawSkippedPixels++;
+                            continue;
+                        }
                     }
+
+                    const fillColor = this._getFillAssetPixelColor(screen_pixel_center_x, screen_pixel_center_y, itemState);
                     
-                    const idx = (y * width + x) * 4;
-                    if (fillColor === 'black') {
-                        data[idx] = blackR; data[idx + 1] = blackG; data[idx + 2] = blackB; data[idx + 3] = 255;
-                    } else { // white
-                        data[idx] = whiteR; data[idx + 1] = whiteG; data[idx + 2] = whiteB; data[idx + 3] = 255;
+                    if (this.pixelOccupationMap) {
+                        this.markPixelOccupied(sx_iter, sy_iter, fillColor);
                     }
-                } else {
-                    const idx = (y * width + x) * 4;
-                    data[idx + 3] = 0; // Transparent
+
+                    let r, g, b, a_val;
+                    if (fillColor === 'black') {
+                        r = 0; g = 0; b = 0; a_val = 255;
+                    } else if (fillColor === 'white') {
+                        r = 255; g = 255; b = 255; a_val = 255;
+                    } else {
+                        // Fallback for other colors if ever supported, or handle error
+                        // For now, assume black or white
+                        const tempCanvas = document.createElement('canvas');
+                        const tempCtx = tempCanvas.getContext('2d');
+                        tempCtx.fillStyle = fillColor;
+                        r = parseInt(tempCtx.fillStyle.slice(1, 3), 16);
+                        g = parseInt(tempCtx.fillStyle.slice(3, 5), 16);
+                        b = parseInt(tempCtx.fillStyle.slice(5, 7), 16);
+                        a_val = 255;
+                    }
+
+                    const dataIndex = (y_offset * imgDataWidth + x_offset) * 4;
+                    data[dataIndex] = r;
+                    data[dataIndex + 1] = g;
+                    data[dataIndex + 2] = b;
+                    data[dataIndex + 3] = a_val;
                 }
             }
         }
-        this.ctx.putImageData(imageData, min_sx, min_sy);
+        this.ctx.putImageData(imageData, min_sx_bound, min_sy_bound);
     }
 
     drawPixel(x, y, itemState) {

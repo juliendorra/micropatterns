@@ -254,24 +254,49 @@ export class DisplayListGenerator {
             }
         }
     }
-    
-    _isItemOpaque(itemType, fillAsset) {
-        // Heuristic: solid fills are opaque. Patterned fills might be if they don't have '0's
-        // or if '0's are also drawn opaquely (which depends on COLOR state for FILL).
-        // For simplicity, treat all FILL_RECT/FILL_CIRCLE as opaque for their AABB.
-        // DRAW is generally not opaque unless the pattern is a solid block.
-        if (itemType === 'FILL_RECT' || itemType === 'FILL_CIRCLE' || itemType === 'FILL_PIXEL') {
-            if (!fillAsset) return true; // Solid fill is opaque
-            // A pattern fill is opaque if its '0's are drawn as the opposite color (e.g. black for COLOR WHITE)
-            // This is complex. A simpler heuristic: if it's a fill command, assume its bounds are opaquely filled.
-            return true;
-        }
-        if (itemType === 'PIXEL') return true; // Single pixel is opaque
-        // DRAW_ASSET is opaque only if the asset itself has no '0's (transparent parts)
-        // and it's drawn with a solid color. This is harder to determine here.
-        // Default to false for DRAW_ASSET unless we have more info.
-        return false;
+
+_isAssetDataFullyOpaque(assetDefinition) {
+    if (!assetDefinition || !assetDefinition.data) {
+        return false; // No asset or no data means not opaque.
     }
+    // The parser ensures assetDefinition.data is an array of numbers (0 or 1).
+    if (Array.isArray(assetDefinition.data)) {
+        // Check if any pixel in the data array is 0. If so, it's not fully opaque.
+        return !assetDefinition.data.some(pixelValue => pixelValue === 0);
+    }
+    // Fallback for string data, though array is expected from parser
+    if (typeof assetDefinition.data === 'string') {
+        return !assetDefinition.data.includes('0');
+    }
+    return false; // Should not happen if parser is correct and data is array.
+}
+
+_isItemOpaque(itemType, commandParams) { // commandParams needed for DRAW's asset name
+    // FILL_* commands always draw opaquely over their shape.
+    // '0's in a pattern for FILL mean the *opposite* opaque color.
+    if (itemType === 'FILL_RECT' || itemType === 'FILL_CIRCLE' || itemType === 'FILL_PIXEL') {
+        return true;
+    }
+    
+    // PIXEL command draws a single scaled block of the current color. This is opaque.
+    if (itemType === 'PIXEL') {
+        return true;
+    }
+    
+    // For DRAW commands, opacity depends on the asset being drawn.
+    // '0's in a DRAW asset are transparent.
+    if (itemType === 'DRAW' || itemType === 'DRAW_ASSET') {
+        if (commandParams && commandParams.NAME) {
+            const assetName = commandParams.NAME;
+            const assetDefinition = this.assets[assetName];
+            return this._isAssetDataFullyOpaque(assetDefinition);
+        }
+        return false; // No asset name provided or asset not found.
+    }
+    
+    // LINE, RECT (outline), CIRCLE (outline) are not considered opaque for area culling.
+    return false;
+}
 
 
     _processCommands(commands) {
@@ -353,7 +378,7 @@ export class DisplayListGenerator {
                         scaleFactor: this._state.scale,
                         color: this._state.color,
                         fillAsset: this._state.fillAsset ? { ...this._state.fillAsset } : null, // Snapshot asset
-                        isOpaque: this._isItemOpaque(command.type, this._state.fillAsset),
+                        isOpaque: this._isItemOpaque(command.type, command.params), // Pass command.params
                         sourceLine: line
                     };
                     
