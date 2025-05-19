@@ -176,7 +176,10 @@ export class MicroPatternsParser {
                 throw new ParseError(`Invalid argument format near "${remainingArgs}". Expected KEY=VALUE.`, this.lineNumber);
             }
 
-            const key = match[1].toUpperCase(); // Parameter names are case-insensitive
+            // Store both uppercase and original case for parameters
+            // This helps with backward compatibility for scripts using lowercase params
+            const originalKey = match[1];
+            const key = originalKey.toUpperCase(); // Parameter names are case-insensitive
             remainingArgs = remainingArgs.substring(match[0].length); // Remove "KEY="
 
             let value;
@@ -457,10 +460,12 @@ export class MicroPatternsParser {
             case 'CIRCLE': this._requireParams(p, ['X', 'Y', 'RADIUS']); this._validateAllParamsAreValues(p); break;
             case 'FILL_CIRCLE': this._requireParams(p, ['X', 'Y', 'RADIUS']); this._validateAllParamsAreValues(p); break;
             case 'DRAW': // Replaces old ICON command
-                this._requireParams(p, ['NAME', 'X', 'Y']);
-                const patternNameRaw = this._validateString(p.NAME, 'NAME'); // Ensure NAME is quoted string, get unquoted
-                p.NAME = patternNameRaw.toUpperCase(); // Store unquoted, uppercase name for runtime lookup
-                this._validateAllParamsAreValues(p, ['NAME']); // Validate X, Y are values
+                // p already has uppercase keys from _parseArguments (e.g., NAME, X, Y)
+                this._requireParams(p, ['NAME', 'X', 'Y']); // Ensure NAME, X, and Y are present
+                const patternNameRawDraw = this._validateString(p.NAME, 'NAME'); // Ensure NAME is quoted string, get unquoted
+                p.NAME = patternNameRawDraw.toUpperCase(); // Store unquoted, uppercase name for runtime lookup
+                // Validate all params (X, Y) are values (numbers or $vars), excluding the already processed NAME.
+                this._validateAllParamsAreValues(p, ['NAME']);
                 // Runtime will check if this uppercase name exists in assets.assets
                 break;
 
@@ -527,12 +532,14 @@ export class MicroPatternsParser {
     // --- Validation Helpers ---
 
     _requireParams(params, required) {
-        for (const req of required) {
+        // Assumes params object already has its keys in UPPERCASE due to _parseArguments.
+        for (const req of required) { // req is expected to be an UPPERCASE string.
             if (!(req in params)) {
                 throw new ParseError(`Missing required parameter: ${req}`, this.lineNumber);
             }
         }
     }
+
      _ensureNoParams(params) {
         if (Object.keys(params).length > 0) {
             throw new ParseError(`Command ${this.type} does not accept any parameters. Found: ${Object.keys(params).join(', ')}`, this.lineNumber);
@@ -623,20 +630,15 @@ export class MicroPatternsParser {
             const [, leftVarRaw, literalStr, operator, rightRaw] = moduloMatch;
             const leftVar = leftVarRaw.toUpperCase(); // Store uppercase variable
             const literal = parseInt(literalStr, 10);
-            const rightValue = this._parseValue(rightRaw.trim());
+            const rightTokens = this._parseExpression(rightRaw.trim()); // Parse right-hand side as an expression
 
             this._validateVariableExists(leftVarRaw); // Validate original variable exists
             if (literal <= 0) {
                  throw new ParseError(`Modulo literal in condition must be positive. Got: ${literalStr}`, this.lineNumber);
             }
-            this._validateValueIsVariableOrNumber(rightValue, rightRaw); // Ensure right side is valid type
+            // Validation of rightTokens is handled by _parseExpression.
 
-            // Store uppercase variable reference for right side if applicable
-            const rightFinal = (typeof rightValue === 'string' && rightValue.startsWith('$'))
-                                ? rightValue.toUpperCase()
-                                : rightValue;
-
-            return { type: 'modulo', leftVar, literal, operator, right: rightFinal };
+            return { type: 'modulo', leftVar, literal, operator, right: rightTokens };
         }
 
         // Standard form: value op value
@@ -656,22 +658,14 @@ export class MicroPatternsParser {
             throw new ParseError(`Missing right operand in condition: "${conditionString}"`, this.lineNumber);
         }
         
-        const leftValue = this._parseValue(leftRaw.trim());
-        const rightValue = this._parseValue(rightRaw.trim());
+        const leftTokens = this._parseExpression(leftRaw.trim());
+        const rightTokens = this._parseExpression(rightRaw.trim());
 
-        // Validate both operands are valid types (number or variable)
-        this._validateValueIsVariableOrNumber(leftValue, leftRaw);
-        this._validateValueIsVariableOrNumber(rightValue, rightRaw);
+        // Validation of operands is handled by _parseExpression.
+        // The structure of leftTokens/rightTokens (e.g. single var/num or complex expression)
+        // will be evaluated at runtime.
 
-        // Store uppercase variable references if applicable
-        const leftFinal = (typeof leftValue === 'string' && leftValue.startsWith('$'))
-                            ? leftValue.toUpperCase()
-                            : leftValue;
-        const rightFinal = (typeof rightValue === 'string' && rightValue.startsWith('$'))
-                            ? rightValue.toUpperCase()
-                            : rightValue;
-
-        return { type: 'standard', left: leftFinal, operator, right: rightFinal };
+        return { type: 'standard', left: leftTokens, operator, right: rightTokens };
     }
 
      // Validates that a parsed value is suitable for conditions/expressions (number or variable).

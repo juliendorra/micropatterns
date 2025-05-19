@@ -94,12 +94,21 @@ ENDREPEAT
         <button id="runButton"><span>Run Script</span></button>
 
         <div id="optimizationSettings" class="settings-section">
-            <h3>Optimization Settings</h3>
+            <h3>Execution Path & Optimizations</h3>
             <div class="setting-row">
-                <label><input type="checkbox" id="enableCompiler" checked> Use Compiler</label>
+                <label style="font-weight: bold;">Execution Path:</label>
+                <div id="executionPathOptions" style="display: inline-block; margin-left: 10px;">
+                    <label><input type="radio" name="executionPath" value="interpreter"> Interpreter</label>
+                    <label><input type="radio" name="executionPath" value="compiler" checked> Compiler (JS)</label>
+                    <label><input type="radio" name="executionPath" value="displayList"> Display List</label>
+                </div>
             </div>
-            <div class="setting-row">
-                <label><input type="checkbox" id="enableOverdrawOptimization"> Overdraw Optimization (Pixel Occupancy)</label>
+            <hr style="margin: 10px 0;">
+            <div class="setting-row" id="occlusionCullingOptionRow" style="display: none;"> <!-- Initially hidden -->
+                <label><input type="checkbox" id="enableOcclusionCulling"> Occlusion Culling (Display List)</label>
+            </div>
+             <div class="setting-row">
+                <label><input type="checkbox" id="enableOverdrawOptimization"> Overdraw Optimization (Pixel Occupancy - Interpreter/Compiler)</label>
             </div>
             <div class="setting-row">
                 <label><input type="checkbox" id="enableTransformCaching" checked> Transform Caching</label>
@@ -257,6 +266,8 @@ ENDREPEAT
     <script type="module" src="drawing.js"></script>
     <script type="module" src="parser.js"></script>
     <script type="module" src="runtime.js"></script>
+    <script type="module" src="display_list_generator.js"></script>
+    <script type="module" src="display_list_renderer.js"></script>
     <script type="module" src="simulator.js"></script>
     <script src="scroll-handler.js"></script> <!-- Add the new scroll handler -->
 </body>

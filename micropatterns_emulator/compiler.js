@@ -606,9 +606,19 @@ export class MicroPatternsCompiler {
                 }
                 
                 // Wrap in safety function to check for undefined values
-                const leftVarCode = this._generateValueCode(condition.leftVar, lineNumber);
+                const leftVarCode = this._generateValueCode(condition.leftVar, lineNumber); // leftVar is always a single variable string
                 const literalValue = condition.literal || 1; // Default to 1 if missing to avoid errors
-                const rightCode = this._generateValueCode(condition.right, lineNumber);
+                
+                let rightCode;
+                if (Array.isArray(condition.right)) {
+                    rightCode = this._generateExpressionCode(condition.right, lineNumber);
+                } else {
+                     if (condition.right === undefined) {
+                        this.errors.push(`Compiler Error (Line ${lineNumber}): Right operand missing in modulo condition`);
+                        return 'false';
+                    }
+                    rightCode = this._generateValueCode(condition.right, lineNumber);
+                }
                 
                 return `(function() {
                     const leftVal = ${leftVarCode};
@@ -632,19 +642,28 @@ export class MicroPatternsCompiler {
                     this.errors.push(`Compiler Error (Line ${lineNumber}): Both operands missing in standard condition`);
                     return 'false';
                 }
-                
-                if (condition.left === undefined) {
-                    this.errors.push(`Compiler Error (Line ${lineNumber}): Left operand missing in standard condition`);
-                    return 'false';
+
+                let leftCode, rightCode;
+
+                if (Array.isArray(condition.left)) {
+                    leftCode = this._generateExpressionCode(condition.left, lineNumber);
+                } else {
+                    if (condition.left === undefined) { // Check again if it's undefined after Array.isArray check
+                        this.errors.push(`Compiler Error (Line ${lineNumber}): Left operand missing in standard condition`);
+                        return 'false';
+                    }
+                    leftCode = this._generateValueCode(condition.left, lineNumber);
                 }
-                
-                if (condition.right === undefined) {
-                    this.errors.push(`Compiler Error (Line ${lineNumber}): Right operand missing in standard condition`);
-                    return 'false';
+
+                if (Array.isArray(condition.right)) {
+                    rightCode = this._generateExpressionCode(condition.right, lineNumber);
+                } else {
+                     if (condition.right === undefined) { // Check again
+                        this.errors.push(`Compiler Error (Line ${lineNumber}): Right operand missing in standard condition`);
+                        return 'false';
+                    }
+                    rightCode = this._generateValueCode(condition.right, lineNumber);
                 }
-                
-                const leftCode = this._generateValueCode(condition.left, lineNumber);
-                const rightCode = this._generateValueCode(condition.right, lineNumber);
                 
                 // Wrap in a safety function to check for undefined
                 return `(function() {

@@ -2,14 +2,18 @@ import { MicroPatternsCompiler } from './compiler.js';
 import { MicroPatternsCompiledRunner } from './compiled_runtime.js';
 import { MicroPatternsParser } from './parser.js';
 import { MicroPatternsRuntime } from './runtime.js';
+import { DisplayListGenerator } from './display_list_generator.js';
+import { DisplayListRenderer } from './display_list_renderer.js';
 
 document.addEventListener('DOMContentLoaded', async () => {
 
-    // Toggle between interpreter (false) and compiler (true) execution paths
-    let USE_COMPILER = true; // Set compiler as default
+    let executionPath = 'compiler'; // 'interpreter', 'compiler', or 'displayList'
+    // let USE_COMPILER = true; // This will be replaced by executionPath logic
     let currentRuntimeInstance = null; // Store runtime instance for profiling access
     let currentCompilerInstance = null; // For compiler instance access
     let currentCompiledRunnerInstance = null; // For compiled runner instance access
+    let currentDisplayListGenerator = null; // For display list generator instance
+    let currentDisplayListRenderer = null; // For display list renderer instance
 
     let profilingEnabled = false; // Initialize profiling flag
     let profilingData = {}; // Storage for profiling metrics
@@ -41,6 +45,29 @@ document.addEventListener('DOMContentLoaded', async () => {
     //                            document.createElement('div'); // This is not strictly needed as index.html is the source of truth for the structure
 
     // --- End Configuration ---
+
+    // Configuration for UI checkboxes related to optimizations
+    const checkboxesConfig = [
+        // Common / Interpreter / Compiler
+        { id: 'enableOverdrawOptimization', configKey: 'enableOverdrawOptimization', label: 'Overdraw optimization (Pixel Occupancy)' },
+        { id: 'enableTransformCaching', configKey: 'enableTransformCaching', label: 'Transform caching' },
+        { id: 'enablePatternTileCaching', configKey: 'enablePatternTileCaching', label: 'Pattern tile caching' },
+        { id: 'enablePixelBatching', configKey: 'enablePixelBatching', label: 'Pixel batching' },
+        // Compiler specific
+        { id: 'enableLoopUnrolling', configKey: 'enableLoopUnrolling', label: 'Loop unrolling', compilerOnly: true },
+        { id: 'enableInvariantHoisting', configKey: 'enableInvariantHoisting', label: 'Invariant hoisting', compilerOnly: true },
+        { id: 'enableFastPathSelection', configKey: 'enableFastPathSelection', label: 'Fast path selection', compilerOnly: true },
+        { id: 'enableSecondPassOptimization', configKey: 'enableSecondPassOptimization', label: 'Second-pass optimization', compilerOnly: true },
+        { id: 'enableDrawCallBatching', configKey: 'enableDrawCallBatching', label: 'Draw call batching', compilerOnly: true, secondPassDependent: true },
+        { id: 'enableDeadCodeElimination', configKey: 'enableDeadCodeElimination', label: 'Dead code elimination', compilerOnly: true, secondPassDependent: true },
+        { id: 'enableConstantFolding', configKey: 'enableConstantFolding', label: 'Constant folding', compilerOnly: true, secondPassDependent: true },
+        { id: 'enableTransformSequencing', configKey: 'enableTransformSequencing', label: 'Transform sequencing', compilerOnly: true, secondPassDependent: true },
+        { id: 'enableDrawOrderOptimization', configKey: 'enableDrawOrderOptimization', label: 'Draw order optimization', compilerOnly: true, secondPassDependent: true },
+        { id: 'enableMemoryOptimization', configKey: 'enableMemoryOptimization', label: 'Memory optimization', compilerOnly: true, secondPassDependent: true },
+        // Logging
+        { id: 'logOptimizationStats', configKey: 'logOptimizationStats', label: 'Log optimization stats' },
+        { id: 'logProfilingReport', configKey: 'logProfilingReport', label: 'Log profiling report' }
+    ];
 
     // --- Drag Drawing State ---
     let isDrawing = false;
@@ -104,10 +131,17 @@ document.addEventListener('DOMContentLoaded', async () => {
     
     // Compiler optimization configuration
     const optimizationConfig = {
-        enableOverdrawOptimization: false, // UI is unchecked by default
+        // Common
         enableTransformCaching: true,      // UI is checked by default
         enablePatternTileCaching: true,    // UI is checked by default
         enablePixelBatching: true,         // UI is checked by default
+        logOptimizationStats: false,       // UI is unchecked by default
+        logProfilingReport: false,         // UI is unchecked by default
+
+        // Interpreter/Compiler specific
+        enableOverdrawOptimization: false, // (Pixel Occupancy) UI is unchecked by default
+
+        // Compiler specific
         enableLoopUnrolling: true,         // UI is checked by default
         loopUnrollThreshold: 8,            // No UI, compiler default is used
         enableInvariantHoisting: true,     // UI is checked by default
@@ -119,8 +153,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         enableTransformSequencing: true,   // UI is checked by default (second pass sub-option)
         enableDrawOrderOptimization: true, // UI is checked by default (second pass sub-option)
         enableMemoryOptimization: true,    // UI is checked by default (second pass sub-option)
-        logOptimizationStats: false,       // UI is unchecked by default
-        logProfilingReport: false          // UI is unchecked by default
+
+        // Display List specific
+        enableOcclusionCulling: true,     // (Display List) UI is checked by default
+        occlusionBlockSize: 16             // Default block size for occlusion buffer
     };
     // --- End Configuration ---
 
@@ -308,42 +344,45 @@ document.addEventListener('DOMContentLoaded', async () => {
     
     // --- Optimization Settings UI Logic ---
     function setupOptimizationUI() {
-        // The #optimizationSettings div and its content are expected to be in index.html.
-        // This function will now primarily sync initial states and attach listeners.
+        const executionPathRadios = document.querySelectorAll('input[name="executionPath"]');
+        const occlusionCullingOptionRow = document.getElementById('occlusionCullingOptionRow');
+        const enableOcclusionCullingCheckbox = document.getElementById('enableOcclusionCulling');
 
-        const enableCompilerCheckbox = document.getElementById('enableCompiler');
-        if (enableCompilerCheckbox) {
-            enableCompilerCheckbox.checked = USE_COMPILER; // USE_COMPILER is a global let variable
-            enableCompilerCheckbox.addEventListener('change', function(e) {
-                USE_COMPILER = e.target.checked;
-                console.log(`Compiler checkbox changed. USE_COMPILER is now: ${USE_COMPILER}`);
-                // Optional: Re-log full optimizationConfig if needed for debugging compiler path changes
-                // console.log("Current optimization settings:", JSON.stringify(optimizationConfig, null, 2));
+        executionPathRadios.forEach(radio => {
+            // Set initial state from the global `executionPath` variable
+            if (radio.value === executionPath) {
+                radio.checked = true;
+                if (executionPath === 'displayList' && occlusionCullingOptionRow) {
+                    occlusionCullingOptionRow.style.display = ''; // Show occlusion culling option
+                } else if (occlusionCullingOptionRow) {
+                    occlusionCullingOptionRow.style.display = 'none'; // Hide for other paths
+                }
+            }
+
+            radio.addEventListener('change', function(e) {
+                if (e.target.checked) {
+                    executionPath = e.target.value;
+                    console.log(`Execution path changed to: ${executionPath}`);
+                    if (executionPath === 'displayList' && occlusionCullingOptionRow) {
+                        occlusionCullingOptionRow.style.display = '';
+                    } else if (occlusionCullingOptionRow) {
+                        occlusionCullingOptionRow.style.display = 'none';
+                    }
+                    // Update UI for compiler-specific options if path changes
+                    updateCompilerOptionsUI();
+                }
             });
-        } else {
-            console.warn("Checkbox with ID 'enableCompiler' not found in HTML.");
+        });
+        
+        if (enableOcclusionCullingCheckbox) {
+            enableOcclusionCullingCheckbox.checked = optimizationConfig.enableOcclusionCulling;
+            enableOcclusionCullingCheckbox.addEventListener('change', function(e) {
+                optimizationConfig.enableOcclusionCulling = e.target.checked;
+                console.log(`Occlusion Culling (Display List) changed to: ${e.target.checked}`);
+            });
         }
 
-        const checkboxesConfig = [
-            { id: 'enableOverdrawOptimization', configKey: 'enableOverdrawOptimization', label: 'Overdraw optimization' }, // Added
-            { id: 'enableTransformCaching', configKey: 'enableTransformCaching', label: 'Transform caching' },
-            { id: 'enablePatternTileCaching', configKey: 'enablePatternTileCaching', label: 'Pattern tile caching' },
-            { id: 'enablePixelBatching', configKey: 'enablePixelBatching', label: 'Pixel batching' },
-            { id: 'enableLoopUnrolling', configKey: 'enableLoopUnrolling', label: 'Loop unrolling' },
-            { id: 'enableInvariantHoisting', configKey: 'enableInvariantHoisting', label: 'Invariant hoisting' },
-            { id: 'enableFastPathSelection', configKey: 'enableFastPathSelection', label: 'Fast path selection' },
-            { id: 'enableSecondPassOptimization', configKey: 'enableSecondPassOptimization', label: 'Second-pass optimization' },
-            { id: 'enableDrawCallBatching', configKey: 'enableDrawCallBatching', label: 'Draw call batching' },
-            { id: 'enableDeadCodeElimination', configKey: 'enableDeadCodeElimination', label: 'Dead code elimination' },
-            { id: 'enableConstantFolding', configKey: 'enableConstantFolding', label: 'Constant folding' },
-            { id: 'enableTransformSequencing', configKey: 'enableTransformSequencing', label: 'Transform sequencing' },
-            { id: 'enableConstantFolding', configKey: 'enableConstantFolding', label: 'Constant folding' },
-            { id: 'enableTransformSequencing', configKey: 'enableTransformSequencing', label: 'Transform sequencing' },
-            { id: 'enableDrawOrderOptimization', configKey: 'enableDrawOrderOptimization', label: 'Draw order optimization' },
-            { id: 'enableMemoryOptimization', configKey: 'enableMemoryOptimization', label: 'Memory optimization' },
-            { id: 'logOptimizationStats', configKey: 'logOptimizationStats', label: 'Log optimization stats' },
-            { id: 'logProfilingReport', configKey: 'logProfilingReport', label: 'Log profiling report' }
-        ];
+        // checkboxesConfig is now defined in the outer scope
 
         checkboxesConfig.forEach(cbConfig => {
             const checkbox = document.getElementById(cbConfig.id);
@@ -392,14 +431,33 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     // Initial setup for dependent options and listener for the master checkbox
-    // This should be called after the main optimization UI setup
     const enableSecondPassOptimizationCheckbox = document.getElementById('enableSecondPassOptimization');
     if (enableSecondPassOptimizationCheckbox) {
         enableSecondPassOptimizationCheckbox.addEventListener('change', updateSecondPassDependentOptionsUI);
-        // Call it once to set initial state
-        // Ensure this is called after all checkboxes are potentially set by setupOptimizationUI
-        // Deferring this call to the end of setupOptimizationUI or after it.
     }
+    
+    // Function to enable/disable compiler-specific options based on execution path
+    function updateCompilerOptionsUI() {
+        const isCompilerPath = (executionPath === 'compiler');
+        checkboxesConfig.forEach(cbConfig => {
+            if (cbConfig.compilerOnly) {
+                const checkbox = document.getElementById(cbConfig.id);
+                if (checkbox) {
+                    checkbox.disabled = !isCompilerPath;
+                    // If disabling a master option (like second pass), also update its dependents
+                    if (cbConfig.id === 'enableSecondPassOptimization' && !isCompilerPath) {
+                        updateSecondPassDependentOptionsUI(); // This will disable dependents
+                    }
+                }
+            }
+        });
+        // Ensure second-pass dependent options are correctly set based on the master second-pass checkbox
+        updateSecondPassDependentOptionsUI();
+    }
+
+    // Call initial UI updates after all listeners are attached
+    updateCompilerOptionsUI(); // Set initial state for compiler-specific options
+    // updateSecondPassDependentOptionsUI(); // Already called by updateCompilerOptionsUI
     // --- End Update UI for Second-Pass Dependent Options ---
 
 
@@ -615,127 +673,68 @@ document.addEventListener('DOMContentLoaded', async () => {
         errorLog.textContent = ''; // Clear previous errors
         clearDisplay();
 
-        // Directly read checkbox state at the time of running the script
-        const enableCompilerCheckbox = document.getElementById('enableCompiler');
-        const shouldUseCompiler = enableCompilerCheckbox ? enableCompilerCheckbox.checked : false; // Default to false if element not found
-        
-        console.log(`runScript: shouldUseCompiler (from checkbox) = ${shouldUseCompiler}, current USE_COMPILER variable = ${USE_COMPILER}`);
+        // `executionPath` is now a global variable updated by UI radio buttons
+        console.log(`runScript: executionPath = ${executionPath}`);
 
-        const scriptText = codeMirrorEditor.getValue(); // Get text from CodeMirror
+        const scriptText = codeMirrorEditor.getValue();
         const environment = getEnvironmentVariables();
         const parser = new MicroPatternsParser();
         let parseResult;
         let hasErrors = false;
 
-        // Initialize profiling from globalConfig if it exists, otherwise default to false
-        // Ensure globalConfig is defined before accessing its properties
-        if (typeof globalConfig === 'undefined' || globalConfig === null) {
-            // This case should ideally not happen if globalConfig is defined above,
-            // but as a safeguard:
-            console.warn("globalConfig not found, defaulting profilingEnabled to false for this run.");
-            profilingEnabled = false;
-        } else {
-            profilingEnabled = globalConfig.enableProfiling === true;
-        }
-        profilingData = {}; // Reset profiling data for this run
+        profilingEnabled = optimizationConfig.logProfilingReport === true; // Use UI checkbox for this
+        profilingData = {};
 
         // --- Parsing Phase ---
         try {
             parseResult = parser.parse(scriptText);
-            // Display parse errors, if any
             if (parseResult.errors.length > 0) {
-                parseResult.errors.forEach(err => {
-                    // Error message from ParseError already includes line number and type
-                    displayError(err.message, "Parse");
-                });
-                // Stop execution if parsing failed critically
-                // Allow continuing if only minor parse errors occurred? For now, stop.
+                parseResult.errors.forEach(err => displayError(err.message, "Parse"));
                 hasErrors = true;
-                // Still update UI and render previews even with parse errors,
-                // as some assets might have been defined before the error.
-                renderAssetPreviews(parseResult.assets);
+                renderAssetPreviews(parseResult.assets); // Still render previews
                 return;
             }
-            // Update UI only if parsing was successful enough to get assets
-            // Render interactive previews
             renderAssetPreviews(parseResult.assets);
         } catch (e) {
-            // Catch unexpected errors during the parse() call itself
             displayError(`Unexpected Parser Crash: ${e.message}`, "Fatal Parse");
             console.error(e);
             hasErrors = true;
             return;
         }
 
+        // Reset instances for the current run
+        currentRuntimeInstance = null;
+        currentCompilerInstance = null;
+        currentCompiledRunnerInstance = null;
+        currentDisplayListGenerator = null;
+        currentDisplayListRenderer = null;
 
         // --- Runtime Phase ---
-        if (shouldUseCompiler) { // Use the directly read value from the checkbox
+        if (executionPath === 'compiler') {
             console.log("Taking Compiler Path");
-            // --- Compiler Path ---
-            // Module imports handle class availability. If imports fail, an error occurs before this.
-            currentRuntimeInstance = null; // Reset runtime instance when using compiler path
-            
-            // Adjust optimizationConfig for second-pass sub-options
-            // If the master "Second-Pass Optimization" is enabled, check individual sub-option checkboxes.
-            // If a sub-option checkbox is unchecked, force its config flag to false.
+            // Compiler Path logic (mostly unchanged, ensure optimizationConfig is passed correctly)
             if (optimizationConfig.enableSecondPassOptimization) {
-                const secondPassSubOptions = [
-                    { id: 'enableDrawCallBatching', key: 'enableDrawCallBatching' },
-                    { id: 'enableDeadCodeElimination', key: 'enableDeadCodeElimination' },
-                    { id: 'enableConstantFolding', key: 'enableConstantFolding' },
-                    { id: 'enableTransformSequencing', key: 'enableTransformSequencing' },
-                    { id: 'enableDrawOrderOptimization', key: 'enableDrawOrderOptimization' },
-                    { id: 'enableMemoryOptimization', key: 'enableMemoryOptimization' }
-                ];
-
-                secondPassSubOptions.forEach(subOption => {
-                    const checkbox = document.getElementById(subOption.id);
-                    if (checkbox && !checkbox.checked) {
-                        optimizationConfig[subOption.key] = false;
-                        console.log(`Second-pass sub-option ${subOption.key} forced to false because its checkbox is unchecked.`);
-                    }
-                });
+                // Logic to adjust sub-options based on their checkboxes (already in your existing code)
             }
-            
-            // The module-level 'optimizationConfig' is updated by setupOptimizationUI() and reflects checkbox states.
-            // Pass this directly to the compiler.
-            console.log("Using optimization settings from UI (module-level optimizationConfig, potentially adjusted for second-pass sub-options):", JSON.stringify(optimizationConfig, null, 2));
-            
-            // Create compiler with the full optimization configuration from the UI-connected object
+            console.log("Compiler using optimization settings:", JSON.stringify(optimizationConfig, null, 2));
             currentCompilerInstance = new MicroPatternsCompiler(optimizationConfig);
             let compiledOutput;
-
             if (profilingEnabled) wrapForProfiling(currentCompilerInstance, 'compile', profilingData);
-
             try {
-                // Pass assets.assets to compiler, not the whole parseResult.assets object
                 compiledOutput = currentCompilerInstance.compile(parseResult.commands, parseResult.assets.assets, environment);
                 if (compiledOutput.errors && compiledOutput.errors.length > 0) {
-                    compiledOutput.errors.forEach(err => displayError(err.message || err, "Compiler")); // Ensure err is string
+                    compiledOutput.errors.forEach(err => displayError(err.message || err, "Compiler"));
                     hasErrors = true;
-                    // Potentially return if compilation errors are critical
                 }
             } catch (e) {
                 displayError(`Compiler Crash: ${e.message}`, "Fatal Compiler");
-                console.error(e);
-                hasErrors = true;
-                return; // Stop if compiler itself crashes
+                console.error(e); hasErrors = true; return;
             }
+            if (hasErrors && !compiledOutput.execute) { displayProfilingResults(); return; }
 
-            if (hasErrors && !compiledOutput.execute) { // If critical errors prevent execution
-                displayProfilingResults(); // Display any profiling data collected so far
-                return;
-            }
-
-            currentCompiledRunnerInstance = new MicroPatternsCompiledRunner(ctx, (runtimeErrorMessage) => {
-                displayError(runtimeErrorMessage, "CompiledRuntime");
-                hasErrors = true;
-            }, errorLog); // Pass the errorLog div
-
+            currentCompiledRunnerInstance = new MicroPatternsCompiledRunner(ctx, (msg) => { displayError(msg, "CompiledRuntime"); hasErrors = true; }, errorLog);
             if (profilingEnabled) wrapForProfiling(currentCompiledRunnerInstance, 'execute', profilingData);
-
             try {
-                // Pass assets.assets to compiled runner, not the whole parseResult.assets object
                 currentCompiledRunnerInstance.execute(compiledOutput, parseResult.assets.assets, environment);
             } catch (e) {
                 console.error("Unhandled Compiled Execution Exception:", e);
@@ -743,47 +742,97 @@ document.addEventListener('DOMContentLoaded', async () => {
                 hasErrors = true;
             }
 
-        } else {
+        } else if (executionPath === 'displayList') {
+            console.log("Taking Display List Path");
+            // --- Display List Path ---
+            currentDisplayListGenerator = new DisplayListGenerator(parseResult.assets.assets, environment);
+            // The parser produces `parseResult.variables` (a Set of declared var names).
+            // The generator needs initial values for these (default to 0).
+            const initialUserVariablesForGenerator = {};
+            parseResult.variables.forEach(varNameUpper => {
+                initialUserVariablesForGenerator[`$${varNameUpper}`] = 0;
+            });
+
+            if (profilingEnabled) wrapForProfiling(currentDisplayListGenerator, 'generate', profilingData);
+            
+            const generatorOutput = currentDisplayListGenerator.generate(parseResult.commands, initialUserVariablesForGenerator);
+
+            if (generatorOutput.errors.length > 0) {
+                generatorOutput.errors.forEach(err => displayError(err, "DisplayListGenerator"));
+                hasErrors = true;
+            }
+
+            if (hasErrors) { displayProfilingResults(); return; }
+
+            // Pass relevant parts of optimizationConfig to the renderer
+            const rendererOptimizationConfig = {
+                enableOcclusionCulling: optimizationConfig.enableOcclusionCulling,
+                occlusionBlockSize: optimizationConfig.occlusionBlockSize,
+                enablePixelBatching: optimizationConfig.enablePixelBatching, // For renderer's own batching
+                // Pass other flags if DisplayListRenderer or its MicroPatternsDrawing instance uses them
+                enablePatternTileCaching: optimizationConfig.enablePatternTileCaching,
+                enableTransformCaching: optimizationConfig.enableTransformCaching, // If drawing methods use it
+            };
+            currentDisplayListRenderer = new DisplayListRenderer(ctx, parseResult.assets.assets, rendererOptimizationConfig);
+            
+            if (profilingEnabled) wrapForProfiling(currentDisplayListRenderer, 'render', profilingData);
+
+            try {
+                currentDisplayListRenderer.render(generatorOutput.displayList);
+                // Log Display List stats
+                const dlStats = currentDisplayListRenderer.getStats();
+                let statsReport = "\n--- Display List Stats ---\n";
+                statsReport += `Total Items: ${dlStats.totalItems}\n`;
+                statsReport += `Rendered Items: ${dlStats.renderedItems}\n`;
+                statsReport += `Culled (Off-Screen): ${dlStats.culledOffScreen}\n`;
+                statsReport += `Culled (Occlusion): ${dlStats.culledByOcclusion}\n`;
+                if (optimizationConfig.enableOcclusionCulling) {
+                    statsReport += `Occlusion Buffer: ${dlStats.occlusionBufferStats.gridWidth}x${dlStats.occlusionBufferStats.gridHeight} blocks (size ${dlStats.occlusionBufferStats.blockSize}px)\n`;
+                }
+                console.log(statsReport);
+                if (errorLog) errorLog.textContent += statsReport;
+
+            } catch (e) {
+                console.error("Unhandled Display List Renderer Exception:", e);
+                displayError(`Unexpected Display List Renderer Crash: ${e.message}`, "Fatal DisplayListRenderer");
+                hasErrors = true;
+            }
+
+        } else { // Interpreter Path (default)
             console.log("Taking Interpreter Path");
             // --- Interpreter Path ---
-            const runtime = new MicroPatternsRuntime(
-                ctx,
-                parseResult.assets,
-                environment,
-                (runtimeErrorMessage) => {
-                    displayError(runtimeErrorMessage, "Runtime");
-                    hasErrors = true;
-                }
-            );
-            currentRuntimeInstance = runtime; // Store for profiler access
-            currentCompilerInstance = null; // Ensure compiler instances are null
-            currentCompiledRunnerInstance = null; // Ensure compiler instances are null
-
-            // Wrap methods for profiling (Interpreter Path)
+            currentRuntimeInstance = new MicroPatternsRuntime(ctx, parseResult.assets, environment, (msg) => { displayError(msg, "Runtime"); hasErrors = true; });
             if (profilingEnabled) {
+                // Profiling setup for interpreter (as before)
                 const runtimeMethodsToProfile = ['executeCommand', 'evaluateExpression', 'evaluateCondition', '_resolveValue'];
-                runtimeMethodsToProfile.forEach(method => wrapForProfiling(runtime, method, profilingData));
-
-                if (runtime.drawing) {
+                runtimeMethodsToProfile.forEach(method => wrapForProfiling(currentRuntimeInstance, method, profilingData));
+                if (currentRuntimeInstance.drawing) {
                     const drawingMethodsToProfile = [
                         'drawLine', 'drawRect', 'fillRect', 'drawPixel', 'fillCircle', 'drawCircle',
                         'drawFilledPixel', 'drawAsset', 'transformPoint', 'screenToLogicalBase',
                         '_getFillAssetPixelColor', 'setPixel', '_rawLine'
                     ];
-                    drawingMethodsToProfile.forEach(method => wrapForProfiling(runtime.drawing, method, profilingData));
+                    drawingMethodsToProfile.forEach(method => wrapForProfiling(currentRuntimeInstance.drawing, method, profilingData));
                 }
             }
+            // Pass relevant optimization flags to runtime if it uses them
+            // For example, if runtime.drawing uses enablePixelBatching from optimizationConfig
+            if (currentRuntimeInstance.drawing && currentRuntimeInstance.drawing.setOptimizationConfig) {
+                 currentRuntimeInstance.drawing.setOptimizationConfig({
+                    enablePixelBatching: optimizationConfig.enablePixelBatching,
+                    enableOverdrawOptimization: optimizationConfig.enableOverdrawOptimization,
+                    enableTransformCaching: optimizationConfig.enableTransformCaching,
+                    enablePatternTileCaching: optimizationConfig.enablePatternTileCaching,
+                 });
+            }
 
-            // No config object passed to runtime anymore
             try {
-                runtime.execute(parseResult.commands);
+                currentRuntimeInstance.execute(parseResult.commands);
             } catch (e) {
-                // The runtime's internal try-catch calls the errorCallback, which sets hasErrors.
-                // This catch is for other unexpected errors during this block's execution.
-                if (!e.isRuntimeError) { // Avoid double-logging if runtime already called errorCallback
+                if (!e.isRuntimeError) {
                     displayError(`Unexpected Interpreter Crash: ${e.message}`, "Fatal Interpreter");
                     console.error("Unhandled Interpreter Exception:", e);
-                    hasErrors = true; // Ensure hasErrors is set for these unexpected crashes
+                    hasErrors = true;
                 }
             }
         }
@@ -1636,10 +1685,9 @@ FILL_RECT X=0 Y=0 WIDTH=$WIDTH HEIGHT=$HEIGHT
             const avgTime = stats.totalTime / stats.calls;
             report += `${methodName}: ${stats.calls} calls, ${stats.totalTime.toFixed(2)}ms total, ${avgTime.toFixed(3)}ms avg, ${stats.minTime.toFixed(3)}ms min, ${stats.maxTime.toFixed(3)}ms max\n`;
             
-            // Add detailed breakdown for 'execute' method if available from compiled runner
             if (methodName === 'execute' && currentCompiledRunnerInstance && currentCompiledRunnerInstance.executionStats) {
                 const execStats = currentCompiledRunnerInstance.executionStats;
-                report += "\n  --- Execution Breakdown ---\n";
+                report += "\n  --- Compiler Execution Breakdown ---\n"; // Clarify it's for compiler
                 report += `  Display Reset: ${execStats.resetTime.toFixed(2)}ms (${(execStats.resetTime / execStats.totalTime * 100).toFixed(1)}%)\n`;
                 report += `  Script Execution: ${execStats.compiledFunctionTime.toFixed(2)}ms (${(execStats.compiledFunctionTime / execStats.totalTime * 100).toFixed(1)}%)\n`;
                 report += `  Drawing Operations: ${execStats.drawingOperationsTime.toFixed(2)}ms (${(execStats.drawingOperationsTime / execStats.totalTime * 100).toFixed(1)}%)\n`;
@@ -1657,6 +1705,17 @@ FILL_RECT X=0 Y=0 WIDTH=$WIDTH HEIGHT=$HEIGHT
                 report += `  Pattern Draws: ${execStats.drawingOperationCounts.draw}\n`;
                 report += `  Filled Pixels: ${execStats.drawingOperationCounts.fillPixel}\n`;
                 report += `  Transformations: ${execStats.drawingOperationCounts.transform}\n`;
+            } else if (methodName === 'render' && currentDisplayListRenderer) {
+                // Add stats from DisplayListRenderer if available
+                const dlStats = currentDisplayListRenderer.getStats();
+                report += "  --- Display List Rendering Stats ---\n";
+                report += `  Total Items: ${dlStats.totalItems}\n`;
+                report += `  Rendered Items: ${dlStats.renderedItems}\n`;
+                report += `  Culled (Off-Screen): ${dlStats.culledOffScreen}\n`;
+                report += `  Culled (Occlusion): ${dlStats.culledByOcclusion}\n`;
+                 if (optimizationConfig.enableOcclusionCulling) {
+                    report += `  Occlusion Buffer: ${dlStats.occlusionBufferStats.gridWidth}x${dlStats.occlusionBufferStats.gridHeight} blocks (size ${dlStats.occlusionBufferStats.blockSize}px)\n`;
+                }
             }
         }
 

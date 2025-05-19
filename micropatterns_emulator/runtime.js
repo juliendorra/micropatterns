@@ -294,22 +294,39 @@ export class MicroPatternsRuntime {
      evaluateCondition(condition, currentEnv, lineNumber) {
          let leftVal, rightVal;
          const resolve = (val) => this._resolveValue(val, currentEnv, lineNumber);
+         const evaluateExpr = (tokens) => this.evaluateExpression(tokens, currentEnv, lineNumber);
 
          try {
              if (condition.type === 'modulo') {
-                 const varValue = resolve(condition.leftVar);
+                 const varValue = resolve(condition.leftVar); // leftVar is always a single variable string
                  const literal = condition.literal;
-                 const rightRaw = resolve(condition.right);
+                 
+                 let rightHandOperand;
+                 if (Array.isArray(condition.right)) {
+                     rightHandOperand = evaluateExpr(condition.right);
+                 } else {
+                     rightHandOperand = resolve(condition.right);
+                 }
 
                  if (!Number.isInteger(varValue)) throw this.runtimeError(`Left side of modulo ($VAR) must be integer. Got: ${varValue}`, lineNumber);
-                 if (!Number.isInteger(rightRaw)) throw this.runtimeError(`Right side of modulo comparison must be integer. Got: ${rightRaw}`, lineNumber);
+                 if (!Number.isInteger(rightHandOperand)) throw this.runtimeError(`Right side of modulo comparison must be integer. Got: ${rightHandOperand}`, lineNumber);
                  if (!Number.isInteger(literal) || literal === 0) throw this.runtimeError(`Modulo literal must be non-zero integer. Got: ${literal}`, lineNumber);
 
                  leftVal = varValue % literal;
-                 rightVal = rightRaw;
-             } else {
-                 leftVal = resolve(condition.left);
-                 rightVal = resolve(condition.right);
+                 rightVal = rightHandOperand;
+             } else { // standard
+                 if (Array.isArray(condition.left)) {
+                     leftVal = evaluateExpr(condition.left);
+                 } else {
+                     leftVal = resolve(condition.left);
+                 }
+
+                 if (Array.isArray(condition.right)) {
+                     rightVal = evaluateExpr(condition.right);
+                 } else {
+                     rightVal = resolve(condition.right);
+                 }
+
                  if (typeof leftVal !== 'number' || typeof rightVal !== 'number') {
                       throw this.runtimeError(`Cannot compare non-numeric values: ${leftVal} vs ${rightVal}`, lineNumber);
                  }
