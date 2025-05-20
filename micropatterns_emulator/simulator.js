@@ -17,10 +17,14 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     let profilingEnabled = false; // Initialize profiling flag
     let profilingData = {}; // Storage for profiling metrics
+    
+    let isCounterLocked = false; // State for counter lock
+    
+    // SVG Icons are now directly in HTML. CSS will handle visibility.
 
     const scriptInputTextArea = document.getElementById('scriptInput');
     const runButton = document.getElementById('runButton');
-    const incrementCounterButton = document.getElementById('incrementCounterButton');
+    const lockCounterButton = document.getElementById('lockCounterButton'); // Changed ID
     const resetCounterButton = document.getElementById('resetCounterButton');
     const canvas = document.getElementById('displayCanvas');
     const ctx = canvas.getContext('2d');
@@ -843,18 +847,34 @@ document.addEventListener('DOMContentLoaded', async () => {
             displayProfilingResults();
         }
 
-        // Auto-increment counter if no errors occurred
-        if (!hasErrors) {
+        // Auto-increment counter if no errors occurred and counter is not locked
+        if (!hasErrors && !isCounterLocked) {
             env.COUNTER.value = parseInt(env.COUNTER.value, 10) + 1;
         }
     }
 
     runButton.addEventListener('click', runScript);
 
-    incrementCounterButton.addEventListener('click', () => {
-        env.COUNTER.value = parseInt(env.COUNTER.value, 10) + 1;
-        runScript(); // Re-run script after incrementing
-    });
+    if (lockCounterButton) {
+        // Initial state is unlocked. HTML sets initial SVG structure.
+        // CSS handles showing the unlocked icon by default.
+        // Title is set in HTML and confirmed here.
+        lockCounterButton.title = 'Counter is unlocked (click to lock)';
+
+        lockCounterButton.addEventListener('click', () => {
+            isCounterLocked = !isCounterLocked;
+            if (isCounterLocked) { // Counter is NOW locked
+                lockCounterButton.classList.add('is-locked');
+                lockCounterButton.title = 'Counter is locked (click to unlock)';
+                env.COUNTER.classList.add('locked-counter');
+            } else { // Counter is NOW unlocked
+                lockCounterButton.classList.remove('is-locked');
+                lockCounterButton.title = 'Counter is unlocked (click to lock)';
+                env.COUNTER.classList.remove('locked-counter');
+            }
+            // Note: Clicking the lock button does not re-run the script.
+        });
+    }
 
     resetCounterButton.addEventListener('click', () => {
         env.COUNTER.value = 0; // Reset counter to zero

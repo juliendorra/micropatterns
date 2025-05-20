@@ -197,7 +197,10 @@ ENDREPEAT
                 <label for="envCounter">Counter:</label>
                 <input type="number" id="envCounter" value="0" min="0">
                 <button id="resetCounterButton" title="Reset Counter" class="secondary">↺</button>
-                <button id="incrementCounterButton" title="Increment Counter" class="secondary">+</button>
+                <button id="lockCounterButton" title="Counter is unlocked (click to lock)" class="secondary">
+                    <svg class="lock-icon lock-icon-unlocked" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" width="16" height="16"><rect x="6" y="11" width="12" height="9" rx="1" ry="1" fill="currentColor"/><path d="M8 11V7C8 4.79086 9.79086 3 12 3C14.2091 3 16 4.79086 16 7L18 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+                    <svg class="lock-icon lock-icon-locked" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" width="16" height="16"><rect x="6" y="11" width="12" height="9" rx="1" ry="1" fill="currentColor"/><path d="M8 11V7C8 4.79086 9.79086 3 12 3C14.2091 3 16 4.79086 16 7V11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+                </button>
             </div>
             <!-- Static Info -->
             <p class="info-text">Display: <span id="displayInfoSpan">200x200</span></p>

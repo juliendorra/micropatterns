@@ -758,9 +758,35 @@ button.secondary:active {
 #scriptMgmtStatus.success-active {
     background-color: var(--accent-color-green);
     color: var(--text-color-light) !important;
-    border: 3px solid var(--border-color);
-    text-shadow: 1px 1px 0px rgba(0, 0, 0, 0.3);
+    border-radius: var(--border-radius-slight);
+    box-shadow: var(--shadow-subtle);
 }
+
+input[type="number"].locked-counter {
+    background-color: var(--memphis-light-gray); /* Visually indicate lock */
+}
+
+/* Lock Icon SVG Styling */
+.lock-icon {
+    vertical-align: middle; /* Common style for both SVGs */
+}
+
+/* Default state: show unlocked, hide locked */
+#lockCounterButton .lock-icon-unlocked {
+    display: inline-block;
+}
+#lockCounterButton .lock-icon-locked {
+    display: none;
+}
+
+/* When button has 'is-locked' class: hide unlocked, show locked */
+#lockCounterButton.is-locked .lock-icon-unlocked {
+    display: none;
+}
+#lockCounterButton.is-locked .lock-icon-locked {
+    display: inline-block;
+}
+
 
 /* Highlight animation for script name input when needed */
 @keyframes highlight-pulse {

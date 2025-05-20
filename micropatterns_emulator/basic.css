@@ -232,6 +232,31 @@ button.secondary:active {
     box-shadow: 0 0.5rem 1rem rgba(0, 0, 0, 0.15);
     padding: 1.5rem;
     max-width: 450px;
+}
+
+input[type="number"].locked-counter {
+    background-color: #EEEEEE; /* Very light gray to indicate lock */
+}
+
+/* Lock Icon SVG Styling */
+.lock-icon {
+    vertical-align: middle;
+}
+#lockCounterButton .lock-icon-unlocked {
+    display: inline-block;
+}
+#lockCounterButton .lock-icon-locked {
+    display: none;
+}
+#lockCounterButton.is-locked .lock-icon-unlocked {
+    display: none;
+}
+#lockCounterButton.is-locked .lock-icon-locked {
+    display: inline-block;
+}
+
+/* Highlight animation for script name input when needed */
+@keyframes highlight-pulse {
     width: 90%;
     text-align: center;
 }
