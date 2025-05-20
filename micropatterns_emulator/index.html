@@ -98,17 +98,17 @@ ENDREPEAT
             <div class="setting-row">
                 <label style="font-weight: bold;">Execution Path:</label>
                 <div id="executionPathOptions" style="display: inline-block; margin-left: 10px;">
-                <label><input type="radio" name="executionPath" value="interpreter"> Interpreter</label>
-                <label><input type="radio" name="executionPath" value="compiler"> Compiler (JS)</label>
-                <label><input type="radio" name="executionPath" value="displayList" checked> Display List</label>
+                    <label><input type="radio" name="executionPath" value="interpreter"> Interpreter</label>
+                    <label><input type="radio" name="executionPath" value="compiler"> Compiler (JS)</label>
+                    <label><input type="radio" name="executionPath" value="displayList" checked> Display List</label>
                 </div>
             </div>
-            <hr style="margin: 10px 0;">
+            <hr class="separator">
             <div class="setting-row" id="occlusionCullingOptionRow"> <!-- Initially visible -->
                 <label><input type="checkbox" id="enableOcclusionCulling" checked> Occlusion Culling (Display List)</label>
             </div>
-             <div class="setting-row">
-                <label><input type="checkbox" id="enableOverdrawOptimization"> Overdraw Optimization (Pixel Occupancy - Interpreter/Compiler)</label>
+            <div class="setting-row">
+                <label><input type="checkbox" id="enableOverdrawOptimization"> Overdraw Pixel Occupancy</label>
             </div>
             <div class="setting-row">
                 <label><input type="checkbox" id="enableTransformCaching" checked> Transform Caching</label>
@@ -198,8 +198,14 @@ ENDREPEAT
                 <input type="number" id="envCounter" value="0" min="0">
                 <button id="resetCounterButton" title="Reset Counter" class="secondary">↺</button>
                 <button id="lockCounterButton" title="Counter is unlocked (click to lock)" class="secondary">
-                    <svg class="lock-icon lock-icon-unlocked" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" width="16" height="16"><rect x="6" y="11" width="12" height="9" rx="1" ry="1" fill="currentColor"/><path d="M8 11V7C8 4.79086 9.79086 3 12 3C14.2091 3 16 4.79086 16 7L18 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-                    <svg class="lock-icon lock-icon-locked" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" width="16" height="16"><rect x="6" y="11" width="12" height="9" rx="1" ry="1" fill="currentColor"/><path d="M8 11V7C8 4.79086 9.79086 3 12 3C14.2091 3 16 4.79086 16 7V11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+                    <svg class="lock-icon lock-icon-unlocked" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" width="16" height="16">
+                        <rect x="6" y="11" width="12" height="9" rx="1" ry="1" fill="currentColor" />
+                        <path d="M8 11V7C8 4.79086 9.79086 3 12 3C14.2091 3 16 4.79086 16 7L18 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+                    </svg>
+                    <svg class="lock-icon lock-icon-locked" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" width="16" height="16">
+                        <rect x="6" y="11" width="12" height="9" rx="1" ry="1" fill="currentColor" />
+                        <path d="M8 11V7C8 4.79086 9.79086 3 12 3C14.2091 3 16 4.79086 16 7V11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+                    </svg>
                 </button>
             </div>
             <!-- Static Info -->

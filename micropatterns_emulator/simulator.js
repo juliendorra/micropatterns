@@ -52,25 +52,26 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // Configuration for UI checkboxes related to optimizations
     const checkboxesConfig = [
-        // Common / Interpreter / Compiler
-        { id: 'enableOverdrawOptimization', configKey: 'enableOverdrawOptimization', label: 'Overdraw optimization (Pixel Occupancy)' },
-        { id: 'enableTransformCaching', configKey: 'enableTransformCaching', label: 'Transform caching' },
-        { id: 'enablePatternTileCaching', configKey: 'enablePatternTileCaching', label: 'Pattern tile caching' },
-        { id: 'enablePixelBatching', configKey: 'enablePixelBatching', label: 'Pixel batching' },
+        // Path-specific
+        { id: 'enableOcclusionCulling', configKey: 'enableOcclusionCulling', label: 'Occlusion Culling (Display List)', paths: ['displayList'], rowId: 'occlusionCullingOptionRow' }, // Special handling for rowId if needed, or use closest()
+        { id: 'enableOverdrawOptimization', configKey: 'enableOverdrawOptimization', label: 'Overdraw Optimization (Pixel Occupancy - Compiler/Display List)', paths: ['compiler', 'displayList'] },
+        { id: 'enableTransformCaching', configKey: 'enableTransformCaching', label: 'Transform Caching', paths: ['compiler', 'displayList'] },
+        { id: 'enablePatternTileCaching', configKey: 'enablePatternTileCaching', label: 'Pattern Caching', paths: ['interpreter', 'compiler', 'displayList'] },
+        { id: 'enablePixelBatching', configKey: 'enablePixelBatching', label: 'Pixel Batching', paths: ['compiler', 'displayList'] },
         // Compiler specific
-        { id: 'enableLoopUnrolling', configKey: 'enableLoopUnrolling', label: 'Loop unrolling', compilerOnly: true },
-        { id: 'enableInvariantHoisting', configKey: 'enableInvariantHoisting', label: 'Invariant hoisting', compilerOnly: true },
-        { id: 'enableFastPathSelection', configKey: 'enableFastPathSelection', label: 'Fast path selection', compilerOnly: true },
-        { id: 'enableSecondPassOptimization', configKey: 'enableSecondPassOptimization', label: 'Second-pass optimization', compilerOnly: true },
-        { id: 'enableDrawCallBatching', configKey: 'enableDrawCallBatching', label: 'Draw call batching', compilerOnly: true, secondPassDependent: true },
-        { id: 'enableDeadCodeElimination', configKey: 'enableDeadCodeElimination', label: 'Dead code elimination', compilerOnly: true, secondPassDependent: true },
-        { id: 'enableConstantFolding', configKey: 'enableConstantFolding', label: 'Constant folding', compilerOnly: true, secondPassDependent: true },
-        { id: 'enableTransformSequencing', configKey: 'enableTransformSequencing', label: 'Transform sequencing', compilerOnly: true, secondPassDependent: true },
-        { id: 'enableDrawOrderOptimization', configKey: 'enableDrawOrderOptimization', label: 'Draw order optimization', compilerOnly: true, secondPassDependent: true },
-        { id: 'enableMemoryOptimization', configKey: 'enableMemoryOptimization', label: 'Memory optimization', compilerOnly: true, secondPassDependent: true },
-        // Logging
-        { id: 'logOptimizationStats', configKey: 'logOptimizationStats', label: 'Log optimization stats' },
-        { id: 'logProfilingReport', configKey: 'logProfilingReport', label: 'Log profiling report' }
+        { id: 'enableLoopUnrolling', configKey: 'enableLoopUnrolling', label: 'Loop Unrolling', paths: ['compiler'] },
+        { id: 'enableInvariantHoisting', configKey: 'enableInvariantHoisting', label: 'Invariant Hoisting', paths: ['compiler'] },
+        { id: 'enableFastPathSelection', configKey: 'enableFastPathSelection', label: 'Fast Path Selection', paths: ['compiler'] },
+        { id: 'enableSecondPassOptimization', configKey: 'enableSecondPassOptimization', label: 'Second-Pass Optimization', paths: ['compiler'] },
+        { id: 'enableDrawCallBatching', configKey: 'enableDrawCallBatching', label: 'Draw Call Batching', paths: ['compiler'] }, // Dependent on Second-Pass
+        { id: 'enableDeadCodeElimination', configKey: 'enableDeadCodeElimination', label: 'Dead Code Elimination', paths: ['compiler'] }, // Dependent on Second-Pass
+        { id: 'enableConstantFolding', configKey: 'enableConstantFolding', label: 'Constant Folding', paths: ['compiler'] }, // Dependent on Second-Pass
+        { id: 'enableTransformSequencing', configKey: 'enableTransformSequencing', label: 'Transform Sequencing', paths: ['compiler'] }, // Dependent on Second-Pass
+        { id: 'enableDrawOrderOptimization', configKey: 'enableDrawOrderOptimization', label: 'Draw Order Optimization', paths: ['compiler'] }, // Dependent on Second-Pass
+        { id: 'enableMemoryOptimization', configKey: 'enableMemoryOptimization', label: 'Memory Optimization', paths: ['compiler'] }, // Dependent on Second-Pass
+        // Logging (always visible)
+        { id: 'logOptimizationStats', configKey: 'logOptimizationStats', label: 'Log Optimization Stats', paths: ['logging'] },
+        { id: 'logProfilingReport', configKey: 'logProfilingReport', label: 'Log Profiling Report', paths: ['logging'] }
     ];
 
     // --- Drag Drawing State ---
@@ -347,66 +348,60 @@ document.addEventListener('DOMContentLoaded', async () => {
     // --- End Theme Switcher Logic ---
     
     // --- Optimization Settings UI Logic ---
-    function setupOptimizationUI() {
-        const executionPathRadios = document.querySelectorAll('input[name="executionPath"]');
-        const occlusionCullingOptionRow = document.getElementById('occlusionCullingOptionRow');
-        const enableOcclusionCullingCheckbox = document.getElementById('enableOcclusionCulling');
 
-        executionPathRadios.forEach(radio => {
-            // Set initial state from the global `executionPath` variable
-            if (radio.value === executionPath) {
-                radio.checked = true;
-                if (executionPath === 'displayList' && occlusionCullingOptionRow) {
-                    occlusionCullingOptionRow.style.display = ''; // Show occlusion culling option
-                } else if (occlusionCullingOptionRow) {
-                    occlusionCullingOptionRow.style.display = 'none'; // Hide for other paths
+    function updateOptimizationVisibility() {
+        checkboxesConfig.forEach(cbConfig => {
+            const checkbox = document.getElementById(cbConfig.id);
+            if (checkbox) {
+                const row = cbConfig.rowId ? document.getElementById(cbConfig.rowId) : checkbox.closest('.setting-row');
+                if (row) {
+                    const isRelevant = cbConfig.paths.includes(executionPath) || cbConfig.paths.includes('logging');
+                    row.style.display = isRelevant ? '' : 'none';
+                } else {
+                    console.warn(`Could not find row for checkbox ID '${cbConfig.id}'.`);
                 }
             }
+        });
+        // After visibility is set, update dependent options like second-pass
+        updateSecondPassDependentOptionsUI();
+    }
 
+    function setupOptimizationUI() {
+        const executionPathRadios = document.querySelectorAll('input[name="executionPath"]');
+
+        executionPathRadios.forEach(radio => {
+            if (radio.value === executionPath) {
+                radio.checked = true;
+            }
             radio.addEventListener('change', function(e) {
                 if (e.target.checked) {
                     executionPath = e.target.value;
                     console.log(`Execution path changed to: ${executionPath}`);
-                    if (executionPath === 'displayList' && occlusionCullingOptionRow) {
-                        occlusionCullingOptionRow.style.display = '';
-                    } else if (occlusionCullingOptionRow) {
-                        occlusionCullingOptionRow.style.display = 'none';
-                    }
-                    // Update UI for compiler-specific options if path changes
-                    updateCompilerOptionsUI();
+                    updateOptimizationVisibility(); // Update visibility of all options
                 }
             });
         });
         
-        if (enableOcclusionCullingCheckbox) {
-            enableOcclusionCullingCheckbox.checked = optimizationConfig.enableOcclusionCulling;
-            enableOcclusionCullingCheckbox.addEventListener('change', function(e) {
-                optimizationConfig.enableOcclusionCulling = e.target.checked;
-                console.log(`Occlusion Culling (Display List) changed to: ${e.target.checked}`);
-            });
-        }
-
-        // checkboxesConfig is now defined in the outer scope
-
         checkboxesConfig.forEach(cbConfig => {
             const checkbox = document.getElementById(cbConfig.id);
             if (checkbox) {
-                // Set initial checked state from the optimizationConfig object
-                checkbox.checked = optimizationConfig[cbConfig.configKey];
-                
-                // Add event listener to update the optimizationConfig object on change
+                checkbox.checked = optimizationConfig[cbConfig.configKey]; // Set initial state
                 checkbox.addEventListener('change', function(e) {
                     optimizationConfig[cbConfig.configKey] = e.target.checked;
                     console.log(`${cbConfig.label} changed to: ${e.target.checked}`);
+                    // If this is the master second-pass checkbox, update its dependents
+                    if (cbConfig.id === 'enableSecondPassOptimization') {
+                        updateSecondPassDependentOptionsUI();
+                    }
                 });
             } else {
                 console.warn(`Checkbox with ID '${cbConfig.id}' not found in HTML.`);
             }
         });
 
-        // After all checkboxes are processed and listeners attached,
-        // set the initial state of dependent second-pass options.
-        updateSecondPassDependentOptionsUI();
+        // Initial visibility and dependent options setup
+        updateOptimizationVisibility();
+        // updateSecondPassDependentOptionsUI(); // Called by updateOptimizationVisibility
     }
     // --- End Optimization Settings UI Logic ---
 
@@ -415,7 +410,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         const secondPassCheckbox = document.getElementById('enableSecondPassOptimization');
         if (!secondPassCheckbox) return;
 
-        const isSecondPassEnabled = secondPassCheckbox.checked;
+        // Check if the master "Second Pass Optimization" row is visible
+        const secondPassRow = secondPassCheckbox.closest('.setting-row');
+        const isSecondPassVisible = secondPassRow && secondPassRow.style.display !== 'none';
+
+        const isSecondPassEnabledAndVisible = isSecondPassVisible && secondPassCheckbox.checked;
 
         const dependentOptionIds = [
             'enableDrawCallBatching',
@@ -429,39 +428,19 @@ document.addEventListener('DOMContentLoaded', async () => {
         dependentOptionIds.forEach(id => {
             const checkbox = document.getElementById(id);
             if (checkbox) {
-                checkbox.disabled = !isSecondPassEnabled;
+                // Dependent options are disabled if master is not enabled OR if master is not visible
+                checkbox.disabled = !isSecondPassEnabledAndVisible;
             }
         });
     }
 
     // Initial setup for dependent options and listener for the master checkbox
-    const enableSecondPassOptimizationCheckbox = document.getElementById('enableSecondPassOptimization');
-    if (enableSecondPassOptimizationCheckbox) {
-        enableSecondPassOptimizationCheckbox.addEventListener('change', updateSecondPassDependentOptionsUI);
-    }
-    
-    // Function to enable/disable compiler-specific options based on execution path
-    function updateCompilerOptionsUI() {
-        const isCompilerPath = (executionPath === 'compiler');
-        checkboxesConfig.forEach(cbConfig => {
-            if (cbConfig.compilerOnly) {
-                const checkbox = document.getElementById(cbConfig.id);
-                if (checkbox) {
-                    checkbox.disabled = !isCompilerPath;
-                    // If disabling a master option (like second pass), also update its dependents
-                    if (cbConfig.id === 'enableSecondPassOptimization' && !isCompilerPath) {
-                        updateSecondPassDependentOptionsUI(); // This will disable dependents
-                    }
-                }
-            }
-        });
-        // Ensure second-pass dependent options are correctly set based on the master second-pass checkbox
-        updateSecondPassDependentOptionsUI();
-    }
+    // Note: The listener for 'enableSecondPassOptimization' is now set up within setupOptimizationUI's loop.
+    // We still need to ensure updateSecondPassDependentOptionsUI is called initially.
 
     // Call initial UI updates after all listeners are attached
-    updateCompilerOptionsUI(); // Set initial state for compiler-specific options
-    // updateSecondPassDependentOptionsUI(); // Already called by updateCompilerOptionsUI
+    // updateOptimizationVisibility(); // This will be called by setupOptimizationUI
+    // updateSecondPassDependentOptionsUI(); // This will be called by updateOptimizationVisibility
     // --- End Update UI for Second-Pass Dependent Options ---
 
 
