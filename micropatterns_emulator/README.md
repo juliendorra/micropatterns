@@ -15,13 +15,18 @@ For the full MicroPatterns language specification and project details, please se
     *   The `$WIDTH` and `$HEIGHT` environment variables available to your script will reflect the *actual selected resolution* (e.g., 540 and 960 for M5Paper).
 4.  **Toggle Zoom (M5Paper):**
     *   If M5Paper (540x960) display is selected, use the "Zoom" button to toggle the visual display between 50% (default) and 100% (actual pixel size). This does not affect the script's `$WIDTH` or `$HEIGHT`.
-5.  **Set Environment:** Adjust the `$HOUR`, `$MINUTE`, `$SECOND`, and `$COUNTER` values in the "Environment Variables" section.
+5.  **Set Environment:** Adjust the `$HOUR`, `$MINUTE`, `$SECOND`, and `$COUNTER` values in the "Environment Variables" section. These values can be manually typed into their respective input fields. The script will use these values when executed.
 6.  **User ID:**
     *   A unique User ID is automatically generated (using NanoID) and stored in your browser's local storage. This ID is displayed in the "Script Management" section.
     *   This User ID namespaces your scripts on the server. You can copy this ID to use in another browser to access the same set of scripts.
     *   You can also paste an existing User ID into the field.
-7.  **Run Script:** Click the "Run Script" button. The script will be parsed and executed, drawing the result on the canvas display.
-8.  **Increment Counter:** Click "Increment Counter" to increase the `$COUNTER` by one and automatically re-run the script, showing how the output changes over time (or iterations).
+7.  **Run Script:** Click the "Run Script" button. The script will be parsed and executed, drawing the result on the canvas display. If the counter is unlocked (see below), it will auto-increment after a successful run.
+8.  **Lock/Unlock Counter & Auto-Increment:**
+    *   Next to the `$COUNTER` input, there is a lock button (showing 🔓 for unlocked, 🔒 for locked).
+    *   Clicking this button toggles the lock state of the counter.
+    *   **Unlocked State (🔓):** When the counter is unlocked, successfully running a script (either via "Run Script" or by other means that trigger a re-run) will automatically increment the `$COUNTER` value by one. This is useful for observing iterative changes.
+    *   **Locked State (🔒):** When the counter is locked, it will **not** auto-increment after a script run. This is helpful for debugging or when you want to run the script multiple times with the same `$COUNTER` value. The background of the `$COUNTER` input field will be slightly grayed out to visually indicate it's locked.
+    *   Manually changing the `$COUNTER` value in its input field is always possible, regardless of the lock state. The "Run Script" button will always use the currently displayed `$COUNTER` value.
 9.  **Errors:** Any parsing or runtime errors will appear in the red box below the script input, indicating the line number and error message.
 10. **Patterns:** Patterns defined using `DEFINE PATTERN` in the script will be listed under "Patterns Defined" after a successful parse. Click on a preview to interactively edit its pixels in the editor. You can also drag & drop image files onto previews to import them.
 11. **New Command:** Includes the `FILL_PIXEL` command for drawing pixels conditionally based on the current fill pattern.
