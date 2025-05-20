@@ -688,8 +688,14 @@ export class MicroPatternsCompiler {
         }
     }
 
-    _compileCommandToJs(command, scriptAnalysis = {}) {
+    _getVarSuffix(commandLine, iterationIndex = null) {
+        return iterationIndex !== null ? `_${commandLine}_iter${iterationIndex}` : `_${commandLine}`;
+    }
+
+    _compileCommandToJs(command, scriptAnalysis = {}, iterationIndex = null) {
         let js = `// Line ${command.line}: ${command.type}`;
+        const varSuffix = this._getVarSuffix(command.line, iterationIndex);
+
         // Apply optimizations based on command type and script analysis
         switch (command.type) {
             case 'VAR':
@@ -720,20 +726,20 @@ export class MicroPatternsCompiler {
                     
                     if (this.optimizationConfig.enablePatternTileCaching) {
                         js += `\n// Use pattern tile caching`;
-                        js += `\nconst _pattern_${command.line} = _assets['${patternNameUpper}'];`;
-                        js += `\nif (!_pattern_${command.line}) { _runtimeError("Pattern '${patternNameUpper}' not defined.", ${command.line}); }`;
+                        js += `\nconst _pattern${varSuffix} = _assets['${patternNameUpper}'];`;
+                        js += `\nif (!_pattern${varSuffix}) { _runtimeError("Pattern '${patternNameUpper}' not defined.", ${command.line}); }`;
                         js += `\nelse {`;
-                        js += `\n  const _patternKey_${command.line} = \`pattern:${patternNameUpper}:\${_state.color}\`;`;
-                        js += `\n  _pattern_${command.line}.cachedTile = _optimization.getCachedPatternTile(_patternKey_${command.line}, () => {`;
+                        js += `\n  const _patternKey${varSuffix} = \`pattern:${patternNameUpper}:\${_state.color}\`;`;
+                        js += `\n  _pattern${varSuffix}.cachedTile = _optimization.getCachedPatternTile(_patternKey${varSuffix}, () => {`;
                         js += `\n    // Pre-compute lookup table for this pattern`;
                         js += `\n    return {`;
-                        js += `\n      lookup: new Uint8Array(_pattern_${command.line}.width * _pattern_${command.line}.height),`;
-                        js += `\n      width: _pattern_${command.line}.width,`;
-                        js += `\n      height: _pattern_${command.line}.height,`;
+                        js += `\n      lookup: new Uint8Array(_pattern${varSuffix}.width * _pattern${varSuffix}.height),`;
+                        js += `\n      width: _pattern${varSuffix}.width,`;
+                        js += `\n      height: _pattern${varSuffix}.height,`;
                         js += `\n      color: _state.color`;
                         js += `\n    };`;
                         js += `\n  });`;
-                        js += `\n  _state.fillAsset = _pattern_${command.line};`;
+                        js += `\n  _state.fillAsset = _pattern${varSuffix};`;
                         js += `\n}`;
                     } else {
                         js += `\n_state.fillAsset = _assets['${patternNameUpper}'];`;
@@ -750,16 +756,16 @@ export class MicroPatternsCompiler {
                 
                 if (this.optimizationConfig.enableTransformCaching) {
                     js += `\n// Use transform caching for translation`;
-                    js += `\nconst _dx_${command.line} = ${dx};`;
-                    js += `\nconst _dy_${command.line} = ${dy};`;
-                    js += `\nconst _transKey_${command.line} = \`translate:\${_dx_${command.line}}:\${_dy_${command.line}}:\${_state.matrix.toString()}\`;`;
-                    js += `\nconst _transResult_${command.line} = _optimization.getCachedTransform(_transKey_${command.line}, () => {`;
+                    js += `\nconst _dx${varSuffix} = ${dx};`;
+                    js += `\nconst _dy${varSuffix} = ${dy};`;
+                    js += `\nconst _transKey${varSuffix} = \`translate:\${_dx${varSuffix}}:\${_dy${varSuffix}}:\${_state.matrix.toString()}\`;`;
+                    js += `\nconst _transResult${varSuffix} = _optimization.getCachedTransform(_transKey${varSuffix}, () => {`;
                     js += `\n  const newMatrix = new DOMMatrix(_state.matrix);`;
-                    js += `\n  newMatrix.translateSelf(_dx_${command.line}, _dy_${command.line});`;
+                    js += `\n  newMatrix.translateSelf(_dx${varSuffix}, _dy${varSuffix});`;
                     js += `\n  return { matrix: newMatrix, inverse: newMatrix.inverse() };`;
                     js += `\n});`;
-                    js += `\n_state.matrix = _transResult_${command.line}.matrix;`;
-                    js += `\n_state.inverseMatrix = _transResult_${command.line}.inverse;`;
+                    js += `\n_state.matrix = _transResult${varSuffix}.matrix;`;
+                    js += `\n_state.inverseMatrix = _transResult${varSuffix}.inverse;`;
                 } else {
                     js += `\n_state.matrix.translateSelf(${dx}, ${dy}); _state.inverseMatrix = _state.matrix.inverse();`;
                 }
@@ -769,15 +775,15 @@ export class MicroPatternsCompiler {
                 
                 if (this.optimizationConfig.enableTransformCaching) {
                     js += `\n// Use transform caching for rotation`;
-                    js += `\nconst _degrees_${command.line} = ${degrees};`;
-                    js += `\nconst _rotKey_${command.line} = \`rotate:\${_degrees_${command.line}}:\${_state.matrix.toString()}\`;`;
-                    js += `\nconst _rotResult_${command.line} = _optimization.getCachedTransform(_rotKey_${command.line}, () => {`;
+                    js += `\nconst _degrees${varSuffix} = ${degrees};`;
+                    js += `\nconst _rotKey${varSuffix} = \`rotate:\${_degrees${varSuffix}}:\${_state.matrix.toString()}\`;`;
+                    js += `\nconst _rotResult${varSuffix} = _optimization.getCachedTransform(_rotKey${varSuffix}, () => {`;
                     js += `\n  const newMatrix = new DOMMatrix(_state.matrix);`;
-                    js += `\n  newMatrix.rotateSelf(_degrees_${command.line});`;
+                    js += `\n  newMatrix.rotateSelf(_degrees${varSuffix});`;
                     js += `\n  return { matrix: newMatrix, inverse: newMatrix.inverse() };`;
                     js += `\n});`;
-                    js += `\n_state.matrix = _rotResult_${command.line}.matrix;`;
-                    js += `\n_state.inverseMatrix = _rotResult_${command.line}.inverse;`;
+                    js += `\n_state.matrix = _rotResult${varSuffix}.matrix;`;
+                    js += `\n_state.inverseMatrix = _rotResult${varSuffix}.inverse;`;
                 } else {
                     js += `\n_state.matrix.rotateSelf(${degrees}); _state.inverseMatrix = _state.matrix.inverse();`;
                 }
@@ -795,10 +801,10 @@ export class MicroPatternsCompiler {
                 // Check _drawing.optimizationConfig for batching, as compiler's this.optimizationConfig might differ from runtime.
                 js += `\n} else if (_drawing.optimizationConfig && _drawing.optimizationConfig.enablePixelBatching && _optimization && _optimization.batchPixelOperations) {`;
                 js += `\n  // Use pixel batching via _optimization object provided by runner`;
-                js += `\n  const _px_${command.line} = ${this._generateValueCode(command.params.X, command.line)};`;
-                js += `\n  const _py_${command.line} = ${this._generateValueCode(command.params.Y, command.line)};`;
-                js += `\n  const _transformedPt_${command.line} = _drawing.transformPoint(_px_${command.line}, _py_${command.line}, _state);`;
-                js += `\n  _optimization.batchPixelOperations(_transformedPt_${command.line}.x, _transformedPt_${command.line}.y, _state.color);`;
+                js += `\n  const _px${varSuffix} = ${this._generateValueCode(command.params.X, command.line)};`;
+                js += `\n  const _py${varSuffix} = ${this._generateValueCode(command.params.Y, command.line)};`;
+                js += `\n  const _transformedPt${varSuffix} = _drawing.transformPoint(_px${varSuffix}, _py${varSuffix}, _state);`;
+                js += `\n  _optimization.batchPixelOperations(_transformedPt${varSuffix}.x, _transformedPt${varSuffix}.y, _state.color);`;
                 js += `\n} else {`;
                 js += `\n  // Fallback to direct drawPixel if batching is not enabled or not available`;
                 js += `\n  _drawing.drawPixel(${this._generateValueCode(command.params.X, command.line)}, ${this._generateValueCode(command.params.Y, command.line)}, _state);`;
@@ -821,21 +827,21 @@ export class MicroPatternsCompiler {
                 break;
             case 'DRAW':
                 const drawPatternName = command.params.NAME.toUpperCase();
-                // Use a unique variable name by including the line number
-                js += `\nconst _drawAsset_${command.line} = _assets['${drawPatternName}'];`;
-                js += `\nif (!_drawAsset_${command.line}) { _runtimeError("Pattern '${drawPatternName}' not defined for DRAW.", ${command.line}); }`;
-                js += `\nelse { _drawing.drawAsset(${this._generateValueCode(command.params.X, command.line)}, ${this._generateValueCode(command.params.Y, command.line)}, _drawAsset_${command.line}, _state); }`;
+                js += `\nconst _drawAsset${varSuffix} = _assets['${drawPatternName}'];`;
+                js += `\nif (!_drawAsset${varSuffix}) { _runtimeError("Pattern '${drawPatternName}' not defined for DRAW.", ${command.line}); }`;
+                js += `\nelse { _drawing.drawAsset(${this._generateValueCode(command.params.X, command.line)}, ${this._generateValueCode(command.params.Y, command.line)}, _drawAsset${varSuffix}, _state); }`;
                 break;
             case 'FILL_PIXEL':
                 js += `\n_drawing.drawFilledPixel(${this._generateValueCode(command.params.X, command.line)}, ${this._generateValueCode(command.params.Y, command.line)}, _state);`;
                 break;
             case 'REPEAT':
+                // Note: varSuffix here is for the REPEAT command itself, if it's inside an unrolled loop.
                 const count = this._generateValueCode(command.count, command.line);
-                js += `\nconst _repeatCount_${command.line} = ${count};`;
-                js += `\nif (!Number.isInteger(_repeatCount_${command.line}) || _repeatCount_${command.line} < 0) { _runtimeError("REPEAT COUNT must resolve to a non-negative integer. Got: " + _repeatCount_${command.line}, ${command.line}); }`;
+                js += `\nconst _repeatCount${varSuffix} = ${count};`;
+                js += `\nif (!Number.isInteger(_repeatCount${varSuffix}) || _repeatCount${varSuffix} < 0) { _runtimeError("REPEAT COUNT must resolve to a non-negative integer. Got: " + _repeatCount${varSuffix}, ${command.line}); }`;
                 
                 // Save the current $INDEX value to restore after the loop
-                js += `\nconst _savedIndex_${command.line} = _variables['$INDEX'];`;
+                js += `\nconst _savedIndex${varSuffix} = _variables['$INDEX'];`;
                 
                 // Find loop invariants if optimization is enabled
                 if (this.optimizationConfig.enableInvariantHoisting && scriptAnalysis.repeatLoops) {
@@ -855,7 +861,7 @@ export class MicroPatternsCompiler {
                                 // Process them in order to ensure dependencies are handled correctly
                                 for (const inv of loopInfo.invariants) {
                                     if (inv.type === 'expression') {
-                                        const hoistedVarName = `_inv_${command.line}_${inv.target}`;
+                                        const hoistedVarName = `_inv${varSuffix}_${inv.target}`; // Use varSuffix for hoisted var name
                                         
                                         // Only declare each variable once
                                         if (!declaredHoistedVars.has(hoistedVarName)) {
@@ -894,24 +900,24 @@ export class MicroPatternsCompiler {
                                 for (const inv of loopInfo.invariants) {
                                     if (inv.type === 'expression' && !uniqueTargets.has(inv.target)) {
                                         uniqueTargets.add(inv.target);
-                                        js += `\n_variables['$${inv.target}'] = _inv_${command.line}_${inv.target};`;
+                                        js += `\n_variables['$${inv.target}'] = _inv${varSuffix}_${inv.target};`; // Use varSuffix for hoisted var
                                     }
                                 }
                             }
                         }
-                        
-                        js += this._compileCommandsToString(command.commands, scriptAnalysis);
+                        // Pass `i` as iterationIndex for commands inside this unrolled loop
+                        js += this._compileCommandsToString(command.commands, scriptAnalysis, i);
                     }
                 } else {
                     // Standard loop implementation with optimization hooks
-                    js += `\nfor (let _i_${command.line} = 0; _i_${command.line} < _repeatCount_${command.line}; _i_${command.line}++) {`;
+                    js += `\nfor (let _i${varSuffix} = 0; _i${varSuffix} < _repeatCount${varSuffix}; _i${varSuffix}++) {`; // Use varSuffix for loop iterator
                     js += `\n  // Set INDEX for this iteration`;
-                    js += `\n  _variables['$INDEX'] = _i_${command.line};`;
+                    js += `\n  _variables['$INDEX'] = _i${varSuffix};`;
                     
                     // Add runtime validation that $INDEX is properly set for each iteration
                     js += `\n  if (_variables['$INDEX'] === undefined) {`;
-                    js += `\n    console.warn("INDEX variable undefined in REPEAT at line ${command.line}, iteration " + _i_${command.line});`;
-                    js += `\n    _variables['$INDEX'] = _i_${command.line}; // Force correction`;
+                    js += `\n    console.warn("INDEX variable undefined in REPEAT at line ${command.line}, iteration " + _i${varSuffix});`;
+                    js += `\n    _variables['$INDEX'] = _i${varSuffix}; // Force correction`;
                     js += `\n  }`;
                     
                     // Use invariants if available
@@ -925,7 +931,7 @@ export class MicroPatternsCompiler {
                             for (const inv of loopInfo.invariants) {
                                 if (inv.type === 'expression' && !uniqueTargets.has(inv.target)) {
                                     uniqueTargets.add(inv.target);
-                                    js += `\n  _variables['$${inv.target}'] = _inv_${command.line}_${inv.target}; // Assign hoisted invariant`;
+                                    js += `\n  _variables['$${inv.target}'] = _inv${varSuffix}_${inv.target}; // Assign hoisted invariant, use varSuffix`;
                                 }
                             }
                             
@@ -935,13 +941,13 @@ export class MicroPatternsCompiler {
                             }
                         }
                     }
-                    
-                    js += this._compileCommandsToString(command.commands, scriptAnalysis);
+                    // For commands inside a standard loop, iterationIndex is null
+                    js += this._compileCommandsToString(command.commands, scriptAnalysis, null);
                     js += `\n}`;
                 }
                 
                 // Restore the previous $INDEX value after the loop
-                js += `\n_variables['$INDEX'] = _savedIndex_${command.line};`;
+                js += `\n_variables['$INDEX'] = _savedIndex${varSuffix};`;
                 break;
             case 'IF':
                 // Add validation for the condition object
@@ -980,11 +986,11 @@ export class MicroPatternsCompiler {
         return js;
     }
 
-    _compileCommandsToString(commands) {
+    _compileCommandsToString(commands, scriptAnalysis, iterationIndex = null) {
         if (!commands || commands.length === 0) return "";
         let blockJs = "";
         for (const cmd of commands) {
-            blockJs += `\n${this._compileCommandToJs(cmd)}`;
+            blockJs += `\n${this._compileCommandToJs(cmd, scriptAnalysis, iterationIndex)}`;
         }
         return blockJs;
     }

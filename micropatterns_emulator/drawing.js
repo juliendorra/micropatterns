@@ -127,9 +127,15 @@ export class MicroPatternsDrawing {
         // The transformCache should ideally be managed by the caller (runner) if it's context-dependent.
         // For simplicity, if itemState has a transformCache, use it.
         if (itemState.transformCache) {
-            const key = `${Math.trunc(scaledX)},${Math.trunc(scaledY)}`;
-            if (itemState.transformCache.has(key)) {
-                return itemState.transformCache.get(key);
+            // Ensure matrixToUse is defined before using its properties in the key
+            if (!matrixToUse) {
+                console.error("transformPoint: matrixToUse is undefined for cache key generation", itemState);
+                // Proceed without caching if matrix is missing, or handle error appropriately
+            } else {
+                const key = `${Math.trunc(scaledX)},${Math.trunc(scaledY)},${matrixToUse.a},${matrixToUse.b},${matrixToUse.c},${matrixToUse.d},${matrixToUse.e},${matrixToUse.f}`;
+                if (itemState.transformCache.has(key)) {
+                    return itemState.transformCache.get(key);
+                }
             }
         }
 
@@ -140,8 +146,8 @@ export class MicroPatternsDrawing {
         const screenPoint = matrixToUse.transformPoint({ x: scaledX, y: scaledY });
         const result = { x: screenPoint.x, y: screenPoint.y };
         
-        if (itemState.transformCache && Number.isInteger(scaledX) && Number.isInteger(scaledY)) {
-            const key = `${Math.trunc(scaledX)},${Math.trunc(scaledY)}`;
+        if (itemState.transformCache && Number.isInteger(scaledX) && Number.isInteger(scaledY) && matrixToUse) {
+            const key = `${Math.trunc(scaledX)},${Math.trunc(scaledY)},${matrixToUse.a},${matrixToUse.b},${matrixToUse.c},${matrixToUse.d},${matrixToUse.e},${matrixToUse.f}`;
             itemState.transformCache.set(key, result);
             if (itemState.transformCache.size > 1000) { // Basic cache eviction
                 const keys = Array.from(itemState.transformCache.keys());

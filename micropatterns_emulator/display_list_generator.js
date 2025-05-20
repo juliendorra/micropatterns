@@ -23,7 +23,7 @@ export class DisplayListGenerator {
             fillAsset: null,
             scale: 1.0,
             matrix: new DOMMatrix(),
-            // inverseMatrix is not strictly needed by generator, but good to keep in sync if state is copied
+            inverseMatrix: new DOMMatrix() // Track inverseMatrix to ensure consistent transforms
         };
         this.errors = [];
         this._nextDisplayListItemId = 0; // For unique IDs if needed for debugging
@@ -339,16 +339,21 @@ _isItemOpaque(itemType, commandParams) { // commandParams needed for DRAW's asse
                 case 'RESET_TRANSFORMS':
                     this._state.scale = 1.0;
                     this._state.matrix = new DOMMatrix();
+                    this._state.inverseMatrix = new DOMMatrix();
                     break;
                 case 'TRANSLATE':
                     const dx = this._resolveValue(command.params.DX, line);
                     const dy = this._resolveValue(command.params.DY, line);
                     this._state.matrix.translateSelf(dx, dy);
+                    // Update inverse matrix when we change the transform matrix
+                    this._state.inverseMatrix = this._state.matrix.inverse();
                     break;
                 case 'ROTATE':
                     const degrees = this._resolveValue(command.params.DEGREES, line);
-                    // Note: DOMMatrix.rotateSelf rotates around the current origin (0,0) of the matrix's coordinate system.
-                    // The DSL spec says "sets the *absolute* rotation angle around the current origin".
+                    this._state.matrix.rotateSelf(degrees);
+                    // Update inverse matrix when we change the transform matrix
+                    this._state.inverseMatrix = this._state.matrix.inverse();
+                    break;
                     // This implies we might need to reset rotation part of matrix then apply.
                     // For simplicity, and matching typical immediate mode, let's assume cumulative.
                     // If absolute is strictly needed, matrix decomposition/recomposition is required.
@@ -375,6 +380,7 @@ _isItemOpaque(itemType, commandParams) { // commandParams needed for DRAW's asse
                         type: command.type,
                         logicalParams: {},
                         transformMatrix: new DOMMatrix(this._state.matrix),
+                        inverseMatrix: new DOMMatrix(this._state.inverseMatrix), // Store precomputed inverse matrix
                         scaleFactor: this._state.scale,
                         color: this._state.color,
                         fillAsset: this._state.fillAsset ? { ...this._state.fillAsset } : null, // Snapshot asset

@@ -278,21 +278,6 @@ export class DisplayListRenderer {
             }
         };
     }
-        const finalMaxX = Math.ceil(maxX);
-        const finalMaxY = Math.ceil(maxY);
-        
-        if (finalMinX >= finalMaxX || finalMinY >= finalMaxY) {
-            isOffScreenResult = true;
-        }
-
-        return {
-            minX: finalMinX,
-            minY: finalMinY,
-            maxX: finalMaxX,
-            maxY: finalMaxY,
-            isOffScreen: isOffScreenResult
-        };
-    }
 
     _renderItem(item) {
         const itemState = {
@@ -301,7 +286,7 @@ export class DisplayListRenderer {
             scaleFactor: item.scaleFactor, // Use scaleFactor consistently
             scale: item.scaleFactor, // Keep 'scale' for compatibility if drawing.js uses it
             matrix: item.transformMatrix,
-            inverseMatrix: item.transformMatrix.inverse(),
+            inverseMatrix: item.inverseMatrix, // Use stored inverse matrix instead of calculating it
             transformCache: this.transformCache // Pass renderer's cache
         };
 
