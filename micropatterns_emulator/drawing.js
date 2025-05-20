@@ -490,13 +490,19 @@ export class MicroPatternsDrawing {
             
             // If we have pixel locking enabled, need to check each pixel in the rect
             if (this.pixelOccupationMap) {
+                // Determine iteration bounds correctly for positive or negative screen width/height
+                const xStart = sw >= 0 ? sx : sx + sw;
+                const xEnd = sw >= 0 ? sx + sw : sx;
+                const yStart = sh >= 0 ? sy : sy + sh;
+                const yEnd = sh >= 0 ? sy + sh : sy;
+
                 // For large rectangles, check individual pixels
-                for (let y = sy; y < sy + sh; y++) {
-                    for (let x = sx; x < sx + sw; x++) {
-                        if (!this.isPixelOccupied(x, y)) {
+                for (let y_iter = yStart; y_iter < yEnd; y_iter++) {
+                    for (let x_iter = xStart; x_iter < xEnd; x_iter++) {
+                        if (!this.isPixelOccupied(x_iter, y_iter)) {
                             this.ctx.fillStyle = itemState.color;
-                            this.ctx.fillRect(x, y, 1, 1);
-                            this.markPixelOccupied(x, y, itemState.color);
+                            this.ctx.fillRect(x_iter, y_iter, 1, 1); // Draw 1x1 pixel
+                            this.markPixelOccupied(x_iter, y_iter, itemState.color);
                         } else {
                             this.overdrawSkippedPixels++;
                         }
