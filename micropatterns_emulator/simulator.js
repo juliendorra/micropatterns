@@ -53,11 +53,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Configuration for UI checkboxes related to optimizations
     const checkboxesConfig = [
         // Path-specific
-        { id: 'enableOcclusionCulling', configKey: 'enableOcclusionCulling', label: 'Occlusion Culling (Display List)', paths: ['displayList'], rowId: 'occlusionCullingOptionRow' }, // Special handling for rowId if needed, or use closest()
-        { id: 'enableOverdrawOptimization', configKey: 'enableOverdrawOptimization', label: 'Overdraw Optimization (Pixel Occupancy - Compiler/Display List)', paths: ['compiler', 'displayList'] },
-        { id: 'enableTransformCaching', configKey: 'enableTransformCaching', label: 'Transform Caching', paths: ['compiler', 'displayList'] },
-        { id: 'enablePatternTileCaching', configKey: 'enablePatternTileCaching', label: 'Pattern Caching', paths: ['interpreter', 'compiler', 'displayList'] },
-        { id: 'enablePixelBatching', configKey: 'enablePixelBatching', label: 'Pixel Batching', paths: ['compiler', 'displayList'] },
+        { id: 'enableOcclusionCulling', configKey: 'enableOcclusionCulling', label: 'Occlusion Culling', paths: ['displayList'], rowId: 'occlusionCullingOptionRow' },
+        { id: 'enableOverdrawOptimization', configKey: 'enableOverdrawOptimization', label: 'Overdraw Optimization (Pixel Occupancy)', paths: ['compiler'] },
+        { id: 'enableTransformCaching', configKey: 'enableTransformCaching', label: 'Transform Caching', paths: ['compiler'] },
+        { id: 'enablePatternTileCaching', configKey: 'enablePatternTileCaching', label: 'Pattern Caching', paths: ['interpreter', 'compiler'] },
+        { id: 'enablePixelBatching', configKey: 'enablePixelBatching', label: 'Pixel Batching', paths: ['compiler'] },
         // Compiler specific
         { id: 'enableLoopUnrolling', configKey: 'enableLoopUnrolling', label: 'Loop Unrolling', paths: ['compiler'] },
         { id: 'enableInvariantHoisting', configKey: 'enableInvariantHoisting', label: 'Invariant Hoisting', paths: ['compiler'] },
@@ -357,6 +357,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                 if (row) {
                     const isRelevant = cbConfig.paths.includes(executionPath) || cbConfig.paths.includes('logging');
                     row.style.display = isRelevant ? '' : 'none';
+                    
+                    // No need to disable checkboxes that aren't visible
+                    checkbox.disabled = false;
                 } else {
                     console.warn(`Could not find row for checkbox ID '${cbConfig.id}'.`);
                 }
@@ -748,13 +751,13 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (hasErrors) { displayProfilingResults(); return; }
 
             // Pass relevant parts of optimizationConfig to the renderer
+            // For Display List path, some optimizations are always enabled regardless of UI settings
             const rendererOptimizationConfig = {
                 enableOcclusionCulling: optimizationConfig.enableOcclusionCulling,
                 occlusionBlockSize: optimizationConfig.occlusionBlockSize,
-                enablePixelBatching: optimizationConfig.enablePixelBatching, // For renderer's own batching
-                // Pass other flags if DisplayListRenderer or its MicroPatternsDrawing instance uses them
-                enablePatternTileCaching: optimizationConfig.enablePatternTileCaching,
-                enableTransformCaching: optimizationConfig.enableTransformCaching, // If drawing methods use it
+                enablePixelBatching: true, // Always enabled for Display List
+                enablePatternTileCaching: true, // Always enabled for Display List
+                enableTransformCaching: true, // Always enabled for Display List
             };
             currentDisplayListRenderer = new DisplayListRenderer(ctx, parseResult.assets.assets, rendererOptimizationConfig);
             
@@ -762,18 +765,21 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             try {
                 currentDisplayListRenderer.render(generatorOutput.displayList);
-                // Log Display List stats
-                const dlStats = currentDisplayListRenderer.getStats();
-                let statsReport = "\n--- Display List Stats ---\n";
-                statsReport += `Total Items: ${dlStats.totalItems}\n`;
-                statsReport += `Rendered Items: ${dlStats.renderedItems}\n`;
-                statsReport += `Culled (Off-Screen): ${dlStats.culledOffScreen}\n`;
-                statsReport += `Culled (Occlusion): ${dlStats.culledByOcclusion}\n`;
-                if (optimizationConfig.enableOcclusionCulling) {
-                    statsReport += `Occlusion Buffer: ${dlStats.occlusionBufferStats.gridWidth}x${dlStats.occlusionBufferStats.gridHeight} blocks (size ${dlStats.occlusionBufferStats.blockSize}px)\n`;
+                
+                // Log Display List stats only if LOG OPTIMIZATION STATS is enabled
+                if (optimizationConfig.logOptimizationStats) {
+                    const dlStats = currentDisplayListRenderer.getStats();
+                    let statsReport = "\n--- Display List Stats ---\n";
+                    statsReport += `Total Items: ${dlStats.totalItems}\n`;
+                    statsReport += `Rendered Items: ${dlStats.renderedItems}\n`;
+                    statsReport += `Culled (Off-Screen): ${dlStats.culledOffScreen}\n`;
+                    statsReport += `Culled (Occlusion): ${dlStats.culledByOcclusion}\n`;
+                    if (optimizationConfig.enableOcclusionCulling) {
+                        statsReport += `Occlusion Buffer: ${dlStats.occlusionBufferStats.gridWidth}x${dlStats.occlusionBufferStats.gridHeight} blocks (size ${dlStats.occlusionBufferStats.blockSize}px)\n`;
+                    }
+                    console.log(statsReport);
+                    if (errorLog) errorLog.textContent += statsReport;
                 }
-                console.log(statsReport);
-                if (errorLog) errorLog.textContent += statsReport;
 
             } catch (e) {
                 console.error("Unhandled Display List Renderer Exception:", e);
