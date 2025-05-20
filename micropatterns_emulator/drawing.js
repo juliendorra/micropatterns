@@ -13,8 +13,8 @@ export class MicroPatternsDrawing {
         // sinTable and cosTable are no longer needed with DOMMatrix
     }
     
-    // Reset pixel occupancy map and stats
-    resetPixelOccupancyMap() {
+    // Reset pixel occupation map and stats
+    resetPixelOccupationMap() {
         if (this.pixelOccupationMap) {
             this.pixelOccupationMap.fill(0);
         }
