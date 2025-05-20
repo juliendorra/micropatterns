@@ -7,7 +7,7 @@ import { DisplayListRenderer } from './display_list_renderer.js';
 
 document.addEventListener('DOMContentLoaded', async () => {
 
-    let executionPath = 'compiler'; // 'interpreter', 'compiler', or 'displayList'
+    let executionPath = 'displayList'; // 'interpreter', 'compiler', or 'displayList'
     // let USE_COMPILER = true; // This will be replaced by executionPath logic
     let currentRuntimeInstance = null; // Store runtime instance for profiling access
     let currentCompilerInstance = null; // For compiler instance access
@@ -159,7 +159,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         enableMemoryOptimization: true,    // UI is checked by default (second pass sub-option)
 
         // Display List specific
-        enableOcclusionCulling: true,     // (Display List) UI is checked by default
+        enableOcclusionCulling: true,     // (Display List) UI is checked by default, and this config confirms it
         occlusionBlockSize: 16             // Default block size for occlusion buffer
     };
     // --- End Configuration ---
