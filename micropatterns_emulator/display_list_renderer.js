@@ -34,6 +34,38 @@ class OcclusionBuffer {
         }
     }
 
+    updateFromPixelMap(screenMinX, screenMinY, screenMaxX, screenMaxY, pixelMap) {
+        const { startCol, endCol, startRow, endRow } =
+              this._getGridIndices(screenMinX, screenMinY, screenMaxX, screenMaxY);
+
+        for (let row = startRow; row <= endRow; row++) {
+          for (let col = startCol; col <= endCol; col++) {
+            if (this.grid[row * this.gridWidth + col] === 1) continue;   // already opaque
+
+            const pxMinX = col * this.blockSize;
+            const pxMinY = row * this.blockSize;
+            // Ensure pixel coordinates for sampling are within canvas bounds
+            const pxMaxXClamped = Math.min(pxMinX + this.blockSize, this.canvasWidth);
+            const pxMaxYClamped = Math.min(pxMinY + this.blockSize, this.canvasHeight);
+
+            let allFilled = true;
+            // Iterate over pixels within this block
+            for (let y = pxMinY; y < pxMaxYClamped && allFilled; y++) {
+              const base = y * this.canvasWidth; // Use this.canvasWidth for pixelMap indexing
+              for (let x = pxMinX; x < pxMaxXClamped; x++) {
+                if (pixelMap[base + x] === 0) { // Check if pixel is unpainted
+                    allFilled = false;
+                    break;
+                }
+              }
+            }
+            if (allFilled) {
+                this.grid[row * this.gridWidth + col] = 1; // Mark block as opaque
+            }
+          }
+        }
+    }
+
     isAreaOccluded(screenMinX, screenMinY, screenMaxX, screenMaxY) {
         // If area is zero or negative, it can't be occluded in a meaningful way for drawing.
         if (screenMinX >= screenMaxX || screenMinY >= screenMaxY) return false;
@@ -377,8 +409,13 @@ export class DisplayListRenderer {
             this._renderItem(item);
             this.renderedItems++;
     
+            // NEW: Update occlusion buffer based on actual pixels painted
             if (this.optimizationConfig.enableOcclusionCulling && item.isOpaque) {
-                this.occlusionBuffer.markAreaOpaque(screenBounds.minX, screenBounds.minY, screenBounds.maxX, screenBounds.maxY);
+                this.occlusionBuffer.updateFromPixelMap(
+                    screenBounds.minX, screenBounds.minY, // Use visual bounds
+                    screenBounds.maxX, screenBounds.maxY,
+                    this.pixelOccupationMap // The map of actually painted pixels
+                );
             }
         }
         this.flushPixelBatch(); // Final flush for any remaining pixels
