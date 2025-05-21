@@ -23,8 +23,10 @@ private:
     QueueHandle_t _inputEventQueue_to_main_ctrl; // Queue to send logical events to MainControlTask
     QueueHandle_t _rawInputQueue_internal;       // Internal queue for ISR to post raw pin events
 
-    volatile uint32_t _lastButtonTime[GPIO_NUM_MAX]; // Tracks last interrupt time per button
-    static const uint32_t DEBOUNCE_TIME_MS = 200;    // Debounce time
+    volatile uint32_t _lastSentEventTime[GPIO_NUM_MAX];      // Tracks time of last sent logical event
+    volatile bool _isButtonConsideredPressed[GPIO_NUM_MAX]; // Tracks if button is active (waiting for release)
+    static const uint32_t DEBOUNCE_TIME_MS = 200;           // Debounce time for new presses
+    // static const uint32_t RELEASE_POLL_INTERVAL_MS = 50; // How often to poll for release (used for queue timeout)
 
     // ISR handler - must be static or global
     static void IRAM_ATTR button_isr_handler(void *arg);

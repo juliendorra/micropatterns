@@ -10,7 +10,8 @@ extern QueueHandle_t g_im_raw_queue_ref;
 InputManager::InputManager(QueueHandle_t inputEventQueue_to_main_ctrl_param)
     : _inputEventQueue_to_main_ctrl(inputEventQueue_to_main_ctrl_param) {
     for (int i = 0; i < GPIO_NUM_MAX; ++i) {
-        _lastButtonTime[i] = 0;
+        _lastSentEventTime[i] = 0;
+        _isButtonConsideredPressed[i] = false;
     }
     _rawInputQueue_internal = xQueueCreate(10, sizeof(uint8_t)); // Queue for 10 raw pin numbers
     if (_rawInputQueue_internal == NULL) {
@@ -92,55 +93,78 @@ void InputManager::taskFunction() {
     uint8_t raw_gpio_num;
     log_i("InputManager Task started. Waiting for raw inputs from _rawInputQueue_internal.");
 
-    // WDT timeout for InputTask is 30s. We'll use a 15s queue receive timeout.
-    const TickType_t queueReceiveTimeout = pdMS_TO_TICKS(15000);
+    // Shorten queue timeout to allow periodic polling for button releases.
+    const TickType_t queueReceiveTimeout = pdMS_TO_TICKS(50); // Poll every 50ms
 
     for (;;) {
         esp_task_wdt_reset(); // Reset WDT at the start of each loop iteration.
+        uint8_t raw_gpio_num;
+
         if (xQueueReceive(_rawInputQueue_internal, &raw_gpio_num, queueReceiveTimeout) == pdTRUE) {
-            // Check if this pin is one we manage (it should be if ISR is set up correctly)
+            // Check if this pin is one we manage
             if (raw_gpio_num != BUTTON_UP_PIN && raw_gpio_num != BUTTON_DOWN_PIN && raw_gpio_num != BUTTON_PUSH_PIN) {
                 log_w("InputTask: Received ISR event for unmanaged GPIO %d", raw_gpio_num);
                 continue;
             }
 
             uint32_t current_time = millis();
-            // Debounce logic:
-            // Check if enough time has passed since the last accepted press for THIS button.
-            if ((current_time - _lastButtonTime[raw_gpio_num]) >= DEBOUNCE_TIME_MS || current_time < _lastButtonTime[raw_gpio_num] /* handle millis overflow */ ) {
-                
-                // Additional check: verify the button is still pressed (helps with noise)
-                if (digitalRead(raw_gpio_num) == LOW) {
-                    _lastButtonTime[raw_gpio_num] = current_time;
-                    log_i("InputTask: Debounced input from GPIO %d", raw_gpio_num);
+            bool pin_is_low_on_recheck = (digitalRead(raw_gpio_num) == LOW);
 
-                    InputEvent event;
-                    event.type = InputEventType::NONE;
-
-                    if (raw_gpio_num == BUTTON_UP_PIN) {
-                        event.type = InputEventType::PREVIOUS_SCRIPT; // Or map to generic UP
-                    } else if (raw_gpio_num == BUTTON_DOWN_PIN) {
-                        event.type = InputEventType::NEXT_SCRIPT; // Or map to generic DOWN
-                    } else if (raw_gpio_num == BUTTON_PUSH_PIN) {
-                        event.type = InputEventType::CONFIRM_ACTION; // Or map to generic SELECT/CONFIRM
-                    }
-
-                    if (event.type != InputEventType::NONE) {
-                        if (_inputEventQueue_to_main_ctrl != NULL) {
-                            if (xQueueSend(_inputEventQueue_to_main_ctrl, &event, pdMS_TO_TICKS(10)) != pdTRUE) {
-                                log_e("InputTask: Failed to send logical event to _inputEventQueue_to_main_ctrl.");
-                            } else {
-                                log_i("InputTask: Sent logical event %d", (int)event.type);
-                            }
-                        } else {
-                            log_e("InputTask: _inputEventQueue_to_main_ctrl is NULL!");
-                        }
-                    }
+            if (_isButtonConsideredPressed[raw_gpio_num]) {
+                // Button was active (event sent, waiting for release).
+                // An ISR event means it went H->L.
+                if (!pin_is_low_on_recheck) {
+                    // ISR triggered (H->L), but pin is now H again. This implies noise or a very quick bounce.
+                    // Consider it released.
+                    _isButtonConsideredPressed[raw_gpio_num] = false;
+                    log_d("InputTask: GPIO %d (was active) now HIGH on ISR re-check. Resetting active state.", raw_gpio_num);
                 } else {
-                    log_d("InputTask: GPIO %d was not LOW on re-check, likely noise.", raw_gpio_num);
+                    // Pin is still LOW. ISR was likely a bounce while held or a very quick re-press.
+                    // Since _isButtonConsideredPressed is true, ignore this H->L trigger.
+                    log_d("InputTask: GPIO %d ISR event while already active and still LOW. Ignoring.", raw_gpio_num);
                 }
-            } else {
-                log_d("InputTask: GPIO %d event debounced out (time). Last: %u, Curr: %u, Diff: %u", raw_gpio_num, _lastButtonTime[raw_gpio_num], current_time, current_time - _lastButtonTime[raw_gpio_num]);
+            } else { // Button was considered released. This ISR event is a new potential press.
+                if (pin_is_low_on_recheck) { // Confirmed LOW.
+                    if ((current_time - _lastSentEventTime[raw_gpio_num]) > DEBOUNCE_TIME_MS || current_time < _lastSentEventTime[raw_gpio_num] /* overflow */) {
+                        _lastSentEventTime[raw_gpio_num] = current_time;
+                        _isButtonConsideredPressed[raw_gpio_num] = true; // Mark as active
+                        log_i("InputTask: Debounced input from GPIO %d (new press)", raw_gpio_num);
+
+                        InputEvent event;
+                        event.type = InputEventType::NONE;
+                        if (raw_gpio_num == BUTTON_UP_PIN) event.type = InputEventType::PREVIOUS_SCRIPT;
+                        else if (raw_gpio_num == BUTTON_DOWN_PIN) event.type = InputEventType::NEXT_SCRIPT;
+                        else if (raw_gpio_num == BUTTON_PUSH_PIN) event.type = InputEventType::CONFIRM_ACTION;
+
+                        if (event.type != InputEventType::NONE) {
+                            if (_inputEventQueue_to_main_ctrl != NULL) {
+                                if (xQueueSend(_inputEventQueue_to_main_ctrl, &event, pdMS_TO_TICKS(10)) != pdTRUE) {
+                                    log_e("InputTask: Failed to send logical event to _inputEventQueue_to_main_ctrl.");
+                                } else {
+                                    log_i("InputTask: Sent logical event %d", (int)event.type);
+                                }
+                            } else {
+                                log_e("InputTask: _inputEventQueue_to_main_ctrl is NULL!");
+                            }
+                        }
+                    } else {
+                        // Debounced out by time relative to last *sent* event.
+                        log_d("InputTask: GPIO %d event debounced (time). LastSent: %u, Curr: %u, Diff: %u", raw_gpio_num, _lastSentEventTime[raw_gpio_num], current_time, current_time - _lastSentEventTime[raw_gpio_num]);
+                    }
+                } else { // Pin is HIGH on re-check. ISR was pure noise.
+                    log_d("InputTask: GPIO %d was not LOW on re-check (noise).", raw_gpio_num);
+                }
+            }
+        } else {
+            // Queue receive timed out. Poll for releases of any buttons that are considered pressed.
+            const uint8_t managed_pins[] = {BUTTON_UP_PIN, BUTTON_DOWN_PIN, BUTTON_PUSH_PIN};
+            for (uint8_t pin_to_check : managed_pins) {
+                if (_isButtonConsideredPressed[pin_to_check]) {
+                    if (digitalRead(pin_to_check) == HIGH) {
+                        _isButtonConsideredPressed[pin_to_check] = false;
+                        log_i("InputTask: GPIO %d detected HIGH on poll, considered released.", pin_to_check);
+                    }
+                }
             }
         }
     }
