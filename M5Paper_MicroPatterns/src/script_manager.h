@@ -65,11 +65,14 @@ private:
     static const char *DEFAULT_SCRIPT_ID;
 
     // FileId generation and management (generateShortFileId moved to public)
-    void ensureUniqueFileIds(JsonDocument& listDoc);
-    int getHighestFileIdNumber();
+    void ensureUniqueFileIds_nolock(JsonDocument& listDoc); // Internal version, assumes mutex held
+    int getHighestFileIdNumber(); // Note: This method also takes mutex internally.
     int _nextFileIdCounter = 0;
 
     bool initializeSPIFFS(); // Internal SPIFFS mount and directory check
+
+    // Internal helper methods that assume mutex is already taken
+    bool saveScriptList_nolock(JsonDocument &listDoc);
 };
 
 #endif // SCRIPT_MANAGER_H

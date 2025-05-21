@@ -179,86 +179,88 @@ int ScriptManager::getHighestFileIdNumber()
     return highest;
 }
 
-// Ensure all scripts in the list have unique, short fileIds
-void ScriptManager::ensureUniqueFileIds(JsonDocument &listDoc)
+// Internal helper: Assumes _spiffsMutex is already held.
+void ScriptManager::ensureUniqueFileIds_nolock(JsonDocument &listDoc)
 {
     if (!listDoc.is<JsonArray>())
     {
-        log_e("ensureUniqueFileIds: Document is not a JSON array");
+        log_e("ensureUniqueFileIds_nolock: Document is not a JSON array");
         return;
     }
 
     JsonArray scriptList = listDoc.as<JsonArray>();
-    std::map<String, bool> usedFileIds;
+    std::map<String, bool> usedFileIds; // Tracks fileIds used within this list processing
     bool listModified = false;
+
+    // Populate usedFileIds with existing valid fileIds from the list first
+    // This helps if getHighestFileIdNumber (called by generateShortFileId)
+    // doesn't see uncommitted changes from a previous failed save.
+    for (JsonObject scriptInfo : scriptList) {
+        if (scriptInfo["fileId"].is<const char*>()) {
+            String existingFileId = scriptInfo["fileId"].as<String>();
+            if (!existingFileId.isEmpty() && existingFileId != "null" && existingFileId.startsWith("s")) {
+                usedFileIds[existingFileId] = true;
+            }
+        }
+    }
+    
+    // Reset _nextFileIdCounter based on current highest known ID before generating new ones
+    // This ensures generateShortFileId starts from a correct baseline if called multiple times
+    // within one ensureUniqueFileIds_nolock pass or across different calls.
+    _nextFileIdCounter = getHighestFileIdNumber() + 1;
+
 
     for (JsonObject scriptInfo : scriptList)
     {
         if (!scriptInfo["id"].is<const char *>())
         {
-            log_w("ensureUniqueFileIds: Script missing valid 'id' field");
+            log_w("ensureUniqueFileIds_nolock: Script missing valid 'id' field");
             continue;
         }
 
         String humanId = scriptInfo["id"].as<String>();
         String fileId;
 
-        // Check if script has a valid fileId
         if (!scriptInfo["fileId"].isNull() && scriptInfo["fileId"].is<const char *>())
         {
             fileId = scriptInfo["fileId"].as<String>();
-
-            // Check if the fileId is valid (not empty, not "null", and follows our format)
             if (fileId.isEmpty() || fileId == "null" || !fileId.startsWith("s"))
             {
-                // Invalid fileId - generate a new one
-                fileId = generateShortFileId(humanId);
+                fileId = generateShortFileId(humanId); // generateShortFileId ensures uniqueness based on _nextFileIdCounter
                 scriptInfo["fileId"] = fileId;
                 listModified = true;
-                log_i("ensureUniqueFileIds: Replaced invalid fileId for '%s' with '%s'", humanId.c_str(), fileId.c_str());
+                log_i("ensureUniqueFileIds_nolock: Replaced invalid fileId for '%s' with '%s'", humanId.c_str(), fileId.c_str());
             }
         }
         else
         {
-            // Missing fileId - generate a new one
             fileId = generateShortFileId(humanId);
             scriptInfo["fileId"] = fileId;
             listModified = true;
-            log_i("ensureUniqueFileIds: Added missing fileId '%s' for '%s'", fileId.c_str(), humanId.c_str());
+            log_i("ensureUniqueFileIds_nolock: Added missing fileId '%s' for '%s'", fileId.c_str(), humanId.c_str());
         }
 
-        // Check for duplicate fileIds
-        if (usedFileIds.find(fileId) != usedFileIds.end())
-        {
-            // Duplicate found - generate a new one
-            String newFileId = generateShortFileId(humanId);
-            scriptInfo["fileId"] = newFileId;
-            listModified = true;
-            log_w("ensureUniqueFileIds: Replaced duplicate fileId '%s' with '%s' for '%s'",
-                  fileId.c_str(), newFileId.c_str(), humanId.c_str());
-            fileId = newFileId;
+        // This check for duplicates within the current processing pass is still useful
+        // if generateShortFileId somehow produced a non-unique ID (e.g. if _nextFileIdCounter logic had issues)
+        // or if the initial scan missed some existing IDs.
+        while (usedFileIds.count(fileId) && usedFileIds[fileId] == true) { // If ID is already marked as used by another item in this list
+             log_w("ensureUniqueFileIds_nolock: fileId '%s' for '%s' is a duplicate within this list processing. Regenerating.", fileId.c_str(), humanId.c_str());
+             fileId = generateShortFileId(humanId); // generate a new one
+             scriptInfo["fileId"] = fileId;
+             listModified = true;
         }
-
-        usedFileIds[fileId] = true;
+        usedFileIds[fileId] = true; // Mark this fileId as used for this script item
     }
 
-    // Save the updated list if changes were made
     if (listModified)
     {
-        log_i("ensureUniqueFileIds: Saving updated script list with proper fileIds");
-        bool saveSuccess = saveScriptList(listDoc);
-        log_i("ensureUniqueFileIds: Save result: %s", saveSuccess ? "success" : "failed");
-
-        // If save failed, try once more with delay
-        if (!saveSuccess)
-        {
-            log_w("ensureUniqueFileIds: First save attempt failed, trying again after delay");
-            vTaskDelay(pdMS_TO_TICKS(500)); // Add delay before retry
-            saveSuccess = saveScriptList(listDoc);
-            log_i("ensureUniqueFileIds: Second save attempt result: %s", saveSuccess ? "success" : "failed");
-        }
+        log_i("ensureUniqueFileIds_nolock: Saving updated script list with proper fileIds");
+        bool saveSuccess = saveScriptList_nolock(listDoc); // Call _nolock version
+        log_i("ensureUniqueFileIds_nolock: Save result: %s", saveSuccess ? "success" : "failed");
+        // No retry logic here, as it's an internal call. Caller handles overall success.
     }
 }
+
 
 bool ScriptManager::initialize()
 {
@@ -305,117 +307,65 @@ bool ScriptManager::initializeSPIFFS()
 
 // Implementation is now using JsonDocument instead of DynamicJsonDocument
 
-bool ScriptManager::saveScriptList(JsonDocument &listDoc)
-{ // Changed to non-const reference
-    // Enhanced validation and diagnostics
-    log_d("saveScriptList: Entered - listDoc type: isArray=%d, isObject=%d, isNull=%d, size=%d", listDoc.is<JsonArray>(), listDoc.is<JsonObject>(), listDoc.isNull(), listDoc.is<JsonArray>() ? listDoc.as<JsonArray>().size() : 0);
-
-    if (listDoc.isNull())
-    {
-        log_e("saveScriptList: Document is null/empty");
+// Internal helper: Assumes _spiffsMutex is already held.
+bool ScriptManager::saveScriptList_nolock(JsonDocument &listDoc)
+{
+    // Validations from the original public saveScriptList
+    if (listDoc.isNull()) {
+        log_e("saveScriptList_nolock: Document is null/empty");
         return false;
     }
-
-    if (!listDoc.is<JsonArray>())
-    {
-        // Detailed diagnostics about what the document actually contains
-        log_e("saveScriptList: Document is not a JSON array. Type: %s", listDoc.is<JsonObject>() ? "object" : "unknown");
-        if (listDoc.is<JsonObject>())
-        {
-            // If it's an object, log some of its keys for debugging
-            String keys;
-            for (JsonPair p : listDoc.as<JsonObject>())
-            { // Use JsonPair for non-const JsonDocument
-                if (keys.length() < 100)
-                { // Limit log length
-                    keys += String(p.key().c_str()) + " ";
-                }
-            }
-            log_e("saveScriptList: Object contains keys: %s", keys.c_str());
-        }
-        // memoryUsage() is deprecated for JsonDocument and returns 0.
-        // log_e("saveScriptList: Document size information - Memory Usage: %u", listDoc.memoryUsage());
+    if (!listDoc.is<JsonArray>()) {
+        log_e("saveScriptList_nolock: Document is not a JSON array. Type: %s", listDoc.is<JsonObject>() ? "object" : "unknown");
         return false;
     }
-
-    // Get array size for logging before taking mutex (in case the mutex times out)
-    size_t arraySize = listDoc.as<JsonArray>().size(); // Use JsonArray for non-const
-    if (arraySize == 0)
-    {
-        log_w("saveScriptList: Saving an empty array");
-        // Continue anyway - an empty array is valid
+    size_t arraySize = listDoc.as<JsonArray>().size();
+    if (arraySize == 0) {
+        log_w("saveScriptList_nolock: Saving an empty array");
     }
 
-    if (xSemaphoreTake(_spiffsMutex, pdMS_TO_TICKS(3000)) == pdTRUE)
-    { // Increased timeout to 3 seconds
-        // Ensure directory exists
-        if (!SPIFFS.exists("/scripts"))
-        {
-            log_w("saveScriptList: /scripts directory does not exist, creating...");
-            if (!SPIFFS.mkdir("/scripts"))
-            {
-                log_e("saveScriptList: Failed to create /scripts directory");
-                xSemaphoreGive(_spiffsMutex);
-                return false;
-            }
-        }
-
-        // Log filesystem state for diagnostics
-        log_i("saveScriptList: SPIFFS space - Total: %u bytes, Used: %u bytes, Free: %u bytes",
-              SPIFFS.totalBytes(), SPIFFS.usedBytes(), SPIFFS.totalBytes() - SPIFFS.usedBytes());
-
-        File file = SPIFFS.open(LIST_JSON_PATH, FILE_WRITE);
-        if (!file)
-        {
-            log_e("saveScriptList: Failed to open %s for writing. SPIFFS.open() returned null", LIST_JSON_PATH);
-            xSemaphoreGive(_spiffsMutex);
+    // Ensure directory exists
+    if (!SPIFFS.exists("/scripts")) {
+        log_w("saveScriptList_nolock: /scripts directory does not exist, creating...");
+        if (!SPIFFS.mkdir("/scripts")) {
+            log_e("saveScriptList_nolock: Failed to create /scripts directory");
             return false;
         }
+    }
 
-        bool success = false;
-        log_d("saveScriptList: Beginning serialization of %u elements to %s", arraySize, LIST_JSON_PATH);
-        esp_task_wdt_reset(); // Reset watchdog before serialization
+    File file = SPIFFS.open(LIST_JSON_PATH, FILE_WRITE);
+    if (!file) {
+        log_e("saveScriptList_nolock: Failed to open %s for writing. SPIFFS.open() returned null", LIST_JSON_PATH);
+        return false;
+    }
 
-        size_t bytesWritten = serializeJson(listDoc, file);
-        log_i("saveScriptList: serializeJson wrote %u bytes.", bytesWritten);
+    bool success = false;
+    log_d("saveScriptList_nolock: Beginning serialization of %u elements to %s", arraySize, LIST_JSON_PATH);
+    esp_task_wdt_reset(); // Reset watchdog before serialization
 
-        if (bytesWritten > 0)
-        {
-            log_i("saveScriptList: Saved list with %u entries (%u bytes) to %s",
-                  arraySize, bytesWritten, LIST_JSON_PATH);
-            success = true;
-        }
-        else
-        {
-            log_e("saveScriptList: Failed to write to %s (serializeJson returned 0)", LIST_JSON_PATH);
+    size_t bytesWritten = serializeJson(listDoc, file);
+    log_i("saveScriptList_nolock: serializeJson wrote %u bytes.", bytesWritten);
 
-            // Attempt to diagnose the issue
-            if (file.size() == 0)
-            {
-                log_e("saveScriptList: File size is 0 after write attempt");
-            }
+    if (bytesWritten > 0) {
+        log_i("saveScriptList_nolock: Saved list with %u entries (%u bytes) to %s",
+              arraySize, bytesWritten, LIST_JSON_PATH);
+        success = true;
+    } else {
+        log_e("saveScriptList_nolock: Failed to write to %s (serializeJson returned 0)", LIST_JSON_PATH);
+    }
+    file.close();
+    return success;
+}
 
-            // Try to read back what was written (if anything)
-            file.close();
-            File readCheck = SPIFFS.open(LIST_JSON_PATH, FILE_READ);
-            if (readCheck)
-            {
-                size_t fileSize = readCheck.size();
-                log_e("saveScriptList: File exists with size %u bytes", fileSize);
-                if (fileSize > 0 && fileSize < 100)
-                {
-                    // Log small files for debugging
-                    log_e("saveScriptList: File content: %s", readCheck.readString().c_str());
-                }
-                readCheck.close();
-            }
-        }
 
-        file.close();
+bool ScriptManager::saveScriptList(JsonDocument &listDoc)
+{
+    if (xSemaphoreTake(_spiffsMutex, pdMS_TO_TICKS(3000)) == pdTRUE) { // Increased timeout
+        bool success = saveScriptList_nolock(listDoc);
         xSemaphoreGive(_spiffsMutex);
         return success;
     }
-    log_e("ScriptManager::saveScriptList failed to take mutex after 1000ms");
+    log_e("ScriptManager::saveScriptList failed to take mutex after 3000ms");
     return false;
 }
 
@@ -445,7 +395,7 @@ bool ScriptManager::loadScriptContent(const String &fileId, String &outContent)
     {
         // Look up the correct fileId in the script list
         JsonDocument listDoc;
-        if (loadScriptList(listDoc) && listDoc.is<JsonArray>())
+        if (loadScriptList(listDoc) && listDoc.is<JsonArray>()) // loadScriptList now handles ensureUniqueFileIds_nolock
         {
             bool idFound = false;
             for (JsonObject scriptInfo : listDoc.as<JsonArray>())
@@ -469,16 +419,15 @@ bool ScriptManager::loadScriptContent(const String &fileId, String &outContent)
 
             if (!idFound)
             {
-                // If we still don't have a valid fileId, generate one
-                if (fileId != DEFAULT_SCRIPT_ID)
-                {
-                    actualFileId = generateShortFileId(fileId);
-                    log_w("loadScriptContent: Generated new fileId '%s' for humanId '%s'", actualFileId.c_str(), fileId.c_str());
-
-                    // TODO: We should update the script list, but that's a bit complex to do here
-                    // without potentially causing circular dependencies. A full solution would
-                    // ensure this new mapping gets saved to the script list.
-                }
+                // This case should be less likely if loadScriptList ensures fileIds are present and saved.
+                // However, if the list save failed, we might still hit this.
+                log_w("loadScriptContent: Could not map humanId '%s' to a short fileId from list. This might indicate a list save issue.", fileId.c_str());
+                // Attempting to generate one here might lead to inconsistencies if not saved back to list.
+                // For now, proceed with original fileId if it was a humanId, or fail if it was expected to be short.
+                // The original logic would generate one, but let's be cautious.
+                // If fileId was a humanId, actualFileId remains humanId.
+                // If it was an invalid short ID, it remains that.
+                // The SPIFFS.exists check will then likely fail for a humanId.
             }
         }
     }
@@ -490,63 +439,36 @@ bool ScriptManager::loadScriptContent(const String &fileId, String &outContent)
     if (path.length() > 32)
     {
         log_w("loadScriptContent: Path is unusually long (%d chars): %s", path.length(), path.c_str());
-        // Continue anyway, just a warning
     }
 
     if (xSemaphoreTake(_spiffsMutex, pdMS_TO_TICKS(1000)) == pdTRUE)
-    { // Increased timeout
-        // Check file existence without opening it first
+    {
         if (!SPIFFS.exists(path.c_str()))
         {
             log_w("loadScriptContent: Path does not exist: %s", path.c_str());
-
             // Log filesystem contents for debugging
             File root = SPIFFS.open(CONTENT_DIR_PATH);
-            if (root && root.isDirectory())
-            {
+            if (root && root.isDirectory()) {
                 log_d("loadScriptContent: Contents of %s directory:", CONTENT_DIR_PATH);
                 File entry = root.openNextFile();
-                while (entry)
-                {
-                    if (!entry.isDirectory())
-                    {
+                while(entry) {
+                    if(!entry.isDirectory()){
                         log_d("  - %s (%u bytes)", entry.name(), entry.size());
                     }
                     entry.close();
                     entry = root.openNextFile();
                 }
                 root.close();
-            }
-            else
-            {
-                if (root)
-                    root.close();
+            } else {
+                if(root) root.close();
                 log_e("loadScriptContent: Unable to open content directory for listing");
             }
-
             xSemaphoreGive(_spiffsMutex);
             return false;
         }
 
-        // Check file stats before opening
-        struct stat st;
-        if (stat(path.c_str(), &st) == 0)
-        {
-            log_d("loadScriptContent: File stats - Size: %ld bytes", st.st_size);
-            if (st.st_size == 0)
-            {
-                log_w("loadScriptContent: File exists but has zero size");
-                xSemaphoreGive(_spiffsMutex);
-                return false;
-            }
-        }
-        else
-        {
-            log_w("loadScriptContent: Unable to stat file (errno: %d)", errno);
-            // Continue anyway, we'll try to open it
-        }
+        // Removed stat() call here
 
-        // Open the file
         log_d("loadScriptContent: Opening file %s for reading", path.c_str());
         File file = SPIFFS.open(path.c_str(), FILE_READ);
 
@@ -725,6 +647,7 @@ bool ScriptManager::saveScriptContent(const String &fileId, const String &conten
 
         // Write content
         size_t bytesWritten = file.print(content); // print() returns bytes written
+        esp_task_wdt_reset(); // Reset WDT after potentially lengthy write
         bool success = (bytesWritten == content.length());
 
         if (success)
@@ -1030,7 +953,8 @@ bool ScriptManager::loadScriptList(JsonDocument &outListDoc)
         log_i("loadScriptList: Successfully loaded script list with %u entries", numEntries);
 
         // Ensure all scripts have valid, unique fileIds before returning
-        ensureUniqueFileIds(outListDoc);
+        // This might also save the list if modifications were made.
+        ensureUniqueFileIds_nolock(outListDoc);
 
         xSemaphoreGive(_spiffsMutex);
         return true;

@@ -1,6 +1,7 @@
 #include "input_manager.h"
 #include "esp32-hal-log.h"
 #include "driver/gpio.h"
+#include "esp_task_wdt.h" // For esp_task_wdt_reset
 
 // Declare the global queue handle that the ISR will use.
 // This handle is defined in main.cpp and initialized by InputManager's constructor.
@@ -91,8 +92,12 @@ void InputManager::taskFunction() {
     uint8_t raw_gpio_num;
     log_i("InputManager Task started. Waiting for raw inputs from _rawInputQueue_internal.");
 
+    // WDT timeout for InputTask is 30s. We'll use a 15s queue receive timeout.
+    const TickType_t queueReceiveTimeout = pdMS_TO_TICKS(15000);
+
     for (;;) {
-        if (xQueueReceive(_rawInputQueue_internal, &raw_gpio_num, portMAX_DELAY) == pdTRUE) {
+        esp_task_wdt_reset(); // Reset WDT at the start of each loop iteration.
+        if (xQueueReceive(_rawInputQueue_internal, &raw_gpio_num, queueReceiveTimeout) == pdTRUE) {
             // Check if this pin is one we manage (it should be if ISR is set up correctly)
             if (raw_gpio_num != BUTTON_UP_PIN && raw_gpio_num != BUTTON_DOWN_PIN && raw_gpio_num != BUTTON_PUSH_PIN) {
                 log_w("InputTask: Received ISR event for unmanaged GPIO %d", raw_gpio_num);

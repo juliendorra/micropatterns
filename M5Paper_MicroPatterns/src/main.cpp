@@ -513,9 +513,12 @@ void RenderTask_Function(void *pvParameters) {
     RenderController renderCtrl(*g_displayManager); // Create RenderController instance for this task
 
     RenderJobQueueItem jobItem; // Use RenderJobQueueItem
+    // WDT timeout for RenderTask is 60s. We'll use a 30s queue receive timeout.
+    const TickType_t queueReceiveTimeout = pdMS_TO_TICKS(30000);
+
     for (;;) {
-        esp_task_wdt_reset();
-        if (xQueueReceive(g_renderCommandQueue, &jobItem, portMAX_DELAY) == pdTRUE) {
+        esp_task_wdt_reset(); // Reset WDT at the start of each loop iteration.
+        if (xQueueReceive(g_renderCommandQueue, &jobItem, queueReceiveTimeout) == pdTRUE) {
             // Construct RenderJobData, loading script content here
             RenderJobData jobData;
             jobData.script_id = String(jobItem.human_id); // This is human_id
@@ -608,11 +611,14 @@ void FetchTask_Function(void *pvParameters) {
     JsonDocument serverListDoc; // Use JsonDocument - declare outside loop if reused, or inside if per-job
     JsonDocument scriptContentDoc; // Use JsonDocument - declare outside loop if reused, or inside if per-job
     
+    // WDT timeout for FetchTask is 120s. We'll use a 60s queue receive timeout.
+    const TickType_t queueReceiveTimeout = pdMS_TO_TICKS(60000);
+
     for (;;) {
-        esp_task_wdt_reset();
+        esp_task_wdt_reset(); // Reset WDT at the start of each loop iteration.
         user_interrupt_flag_for_network_manager = false; // Reset before waiting for new job
 
-        if (xQueueReceive(g_fetchCommandQueue, &job, portMAX_DELAY) == pdTRUE) {
+        if (xQueueReceive(g_fetchCommandQueue, &job, queueReceiveTimeout) == pdTRUE) {
             log_i("FetchTask: Received job. Full Refresh: %s", job.full_refresh ? "Yes" : "No");
             
             // Clear JsonDocuments before use for this job
