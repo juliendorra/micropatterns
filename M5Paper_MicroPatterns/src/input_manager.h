@@ -5,14 +5,15 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
-#include "../M5Paper_MicroPatterns/src/event_defs.h" // For InputEvent, InputEventType
+#include "event_defs.h" // For InputEvent, InputEventType
 
 // Define button GPIOs (consistent with original global_setting.h)
 #define BUTTON_UP_PIN GPIO_NUM_37
 #define BUTTON_DOWN_PIN GPIO_NUM_39
 #define BUTTON_PUSH_PIN GPIO_NUM_38
 
-class InputManager {
+class InputManager
+{
 public:
     InputManager(QueueHandle_t inputEventQueue);
     bool initialize();
@@ -23,10 +24,10 @@ private:
     QueueHandle_t _rawInputQueue_internal;       // Internal queue for ISR to post raw pin events
 
     volatile uint32_t _lastButtonTime[GPIO_NUM_MAX]; // Tracks last interrupt time per button
-    static const uint32_t DEBOUNCE_TIME_MS = 200; // Debounce time
+    static const uint32_t DEBOUNCE_TIME_MS = 200;    // Debounce time
 
     // ISR handler - must be static or global
-    static void IRAM_ATTR button_isr_handler(void* arg);
+    static void IRAM_ATTR button_isr_handler(void *arg);
 
     // Task-context processing of raw inputs
     void processRawInput(uint8_t gpio_num);

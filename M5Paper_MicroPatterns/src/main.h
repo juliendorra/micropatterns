@@ -7,29 +7,29 @@
 #include "freertos/semphr.h"
 #include "freertos/queue.h"
 #include "freertos/event_groups.h" // For event flags
-#include <ArduinoJson.h>          // For StaticJsonDocument
+#include <ArduinoJson.h>           // For StaticJsonDocument
 
 #include "systeminit.h" // For SysInit_EarlyHardware
 #include "event_defs.h" // For all event and queue payload definitions
 
 // Manager Class Headers
-#include "../../src/system_manager.h"
-#include "../../src/input_manager.h"
-#include "../../src/display_manager.h"
-#include "../../src/script_manager.h"
-#include "../../src/network_manager.h"
-#include "../../src/render_controller.h"
+#include "system_manager.h"
+#include "input_manager.h"
+#include "display_manager.h"
+#include "script_manager.h"
+#include "network_manager.h"
+#include "render_controller.h"
 
 // --- Task Configuration ---
-#define MAIN_CONTROL_TASK_PRIORITY  (tskIDLE_PRIORITY + 2)
-#define INPUT_TASK_PRIORITY         (tskIDLE_PRIORITY + 3) // Higher for responsiveness
-#define RENDER_TASK_PRIORITY        (tskIDLE_PRIORITY + 1)
-#define FETCH_TASK_PRIORITY         (tskIDLE_PRIORITY + 1)
+#define MAIN_CONTROL_TASK_PRIORITY (tskIDLE_PRIORITY + 2)
+#define INPUT_TASK_PRIORITY (tskIDLE_PRIORITY + 3) // Higher for responsiveness
+#define RENDER_TASK_PRIORITY (tskIDLE_PRIORITY + 1)
+#define FETCH_TASK_PRIORITY (tskIDLE_PRIORITY + 1)
 
 #define MAIN_CONTROL_TASK_STACK_SIZE (4096) // Words
-#define INPUT_TASK_STACK_SIZE        (2048)
-#define RENDER_TASK_STACK_SIZE       (8192) // Rendering can be heavy
-#define FETCH_TASK_STACK_SIZE        (8192) // WiFi/HTTPS needs stack
+#define INPUT_TASK_STACK_SIZE (2048)
+#define RENDER_TASK_STACK_SIZE (8192) // Rendering can be heavy
+#define FETCH_TASK_STACK_SIZE (8192)  // WiFi/HTTPS needs stack
 
 // --- Task Handles (defined in main.cpp) ---
 extern TaskHandle_t g_mainControlTaskHandle;
@@ -52,13 +52,11 @@ extern EventGroupHandle_t g_appEventGroup; // General application events/flags
 extern EventGroupHandle_t g_renderTaskEventFlags; // For render task specific flags
 extern const EventBits_t RENDER_INTERRUPT_BIT;    // Bit to signal render interrupt
 
-
 // --- Task Function Prototypes ---
 void MainControlTask_Function(void *pvParameters);
 void InputTask_Function(void *pvParameters);
 void RenderTask_Function(void *pvParameters);
 void FetchTask_Function(void *pvParameters);
-
 
 // Global Manager Instances (defined in main.cpp)
 // These are pointers because their constructors might need FreeRTOS objects
@@ -67,12 +65,12 @@ void FetchTask_Function(void *pvParameters);
 // Ensure their constructors don't do things requiring FreeRTOS scheduler running,
 // or move instantiation into setup().
 // Plan implies they are initialized in setup(), so pointers are better.
-extern SystemManager* g_systemManager;
-extern InputManager* g_inputManager;
-extern DisplayManager* g_displayManager;
-extern ScriptManager* g_scriptManager;
-extern NetworkManager* g_networkManager;
-extern RenderController* g_renderController; // RenderController is used by RenderTask
+extern SystemManager *g_systemManager;
+extern InputManager *g_inputManager;
+extern DisplayManager *g_displayManager;
+extern ScriptManager *g_scriptManager;
+extern NetworkManager *g_networkManager;
+extern RenderController *g_renderController; // RenderController is used by RenderTask
 
 // Note: Original FetchResultStatus enum moved to event_defs.h
 // Note: RTC_DATA_ATTR variables like g_full_refresh_intended are now managed by SystemManager.

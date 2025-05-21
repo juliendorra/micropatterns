@@ -4,20 +4,21 @@
 #include <M5EPD.h>
 #include <nvs.h>
 #include <esp_sleep.h>
-#include "../M5Paper_MicroPatterns/src/event_defs.h" // For ScriptExecState if needed, or other system-wide defs
+#include "event_defs.h" // For ScriptExecState if needed, or other system-wide defs
 
 // Forward declaration
 class NetworkManager; // If SystemManager needs to interact with NetworkManager (e.g. for WiFi credentials)
 
 typedef void (*WakeupCallback)();
 
-class SystemManager {
+class SystemManager
+{
 public:
     SystemManager();
     bool initialize(); // General system initialization
 
     // RTC and Time
-    bool syncTimeWithNTP(NetworkManager& netMgr); // Pass NetworkManager for WiFi
+    bool syncTimeWithNTP(NetworkManager &netMgr); // Pass NetworkManager for WiFi
     RTC_Time getTime();
     RTC_Date getDate();
     void printLocalTimeAndSetRTC(struct tm &timeinfo); // Helper for NTP
@@ -43,9 +44,8 @@ public:
     void setFullRefreshIntended(bool intended);
 
     // Fetch timing related (persisted in NVS)
-    void getLastFetchTimestamp(int& year, int& month, int& day, int& hour, int& minute);
+    void getLastFetchTimestamp(int &year, int &month, int &day, int &hour, int &minute);
     void updateLastFetchTimestamp();
-
 
 private:
     // NVS handle management
@@ -64,17 +64,17 @@ private:
     int _lastFetchMinute;
 
     // Constants
-    static const char* NVS_NAMESPACE;
-    static const char* NVS_KEY_TIMEZONE;
-    static const char* NVS_KEY_FRESH_START_COUNT;
-    static const char* NVS_KEY_FULL_REFRESH_INTENT; // Shortened to "full_ref_int" in .cpp
-    static const char* NVS_KEY_LAST_FETCH_YEAR;
-    static const char* NVS_KEY_LAST_FETCH_MONTH;
-    static const char* NVS_KEY_LAST_FETCH_DAY;
-    static const char* NVS_KEY_LAST_FETCH_HOUR;
-    static const char* NVS_KEY_LAST_FETCH_MINUTE;
+    static const char *NVS_NAMESPACE;
+    static const char *NVS_KEY_TIMEZONE;
+    static const char *NVS_KEY_FRESH_START_COUNT;
+    static const char *NVS_KEY_FULL_REFRESH_INTENT; // Shortened to "full_ref_int" in .cpp
+    static const char *NVS_KEY_LAST_FETCH_YEAR;
+    static const char *NVS_KEY_LAST_FETCH_MONTH;
+    static const char *NVS_KEY_LAST_FETCH_DAY;
+    static const char *NVS_KEY_LAST_FETCH_HOUR;
+    static const char *NVS_KEY_LAST_FETCH_MINUTE;
 
-    static const char* NTP_SERVER_DEFAULT;
+    static const char *NTP_SERVER_DEFAULT;
 
 public:
     // Constants made public for external access
