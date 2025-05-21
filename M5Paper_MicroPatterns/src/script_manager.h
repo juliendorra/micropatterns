@@ -64,9 +64,23 @@ private:
     static const char *DEFAULT_SCRIPT_CONTENT;
     static const char *DEFAULT_SCRIPT_ID;
 
-    // FileId generation and management (generateShortFileId moved to public)
-    void ensureUniqueFileIds_nolock(JsonDocument& listDoc); // Internal version, assumes mutex held
-    int getHighestFileIdNumber(); // Note: This method also takes mutex internally.
+    // FileId generation and management
+    /**
+     * Ensures all scripts in the list have valid, unique fileIds, with special handling to
+     * preserve any existing fileIds that have content files.
+     *
+     * Internal version that assumes the mutex is already held.
+     */
+    void ensureUniqueFileIds_nolock(JsonDocument& listDoc);
+    
+    /**
+     * Scans content files and the script list to find the highest fileId number in use.
+     * This is used to ensure new fileIds are unique and don't overwrite existing content.
+     * Note: This method takes the mutex internally.
+     */
+    int getHighestFileIdNumber();
+    
+    // Counter for generating new sequential fileIds
     int _nextFileIdCounter = 0;
 
     bool initializeSPIFFS(); // Internal SPIFFS mount and directory check

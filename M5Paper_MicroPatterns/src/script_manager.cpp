@@ -90,6 +90,12 @@ String ScriptManager::generateShortFileId(const String &humanId)
         _nextFileIdCounter = getHighestFileIdNumber() + 1;
     }
 
+    // First check if content already exists for this humanId
+    // This requires accessing the script list which we can't do here
+    // without risking circular dependencies or mutex deadlocks.
+    // Instead, the caller (ensureUniqueFileIds_nolock) should handle
+    // preserving existing content file mappings.
+
     // Generate the new short fileId
     String shortId = "s" + String(_nextFileIdCounter++);
     log_i("Generated new short fileId '%s' for humanId '%s'", shortId.c_str(), humanId.c_str());
@@ -100,6 +106,7 @@ String ScriptManager::generateShortFileId(const String &humanId)
 int ScriptManager::getHighestFileIdNumber()
 {
     int highest = 0;
+    std::map<String, bool> contentFileExists; // Track which fileIds have content files
 
     if (xSemaphoreTake(_spiffsMutex, pdMS_TO_TICKS(500)) == pdTRUE)
     {
@@ -133,6 +140,9 @@ int ScriptManager::getHighestFileIdNumber()
                                 {
                                     highest = fileNum;
                                 }
+                                // Track that this fileId has content
+                                contentFileExists[filename] = true;
+                                log_d("getHighestFileIdNumber: Found content file: %s", filename.c_str());
                             }
                         }
                     }
@@ -165,6 +175,13 @@ int ScriptManager::getHighestFileIdNumber()
                                 {
                                     highest = fileNum;
                                 }
+                                
+                                // Store whether this fileId in the list has content
+                                if (contentFileExists.find(fileId) != contentFileExists.end()) {
+                                    log_d("getHighestFileIdNumber: fileId %s in list has matching content file", fileId.c_str());
+                                } else {
+                                    log_d("getHighestFileIdNumber: fileId %s in list has NO matching content file", fileId.c_str());
+                                }
                             }
                         }
                     }
@@ -190,29 +207,73 @@ void ScriptManager::ensureUniqueFileIds_nolock(JsonDocument &listDoc)
 
     JsonArray scriptList = listDoc.as<JsonArray>();
     std::map<String, bool> usedFileIds; // Tracks fileIds used within this list processing
+    std::map<String, String> contentFileIdMap; // Maps humanId to fileId with existing content
     bool listModified = false;
 
-    // Populate usedFileIds with existing valid fileIds from the list first
-    // This helps if getHighestFileIdNumber (called by generateShortFileId)
-    // doesn't see uncommitted changes from a previous failed save.
-    for (JsonObject scriptInfo : scriptList) {
-        if (scriptInfo["fileId"].is<const char*>()) {
-            String existingFileId = scriptInfo["fileId"].as<String>();
-            if (!existingFileId.isEmpty() && existingFileId != "null" && existingFileId.startsWith("s")) {
-                usedFileIds[existingFileId] = true;
+    // First, scan content directory to identify which fileIds have actual content files
+    if (SPIFFS.exists(CONTENT_DIR_PATH))
+    {
+        File root = SPIFFS.open(CONTENT_DIR_PATH);
+        if (root && root.isDirectory())
+        {
+            File entry = root.openNextFile();
+            while (entry)
+            {
+                if (!entry.isDirectory())
+                {
+                    String filename = entry.name();
+                    // Extract just the filename part
+                    int lastSlash = filename.lastIndexOf('/');
+                    if (lastSlash >= 0)
+                    {
+                        filename = filename.substring(lastSlash + 1);
+                    }
+
+                    // Track content files with 's' pattern (potential fileIds)
+                    if (filename.startsWith("s") && filename.length() > 1)
+                    {
+                        log_d("ensureUniqueFileIds_nolock: Found content file: %s", filename.c_str());
+                    }
+                }
+                entry.close();
+                entry = root.openNextFile();
+            }
+            root.close();
+        }
+    }
+
+    // First pass: Find humanId-to-fileId mappings that already have content files
+    for (JsonObject scriptInfo : scriptList)
+    {
+        if (!scriptInfo["id"].is<const char*>() || !scriptInfo["fileId"].is<const char*>())
+        {
+            continue; // Skip entries without valid ID fields
+        }
+
+        String humanId = scriptInfo["id"].as<String>();
+        String fileId = scriptInfo["fileId"].as<String>();
+
+        if (!fileId.isEmpty() && fileId != "null" && fileId.startsWith("s"))
+        {
+            // Check if this fileId has corresponding content file
+            String contentPath = String(CONTENT_DIR_PATH) + "/" + fileId;
+            if (SPIFFS.exists(contentPath))
+            {
+                log_i("ensureUniqueFileIds_nolock: Script '%s' has existing content file with fileId '%s'",
+                     humanId.c_str(), fileId.c_str());
+                contentFileIdMap[humanId] = fileId;
+                usedFileIds[fileId] = true;
             }
         }
     }
-    
+
     // Reset _nextFileIdCounter based on current highest known ID before generating new ones
-    // This ensures generateShortFileId starts from a correct baseline if called multiple times
-    // within one ensureUniqueFileIds_nolock pass or across different calls.
     _nextFileIdCounter = getHighestFileIdNumber() + 1;
 
-
+    // Second pass: Process each script while preserving existing fileIds that have content
     for (JsonObject scriptInfo : scriptList)
     {
-        if (!scriptInfo["id"].is<const char *>())
+        if (!scriptInfo["id"].is<const char*>())
         {
             log_w("ensureUniqueFileIds_nolock: Script missing valid 'id' field");
             continue;
@@ -221,43 +282,67 @@ void ScriptManager::ensureUniqueFileIds_nolock(JsonDocument &listDoc)
         String humanId = scriptInfo["id"].as<String>();
         String fileId;
 
-        if (!scriptInfo["fileId"].isNull() && scriptInfo["fileId"].is<const char *>())
+        // If this humanId has a fileId with content, use that fileId
+        if (contentFileIdMap.find(humanId) != contentFileIdMap.end())
         {
-            fileId = scriptInfo["fileId"].as<String>();
-            if (fileId.isEmpty() || fileId == "null" || !fileId.startsWith("s"))
+            fileId = contentFileIdMap[humanId];
+            
+            // Update if necessary (shouldn't be, but just in case)
+            if (!scriptInfo["fileId"].is<const char*>() ||
+                scriptInfo["fileId"].as<String>() != fileId)
             {
-                fileId = generateShortFileId(humanId); // generateShortFileId ensures uniqueness based on _nextFileIdCounter
                 scriptInfo["fileId"] = fileId;
                 listModified = true;
-                log_i("ensureUniqueFileIds_nolock: Replaced invalid fileId for '%s' with '%s'", humanId.c_str(), fileId.c_str());
+                log_i("ensureUniqueFileIds_nolock: Restored content-matched fileId '%s' for '%s'",
+                     fileId.c_str(), humanId.c_str());
             }
         }
         else
         {
-            fileId = generateShortFileId(humanId);
-            scriptInfo["fileId"] = fileId;
-            listModified = true;
-            log_i("ensureUniqueFileIds_nolock: Added missing fileId '%s' for '%s'", fileId.c_str(), humanId.c_str());
-        }
+            // No existing content file for this humanId, check if it has a valid fileId
+            if (scriptInfo["fileId"].is<const char*>())
+            {
+                fileId = scriptInfo["fileId"].as<String>();
+                if (fileId.isEmpty() || fileId == "null" || !fileId.startsWith("s"))
+                {
+                    // Invalid fileId, generate a new one
+                    fileId = generateShortFileId(humanId);
+                    scriptInfo["fileId"] = fileId;
+                    listModified = true;
+                    log_i("ensureUniqueFileIds_nolock: Replaced invalid fileId for '%s' with '%s'",
+                         humanId.c_str(), fileId.c_str());
+                }
+            }
+            else
+            {
+                // Missing fileId, generate a new one
+                fileId = generateShortFileId(humanId);
+                scriptInfo["fileId"] = fileId;
+                listModified = true;
+                log_i("ensureUniqueFileIds_nolock: Added missing fileId '%s' for '%s'",
+                     fileId.c_str(), humanId.c_str());
+            }
 
-        // This check for duplicates within the current processing pass is still useful
-        // if generateShortFileId somehow produced a non-unique ID (e.g. if _nextFileIdCounter logic had issues)
-        // or if the initial scan missed some existing IDs.
-        while (usedFileIds.count(fileId) && usedFileIds[fileId] == true) { // If ID is already marked as used by another item in this list
-             log_w("ensureUniqueFileIds_nolock: fileId '%s' for '%s' is a duplicate within this list processing. Regenerating.", fileId.c_str(), humanId.c_str());
-             fileId = generateShortFileId(humanId); // generate a new one
-             scriptInfo["fileId"] = fileId;
-             listModified = true;
+            // Check for duplicates within current list processing
+            // (only for scripts that don't have existing content files)
+            while (usedFileIds.count(fileId) && usedFileIds[fileId] == true)
+            {
+                log_w("ensureUniqueFileIds_nolock: fileId '%s' for '%s' is a duplicate. Regenerating.",
+                     fileId.c_str(), humanId.c_str());
+                fileId = generateShortFileId(humanId);
+                scriptInfo["fileId"] = fileId;
+                listModified = true;
+            }
         }
-        usedFileIds[fileId] = true; // Mark this fileId as used for this script item
+        
+        usedFileIds[fileId] = true; // Mark this fileId as used
     }
 
     if (listModified)
     {
         log_i("ensureUniqueFileIds_nolock: Saving updated script list with proper fileIds");
-        bool saveSuccess = saveScriptList_nolock(listDoc); // Call _nolock version
+        bool saveSuccess = saveScriptList_nolock(listDoc);
         log_i("ensureUniqueFileIds_nolock: Save result: %s", saveSuccess ? "success" : "failed");
-        // No retry logic here, as it's an internal call. Caller handles overall success.
     }
 }
 
@@ -373,6 +458,7 @@ bool ScriptManager::loadScriptContent(const String &fileId, String &outContent)
 {
     // Reset output content
     outContent = "";
+    JsonDocument listDoc; // Declare listDoc at the beginning of the function
 
     if (fileId.isEmpty())
     {
@@ -394,7 +480,7 @@ bool ScriptManager::loadScriptContent(const String &fileId, String &outContent)
     if (!fileId.startsWith("s") && fileId != DEFAULT_SCRIPT_ID)
     {
         // Look up the correct fileId in the script list
-        JsonDocument listDoc;
+        // JsonDocument listDoc; // Moved to the top of the function
         if (loadScriptList(listDoc) && listDoc.is<JsonArray>()) // loadScriptList now handles ensureUniqueFileIds_nolock
         {
             bool idFound = false;
@@ -419,15 +505,7 @@ bool ScriptManager::loadScriptContent(const String &fileId, String &outContent)
 
             if (!idFound)
             {
-                // This case should be less likely if loadScriptList ensures fileIds are present and saved.
-                // However, if the list save failed, we might still hit this.
-                log_w("loadScriptContent: Could not map humanId '%s' to a short fileId from list. This might indicate a list save issue.", fileId.c_str());
-                // Attempting to generate one here might lead to inconsistencies if not saved back to list.
-                // For now, proceed with original fileId if it was a humanId, or fail if it was expected to be short.
-                // The original logic would generate one, but let's be cautious.
-                // If fileId was a humanId, actualFileId remains humanId.
-                // If it was an invalid short ID, it remains that.
-                // The SPIFFS.exists check will then likely fail for a humanId.
+                log_w("loadScriptContent: Could not map humanId '%s' to a short fileId from list.", fileId.c_str());
             }
         }
     }
@@ -435,40 +513,91 @@ bool ScriptManager::loadScriptContent(const String &fileId, String &outContent)
     String path = String(CONTENT_DIR_PATH) + "/" + actualFileId;
     log_i("loadScriptContent: Attempting to load script content from %s", path.c_str());
 
-    // Check path validity
-    if (path.length() > 32)
-    {
-        log_w("loadScriptContent: Path is unusually long (%d chars): %s", path.length(), path.c_str());
-    }
-
     if (xSemaphoreTake(_spiffsMutex, pdMS_TO_TICKS(1000)) == pdTRUE)
     {
+        // Check if the exact path exists first
         if (!SPIFFS.exists(path.c_str()))
         {
-            log_w("loadScriptContent: Path does not exist: %s", path.c_str());
-            // Log filesystem contents for debugging
-            File root = SPIFFS.open(CONTENT_DIR_PATH);
-            if (root && root.isDirectory()) {
-                log_d("loadScriptContent: Contents of %s directory:", CONTENT_DIR_PATH);
-                File entry = root.openNextFile();
-                while(entry) {
-                    if(!entry.isDirectory()){
-                        log_d("  - %s (%u bytes)", entry.name(), entry.size());
+            log_w("loadScriptContent: Path does not exist: %s (for actualFileId: %s, original fileId: %s)", path.c_str(), actualFileId.c_str(), fileId.c_str());
+            bool recovered = false;
+
+            // Determine the humanId we are trying to load content for.
+            String humanIdForRecovery = "";
+            if (!actualFileId.startsWith("s")) { // If actualFileId was a humanId initially (meaning fileId was humanId)
+                humanIdForRecovery = actualFileId;
+            } else { // actualFileId is 's'-style. Find its humanId from listDoc.
+                     // listDoc was passed by the caller (getScriptForExecution) or loaded if called directly.
+                     // For this recovery, we need a fresh load of listDoc to ensure we have the latest mappings.
+                JsonDocument currentListDoc;
+                if (loadScriptList(currentListDoc) && currentListDoc.is<JsonArray>()) { // loadScriptList handles mutex internally
+                    for (JsonObjectConst scriptItem : currentListDoc.as<JsonArray>()) {
+                        if (!scriptItem["fileId"].isNull() && scriptItem["fileId"].as<String>() == actualFileId) {
+                            if(!scriptItem["id"].isNull()) {
+                                humanIdForRecovery = scriptItem["id"].as<String>();
+                                break;
+                            }
+                        }
                     }
-                    entry.close();
-                    entry = root.openNextFile();
                 }
-                root.close();
-            } else {
-                if(root) root.close();
-                log_e("loadScriptContent: Unable to open content directory for listing");
             }
+
+            if (humanIdForRecovery.isEmpty()) {
+                log_w("loadScriptContent: Could not determine humanId for actualFileId '%s'. Cannot recover.", actualFileId.c_str());
+            } else {
+                log_i("loadScriptContent: Initial path failed for actualFileId '%s'. Attempting recovery for humanId '%s'.", actualFileId.c_str(), humanIdForRecovery.c_str());
+                // Re-load listDoc to ensure we have the latest version after any ensureUniqueFileIds_nolock calls.
+                JsonDocument freshListDoc;
+                if (loadScriptList(freshListDoc) && freshListDoc.is<JsonArray>()) { // loadScriptList handles mutex internally
+                    for (JsonObjectConst scriptItemConst : freshListDoc.as<JsonArray>()) { // Iterate with JsonObjectConst
+                        if (!scriptItemConst["id"].isNull() && scriptItemConst["id"].as<String>() == humanIdForRecovery) {
+                            if (!scriptItemConst["fileId"].isNull()) {
+                                String fileIdFromList = scriptItemConst["fileId"].as<String>();
+                                if (!fileIdFromList.isEmpty() && fileIdFromList.startsWith("s")) {
+                                    String pathFromList = String(CONTENT_DIR_PATH) + "/" + fileIdFromList;
+                                    log_i("loadScriptContent: For humanId '%s', list.json points to fileId '%s'. Checking path: %s", humanIdForRecovery.c_str(), fileIdFromList.c_str(), pathFromList.c_str());
+                                    if (SPIFFS.exists(pathFromList.c_str())) {
+                                        File recoveryFile = SPIFFS.open(pathFromList.c_str(), FILE_READ);
+                                        if (recoveryFile && !recoveryFile.isDirectory() && recoveryFile.size() > 0) {
+                                            outContent = recoveryFile.readString();
+                                            log_i("loadScriptContent: Recovery successful. Loaded %u bytes for humanId '%s' from '%s'.", outContent.length(), humanIdForRecovery.c_str(), pathFromList.c_str());
+                                            recovered = true;
+                                        } else {
+                                            log_w("loadScriptContent: Recovery file '%s' exists but is empty or unreadable.", pathFromList.c_str());
+                                        }
+                                        if (recoveryFile) recoveryFile.close();
+                                    } else {
+                                        log_w("loadScriptContent: Path '%s' (from list.json for humanId '%s') also does not exist.", pathFromList.c_str(), humanIdForRecovery.c_str());
+                                    }
+                                } else {
+                                     log_w("loadScriptContent: fileId for humanId '%s' in list.json is invalid or empty: '%s'", humanIdForRecovery.c_str(), fileIdFromList.c_str());
+                                }
+                            } else {
+                                log_w("loadScriptContent: humanId '%s' in list.json has no fileId field.", humanIdForRecovery.c_str());
+                            }
+                            break; // Found the humanId in the list
+                        }
+                    }
+                } else {
+                    log_w("loadScriptContent: Failed to load list.json for recovery attempt.");
+                }
+            }
+
+            if (!recovered) {
+                log_w("loadScriptContent: Recovery failed for actualFileId '%s'.", actualFileId.c_str());
+                xSemaphoreGive(_spiffsMutex);
+                return false;
+            }
+            // If recovered, outContent is populated. Proceed to return true at the end.
+            // The 'path' variable is not updated here, but outContent is directly set.
+            // The original file opening logic below will be skipped if recovered.
+            // To use the original logic, we'd update 'path' and 'actualFileId' and not return early.
+            // For simplicity, if recovered, we return true now.
             xSemaphoreGive(_spiffsMutex);
-            return false;
+            return true;
         }
 
-        // Removed stat() call here
-
+        // This part executes if the original path existed, or if recovery updated 'path' and we didn't return early.
+        // Given the recovery logic now returns true directly, this part is only for the initial successful SPIFFS.exists(path.c_str())
         log_d("loadScriptContent: Opening file %s for reading", path.c_str());
         File file = SPIFFS.open(path.c_str(), FILE_READ);
 
