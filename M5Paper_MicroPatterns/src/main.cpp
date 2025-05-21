@@ -684,6 +684,8 @@ void FetchTask_Function(void *pvParameters) {
 
                         // Before saving, check if list is valid
                         log_d("FetchTask: Before saveScriptList - serverListDoc type: isArray=%d, isObject=%d, isNull=%d, size=%d", serverListDoc.is<JsonArray>(), serverListDoc.is<JsonObject>(), serverListDoc.isNull(), serverListDoc.is<JsonArray>() ? serverListDoc.as<JsonArray>().size() : 0);
+                        
+                        esp_task_wdt_reset(); // Reset WDT before saving script list
                         if (!serverListDoc.is<JsonArray>()) {
                             log_e("FetchTask: Server list document (serverListDoc) is not a JSON array before saving!");
                             resultData.status = FetchResultStatus::GENUINE_ERROR;
@@ -804,6 +806,7 @@ void FetchTask_Function(void *pvParameters) {
                                         log_i("FetchTask: Saving content for '%s' (length: %u bytes)",
                                              humanId, strlen(content));
                                         
+                                        esp_task_wdt_reset(); // Reset WDT before saving script content
                                         if (!g_scriptManager->saveScriptContent(fileId, content)) {
                                             log_e("FetchTask: Failed to save content for '%s'", humanId);
                                             allContentFetched = false;
@@ -839,7 +842,9 @@ void FetchTask_Function(void *pvParameters) {
                             if (allContentFetched) {
                                 resultData.message = job.full_refresh ? "Full Refresh OK" : "Fetch OK";
                                 resultData.status = FetchResultStatus::SUCCESS;
+                                esp_task_wdt_reset(); // Reset WDT before cleanup
                                 g_scriptManager->cleanupOrphanedContent(serverList);
+                                esp_task_wdt_reset(); // Reset WDT before next cleanup
                                 g_scriptManager->cleanupOrphanedStates(serverList);
                             } else {
                                 resultData.message = "Partial Fetch";

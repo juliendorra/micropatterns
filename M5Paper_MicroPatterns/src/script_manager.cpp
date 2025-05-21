@@ -1535,6 +1535,7 @@ void ScriptManager::clearAllScriptData()
                 File entry = root.openNextFile();
                 while (entry)
                 {
+                    esp_task_wdt_reset(); // Reset WDT during file iteration
                     if (!entry.isDirectory())
                     {
                         // entry.name() should return the full path of the file
@@ -1646,6 +1647,7 @@ void ScriptManager::cleanupOrphanedStates(const JsonArrayConst &validScriptList)
                 }
                 else
                 {
+                    esp_task_wdt_reset(); // Reset WDT before writing states file
                     if (serializeJson(currentStatesDoc, statesFile) > 0)
                     {
                         log_i("Successfully saved cleaned-up script states to %s.", SCRIPT_STATES_PATH);
@@ -1724,6 +1726,7 @@ void ScriptManager::cleanupOrphanedContent(const JsonArrayConst &validScriptList
             File entry = root.openNextFile();
             while (entry)
             {
+                esp_task_wdt_reset(); // Reset WDT during file iteration
                 if (!entry.isDirectory())
                 {
                     String entryName = entry.name(); // This should be just the filename e.g. "s0", "s1"

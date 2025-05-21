@@ -90,6 +90,7 @@ bool NetworkManager::connectWiFi(TickType_t timeout)
             if ((xTaskGetTickCount() - last_dot_log_time_ticks) > pdMS_TO_TICKS(500))
             {
                 log_d(".");
+                esp_task_wdt_reset(); // Reset WDT periodically during WiFi connection attempts
                 last_dot_log_time_ticks = xTaskGetTickCount();
             }
 
