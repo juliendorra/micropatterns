@@ -20,7 +20,7 @@ public:
     // Loads script list into the provided JsonDocument. Returns true on success.
     bool loadScriptList(JsonDocument &outListDoc);
     // Saves the script list from the provided JsonDocument. Returns true on success.
-    bool saveScriptList(const JsonDocument &listDoc);
+    bool saveScriptList(JsonDocument &listDoc); // Changed to non-const reference
 
     // Script Content Management
     bool loadScriptContent(const String &fileId, String &outContent);
@@ -43,6 +43,9 @@ public:
     // Returns humanId, fileId (for content loading), and content.
     bool getScriptForExecution(String &outHumanId, String &outFileId, String &outContent, ScriptExecState &outInitialState);
 
+    // FileId generation and management
+    String generateShortFileId(const String& humanId);
+
     // Maintenance
     void clearAllScriptData();                                          // Deletes all script files and list.json
     void cleanupOrphanedStates(const JsonArrayConst &validScriptList);  // Removes states for non-existent scripts
@@ -60,6 +63,11 @@ private:
     // Default script content
     static const char *DEFAULT_SCRIPT_CONTENT;
     static const char *DEFAULT_SCRIPT_ID;
+
+    // FileId generation and management (generateShortFileId moved to public)
+    void ensureUniqueFileIds(JsonDocument& listDoc);
+    int getHighestFileIdNumber();
+    int _nextFileIdCounter = 0;
 
     bool initializeSPIFFS(); // Internal SPIFFS mount and directory check
 };

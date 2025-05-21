@@ -7,7 +7,7 @@
 // --- Max String Lengths for Queue Items ---
 #define MAX_SCRIPT_ID_LEN 64
 #define MAX_ERROR_MSG_LEN 256
-#define MAX_SCRIPT_CONTENT_LEN 2048 // Adjust if scripts can be larger
+#define MAX_SCRIPT_CONTENT_LEN 5600 // Increased to accommodate larger scripts (e.g. 5500 bytes)
 #define MAX_FETCH_MSG_LEN 128
 
 

@@ -45,6 +45,7 @@ private:
     static const char *WIFI_SSID_DEFAULT;
     static const char *WIFI_PASSWORD_DEFAULT;
     static const char *API_BASE_URL_DEFAULT;
+    static const char *USER_ID_DEFAULT; // Added User ID
     static const char *ROOT_CA_CERT_DEFAULT;
 
     // Helper for HTTP requests
