@@ -1,1626 +1,707 @@
 #include "main.h"
+#include "esp32-hal-log.h"
+#include "esp_task_wdt.h" // For watchdog
 
-// --- Default Script (if loading from SPIFFS fails) ---
-const char *default_script = R"(
-DEFINE PATTERN NAME="girafe" WIDTH=20 HEIGHT=20 DATA="1100000000000000000010001110000111000100000111111000110011100011111100000001111000111110001100111110000011100111100111000010010011111100000001110001111111000010111110011111100011111111000011111010111111110110011100100111011001100010011000010000111100001110000000011111100000100100001111111011000001100111111100111100111001111110011110011110111111001111001111100111100011100111110000100000010000111000"
-
-DEFINE PATTERN NAME="background" WIDTH=10 HEIGHT=10 DATA="0010001001000101000010001000000101000000001000000001000000011000000011000001111000001000001000000000"
-
-VAR $center_x
-VAR $center_y
-VAR $secondplusone
-VAR $rotation
-VAR $rotationdeux
-VAR $size
-var $squareside
-
-LET $size = 10 + $COUNTER % 15
-LET $secondplusone = 1 + $SECOND
-LET $rotation = 360 * 60 / $secondplusone
-LET $rotationdeux = $minute + 360 * 60 / $secondplusone 
-LET $squareside = 20
-
-LET $center_x = $width/2 
-LET $center_y = $height/2
-
-FILL NAME="background"
-FILL_RECT WIDTH=$width HEIGHT=$height X=0 Y=0
-
-TRANSLATE DX=$center_x DY=$center_y
-
-SCALE FACTOR=$size
-
-ROTATE DEGREES=$rotation
-
-COLOR NAME=WHITE
-DRAW NAME="girafe" WIDTH=20 HEIGHT=20 X=0 Y=0
-
-ROTATE DEGREES=$rotationdeux
-
-COLOR NAME=BLACK
-DRAW NAME="girafe" WIDTH=20 HEIGHT=20 X=0 Y=0
-
-ROTATE DEGREES=$rotation
-
-COLOR NAME=WHITE
-DRAW NAME="girafe" WIDTH=20 HEIGHT=20 X=0 Y=0
-
-ROTATE DEGREES=$rotationdeux
-
-COLOR NAME=BLACK
-DRAW NAME="girafe" WIDTH=20 HEIGHT=20 X=0 Y=0    
-)";
-
-// Global objects
-M5EPD_Canvas canvas(&M5.EPD);
-MicroPatternsParser parser;
-MicroPatternsRuntime *runtime = nullptr;
-RTC_DATA_ATTR int last_fetch_hour = -1; // -1 indicates no previous fetch
-RTC_DATA_ATTR int last_fetch_minute = -1;
-RTC_DATA_ATTR int last_fetch_day = -1;
-RTC_DATA_ATTR int last_fetch_month = -1;
-RTC_DATA_ATTR int last_fetch_year = -1;
-RTC_Time time_struct;                    // To store time from RTC
-RTC_Date date_struct;                    // To store date from RTC
-RTC_DATA_ATTR int freshStartCounter = 0; // Counter for triggering full data refresh
-RTC_DATA_ATTR bool g_full_refresh_intended = false; // True if next fetch should be a full refresh
-String currentScriptId = "";             // ID of the script to execute
-String currentScriptContent = "";        // Content of the script to execute
-
-#define FRESH_START_THRESHOLD 10 // Perform full refresh every 10 reboots (approx)
-
-// --- Tasking Globals ---
+// --- Task Handles ---
+TaskHandle_t g_mainControlTaskHandle = NULL;
+TaskHandle_t g_inputTaskHandle = NULL;
+TaskHandle_t g_renderTaskHandle = NULL;
 TaskHandle_t g_fetchTaskHandle = NULL;
-SemaphoreHandle_t g_fetchRequestSemaphore = NULL; // Binary semaphore to trigger fetch
-QueueHandle_t g_displayMessageQueue = NULL;       // Queue for messages from fetch task to display task
 
-volatile bool g_fetch_task_in_progress = false;
-volatile bool g_user_interrupt_signal_for_fetch_task = false; // Signal to fetch task to stop (hard stop)
-volatile bool g_fetch_restart_pending = false;                // Signal to fetch task to restart gracefully
+// --- Queue Handles ---
+QueueHandle_t g_inputEventQueue = NULL;
+QueueHandle_t g_renderCommandQueue = NULL;
+QueueHandle_t g_renderStatusQueue = NULL;
+QueueHandle_t g_fetchCommandQueue = NULL;
+QueueHandle_t g_fetchStatusQueue = NULL;
 
-struct DisplayMsg
-{
-    char text[64]; // Increased size for longer messages
-    int y_offset;
-    uint16_t color;
-    bool clear_canvas_first;
-    bool push_full_update; // GC16 vs DU4
-};
+// --- Event Group Handles ---
+EventGroupHandle_t g_appEventGroup = NULL;
+// const EventBits_t WIFI_CONNECTED_BIT = (1 << 0); // Example
+// const EventBits_t FETCH_INTERRUPT_REQUESTED_BIT = (1 << 1); // Example
+EventGroupHandle_t g_renderTaskEventFlags = NULL;
+const EventBits_t RENDER_INTERRUPT_BIT = (1 << 0);
 
-// Function Prototypes
-bool selectNextScript(bool moveUp);
-bool loadScriptToExecute();
-void displayMessage(const String &msg, int y_offset, uint16_t color);
-void displayParseErrors();
-void handleWakeupAndScriptExecution(uint8_t raw_gpio_from_isr); // Modified signature
-void fetchTaskFunction(void *pvParameters);
-FetchResultStatus perform_fetch_operations(bool isFullRefresh); // Modified signature
-bool shouldPerformFetch(const char* caller);  // Helper to check if fetch should be performed based on time criteria
-void clearAllScriptDataFromSPIFFS();      // New helper function
 
-// Interrupt handling for wakeup pin is defined in global_setting.cpp
+// --- Global Manager Instances ---
+// Instantiated in setup()
+SystemManager* g_systemManager = nullptr;
+InputManager* g_inputManager = nullptr;
+DisplayManager* g_displayManager = nullptr;
+ScriptManager* g_scriptManager = nullptr;
+NetworkManager* g_networkManager = nullptr;
+// RenderController is instantiated by RenderTask as needed, or can be global if RenderTask always uses one.
+// For now, RenderTask will create its own RenderController instance.
 
-// Helper function to check if a fetch should be performed based on time criteria
-bool shouldPerformFetch(const char* caller) {
-    if (g_full_refresh_intended) {
-        log_i("%s: Allowing fetch: Full refresh is intended.", caller);
-        return true;
+// --- Constants ---
+#define FRESH_START_THRESHOLD 10 // Perform full refresh every 10 reboots (approx)
+const TickType_t MAIN_LOOP_IDLE_DELAY = pdMS_TO_TICKS(50);
+const TickType_t SLEEP_IDLE_THRESHOLD_MS = 30000; // 30 seconds of inactivity before sleep
+
+// --- Main Setup ---
+void setup() {
+    // Initialize M5Paper hardware components.
+    // M5.begin() handles:
+    // - Serial.begin()
+    // - M5.Power.begin() (enables main power, ext power)
+    // - M5.EPD.begin() (enables EPD power, inits EPD driver)
+    // - M5.RTC.begin()
+    // - M5.TP.begin() (Touch Panel)
+    // Parameters: (SerialEnable=true, SDEnable=false, EnableI2C=true, EPDEnable=true, WireEnable=true)
+    // SD card is not used, so SDEnable=false. Serial is used for logging. I2C for RTC/Touch. EPD is essential.
+    M5.begin(true, false, true, true, true);
+    log_i("M5.begin() completed.");
+
+    // Perform minimal early hardware setup (NVS, ISR service) after M5.begin ensures Serial is up.
+    SysInit_EarlyHardware();
+
+    // Initialize Watchdog for the main setup/initialization phase
+    esp_task_wdt_init(60, true); // 60s timeout, panic on timeout during setup
+    esp_task_wdt_add(NULL);      // Add current task (setup) to watchdog
+    esp_task_wdt_reset();
+
+    // 1. Create Queues and Event Groups
+    g_inputEventQueue = xQueueCreate(10, sizeof(InputEvent));
+    g_renderCommandQueue = xQueueCreate(1, sizeof(RenderJobQueueItem)); // Use RenderJobQueueItem
+    g_renderStatusQueue = xQueueCreate(1, sizeof(RenderResultQueueItem)); // Use RenderResultQueueItem
+    g_fetchCommandQueue = xQueueCreate(1, sizeof(FetchJob)); // FetchJob is simple, no Strings
+    g_fetchStatusQueue = xQueueCreate(1, sizeof(FetchResultQueueItem)); // Use FetchResultQueueItem
+    g_renderTaskEventFlags = xEventGroupCreate();
+
+    if (!g_inputEventQueue || !g_renderCommandQueue || !g_renderStatusQueue ||
+        !g_fetchCommandQueue || !g_fetchStatusQueue || !g_renderTaskEventFlags) {
+        log_e("FATAL: Failed to create one or more FreeRTOS objects (queues/event groups). Halting.");
+        while(1) vTaskDelay(portMAX_DELAY); // Halt
     }
+    esp_task_wdt_reset();
 
-    // Get current time and date from RTC
-    RTC_Time currentTime;
-    RTC_Date currentDate;
-    M5.RTC.getTime(&currentTime);
-    M5.RTC.getDate(&currentDate);
-
-    bool allowFetch = false;
-    int elapsed_minutes = 0;
-
-    if (last_fetch_year == -1 || last_fetch_month == -1 || last_fetch_day == -1)
-    { // First fetch or old version data
-        log_i("%s: Allowing fetch: No previous full fetch date stored.", caller);
-        allowFetch = true;
+    // 2. Initialize Manager Classes
+    // Order can be important if there are dependencies in constructors.
+    g_displayManager = new DisplayManager();
+    if (!g_displayManager || !g_displayManager->initializeEPD()) { // Initialize EPD early for messages
+        log_e("FATAL: DisplayManager initialization failed. Halting.");
+        // No point trying to display error if display failed.
+        while(1) vTaskDelay(portMAX_DELAY); // Halt
     }
-    else if (currentDate.year != last_fetch_year ||
-             currentDate.mon != last_fetch_month ||
-             currentDate.day != last_fetch_day)
-    {
-        log_i("%s: Allowing fetch: Date changed (Last: %d-%02d-%02d, Now: %d-%02d-%02d).",
-              caller, last_fetch_year, last_fetch_month, last_fetch_day,
-              currentDate.year, currentDate.mon, currentDate.day);
-        allowFetch = true;
-    }
-    else
-    {
-        // Date is the same, check time interval
-        if (last_fetch_hour != -1)
-        {
-            if (currentTime.hour < last_fetch_hour)
-            { // Crossed midnight (should be caught by date check, but defensive)
-                elapsed_minutes = (currentTime.hour + 24 - last_fetch_hour) * 60 + (currentTime.min - last_fetch_minute);
-            }
-            else
-            {
-                elapsed_minutes = (currentTime.hour - last_fetch_hour) * 60 + (currentTime.min - last_fetch_minute);
-            }
-        }
-        else
-        {
-            log_w("%s: Inconsistent RTC data: Date set but hour not. Allowing fetch.", caller);
-            allowFetch = true;
-        }
+    g_displayManager->showMessage("System Booting...", 100, 15, true, true);
+    esp_task_wdt_reset();
 
-        if (elapsed_minutes >= 120)
-        {
-            log_i("%s: Allowing fetch: Same date, but >= 120 minutes passed (elapsed: %d min).", caller, elapsed_minutes);
-            allowFetch = true;
-        }
-        else
-        {
-            log_i("%s: Skipping fetch: Same date and < 120 minutes passed since last successful fetch (Last: %02d:%02d, Now: %02d:%02d, Elapsed: %d min).",
-                  caller, last_fetch_hour, last_fetch_minute, currentTime.hour, currentTime.min, elapsed_minutes);
-            allowFetch = false;
-        }
+    g_systemManager = new SystemManager();
+    if (!g_systemManager || !g_systemManager->initialize()) { // Loads NVS settings
+        log_e("FATAL: SystemManager initialization failed.");
+        g_displayManager->showMessage("SysMgr Fail!", 150, 15, false, false);
+        while(1) vTaskDelay(portMAX_DELAY);
     }
+    esp_task_wdt_reset();
+
+    g_scriptManager = new ScriptManager();
+    if (!g_scriptManager || !g_scriptManager->initialize()) { // Initializes SPIFFS
+        log_e("FATAL: ScriptManager initialization failed.");
+        g_displayManager->showMessage("ScrMgr Fail!", 150, 15, false, false);
+        while(1) vTaskDelay(portMAX_DELAY);
+    }
+    esp_task_wdt_reset();
     
-    return allowFetch;
-}
-
-void clearAllScriptDataFromSPIFFS() {
-    log_w("clearAllScriptDataFromSPIFFS: Clearing all script data (list.json and content files).");
-
-    // Delete list.json
-    if (SPIFFS.exists("/scripts/list.json")) {
-        if (SPIFFS.remove("/scripts/list.json")) {
-            log_i("clearAllScriptDataFromSPIFFS: Deleted /scripts/list.json");
-        } else {
-            log_e("clearAllScriptDataFromSPIFFS: Failed to delete /scripts/list.json");
-        }
-    } else {
-        log_i("clearAllScriptDataFromSPIFFS: /scripts/list.json not found, no need to delete.");
+    g_networkManager = new NetworkManager(g_systemManager); // Pass SystemManager if needed for config
+    if (!g_networkManager) {
+        log_e("FATAL: NetworkManager instantiation failed.");
+        g_displayManager->showMessage("NetMgr Fail!", 150, 15, false, false);
+        while(1) vTaskDelay(portMAX_DELAY);
     }
-
-    // Delete all files in /scripts/content/
-    File root = SPIFFS.open("/scripts/content");
-    if (root) {
-        if (root.isDirectory()) {
-            File entry = root.openNextFile();
-            while (entry) {
-                if (!entry.isDirectory()) {
-                    String pathComponent = entry.name();
-                    String fullPathToDelete;
-                    if (pathComponent.startsWith("/")) {
-                        fullPathToDelete = pathComponent;
-                    } else {
-                        fullPathToDelete = String("/scripts/content/") + pathComponent;
-                    }
-                    log_i("clearAllScriptDataFromSPIFFS: Attempting to delete: %s", fullPathToDelete.c_str());
-                    if (!SPIFFS.remove(fullPathToDelete.c_str())) {
-                        log_e("clearAllScriptDataFromSPIFFS: Failed to delete %s", fullPathToDelete.c_str());
-                    }
-                }
-                entry.close();
-                entry = root.openNextFile();
-            }
-        } else {
-            log_w("clearAllScriptDataFromSPIFFS: /scripts/content is not a directory.");
-        }
-        root.close();
-    } else {
-        log_w("clearAllScriptDataFromSPIFFS: Could not open /scripts/content directory.");
-    }
-    log_i("clearAllScriptDataFromSPIFFS: Script data clearing completed.");
-}
-
-
-void setup()
-{
-    SysInit_Start();
-
-    // Initialize watchdog for the main task (Core 1) early
-    esp_task_wdt_init(30, false); // 30 second timeout, don't panic on timeout
-    esp_task_wdt_add(NULL);       // Add current task to watchdog
-
-    canvas.createCanvas(540, 960);
-    if (!canvas.frameBuffer())
-    {
-        log_e("CRITICAL: Failed to create canvas framebuffer! Restarting device.");
-        // No point trying to draw an error message if canvas itself failed.
-        // A restart is the most robust option.
-        esp_restart(); // This function does not return.
-    }
-    log_i("Canvas created: %d x %d", canvas.width(), canvas.height());
+    // NetworkManager doesn't have an init method in the plan, connects on demand.
     esp_task_wdt_reset();
 
-    // --- Step 1: Immediate Script Execution on Boot ---
-    log_i("Setup: Attempting initial script execution before refresh checks.");
-    handleWakeupAndScriptExecution(0); // Pass 0 to indicate timer/boot wakeup
-    esp_task_wdt_reset();              // Reset watchdog after initial script execution
-
-    // Increment freshStartCounter after initial display, so its value reflects this boot cycle
-    freshStartCounter++;
-    log_i("MicroPatterns M5Paper - Fresh Start Counter: %d (Threshold: %d)",
-          freshStartCounter, FRESH_START_THRESHOLD);
-
-    // --- Step 2: Full Refresh Logic (if needed) ---
-    // Condition 1: First boot after RTC_DATA_ATTR variable is initialized (e.g., after full power cycle or new flash where counter is 0)
-    // Condition 2: Counter reaches or exceeds the defined threshold
-    if (freshStartCounter == 1)
-    {
-        log_i("Fresh Start: Counter is 1 (first boot cycle or RTC reset). Intending full data refresh.");
-        g_full_refresh_intended = true; // Set the RTC flag
-        if (canvas.frameBuffer()) { // Display message about full refresh intent
-            // Draw a semi-transparent background for the message to ensure readability
-            // without completely clearing the screen
-            int msgX = canvas.width() / 2;
-            int msgY = 100;
-            int msgWidth = 400; // Approximate width for the message
-            int msgHeight = 40; // Approximate height for the message
-            
-            // Draw a white rectangle behind the message for better visibility
-            canvas.fillRect(msgX - msgWidth/2, msgY - msgHeight/2, msgWidth, msgHeight, 0);
-            displayMessage("Full Refresh Pending...", msgY, 15);
-            canvas.pushCanvas(0, 0, UPDATE_MODE_DU4); // Use DU4 for faster update
-            vTaskDelay(pdMS_TO_TICKS(1000)); // Show message
-        }
+    g_inputManager = new InputManager(g_inputEventQueue);
+    if (!g_inputManager || !g_inputManager->initialize()) { // Sets up GPIOs and ISRs
+        log_e("FATAL: InputManager initialization failed.");
+        g_displayManager->showMessage("InpMgr Fail!", 150, 15, false, false);
+        while(1) vTaskDelay(portMAX_DELAY);
     }
-    else if (freshStartCounter > FRESH_START_THRESHOLD)
-    {
-        log_i("Fresh Start: Threshold (%d) reached/exceeded (Counter: %d). Intending full data refresh.", FRESH_START_THRESHOLD, freshStartCounter);
-        g_full_refresh_intended = true; // Set the RTC flag
-        freshStartCounter = 1; // Reset counter to 1 to restart the cycle towards threshold
-        log_i("Fresh Start: Counter reset to 1.");
-        if (canvas.frameBuffer()) { // Display message
-            // Draw a semi-transparent background for the message to ensure readability
-            // without completely clearing the screen
-            int msgX = canvas.width() / 2;
-            int msgY = 100;
-            int msgWidth = 400; // Approximate width for the message
-            int msgHeight = 40; // Approximate height for the message
-            
-            // Draw a white rectangle behind the message for better visibility
-            canvas.fillRect(msgX - msgWidth/2, msgY - msgHeight/2, msgWidth, msgHeight, 0);
-            displayMessage("Full Refresh Pending...", msgY, 15);
-            canvas.pushCanvas(0, 0, UPDATE_MODE_DU4); // Use DU4 for faster update
-            vTaskDelay(pdMS_TO_TICKS(1000)); // Show message
-        }
-    }
-    // Ensure g_full_refresh_intended is false on the very first boot if freshStartCounter was 0 and became 1,
-    // but we don't want an immediate full refresh without user scripts yet.
-    // The above logic sets it to true if freshStartCounter IS 1.
-    // If freshStartCounter was 0 (initial RTC state) and became 1, and no scripts exist,
-    // g_full_refresh_intended will be true, and shouldPerformFetch will allow the first fetch.
-    // This seems correct.
-
     esp_task_wdt_reset();
 
-    // --- Step 3: Create FreeRTOS objects ---
-    g_displayMessageQueue = xQueueCreate(5, sizeof(DisplayMsg));
-    if (g_displayMessageQueue == NULL)
-    {
-        log_e("Failed to create display message queue!");
-    }
-    g_fetchRequestSemaphore = xSemaphoreCreateBinary();
-    if (g_fetchRequestSemaphore == NULL)
-    {
-        log_e("Failed to create fetch request semaphore!");
+    // 3. Create Tasks
+    xTaskCreatePinnedToCore(MainControlTask_Function, "MainCtrlTask", MAIN_CONTROL_TASK_STACK_SIZE, NULL, MAIN_CONTROL_TASK_PRIORITY, &g_mainControlTaskHandle, 1);
+    xTaskCreatePinnedToCore(InputTask_Function, "InputTask", INPUT_TASK_STACK_SIZE, NULL, INPUT_TASK_PRIORITY, &g_inputTaskHandle, 1); // Core 1 for responsiveness
+    xTaskCreatePinnedToCore(RenderTask_Function, "RenderTask", RENDER_TASK_STACK_SIZE, NULL, RENDER_TASK_PRIORITY, &g_renderTaskHandle, 0); // Core 0 for rendering
+    xTaskCreatePinnedToCore(FetchTask_Function, "FetchTask", FETCH_TASK_STACK_SIZE, NULL, FETCH_TASK_PRIORITY, &g_fetchTaskHandle, 0);    // Core 0 for network
+
+    if (!g_mainControlTaskHandle || !g_inputTaskHandle || !g_renderTaskHandle || !g_fetchTaskHandle) {
+        log_e("FATAL: Failed to create one or more tasks. Halting.");
+        g_displayManager->showMessage("Task Fail!", 150, 15, false, false);
+        while(1) vTaskDelay(portMAX_DELAY);
     }
 
-    // Create the fetching task, pinned to Core 0
-    xTaskCreatePinnedToCore(
-        fetchTaskFunction,  // Task function
-        "FetchTask",        // Name of the task
-        8192,               // Stack size in words (increased for WiFi/HTTPS)
-        NULL,               // Task input parameter
-        1,                  // Priority of the task (1 is common for app tasks)
-        &g_fetchTaskHandle, // Task handle
-        0                   // Core where the task should run (0)
-    );
-    if (g_fetchTaskHandle == NULL)
-    {
-        log_e("Failed to create fetch task!");
-    }
+    log_i("Setup complete. Tasks created. Managers initialized.");
+    g_displayManager->showMessage("Setup OK", 200, 15, false, false);
+    vTaskDelay(pdMS_TO_TICKS(1000)); // Show setup message
 
-    // --- Initial Fetch Check on Boot ---
-    log_i("Setup: Checking fetch criteria on boot...");
-    if (shouldPerformFetch("Setup")) { // shouldPerformFetch now checks g_full_refresh_intended first
-        log_i("Setup: Triggering initial fetch request.");
-        if (g_fetchRequestSemaphore != NULL) {
-            xSemaphoreGive(g_fetchRequestSemaphore);
-        } else {
-            log_e("Setup: Fetch request semaphore is NULL, cannot trigger initial fetch.");
-        }
-    } else {
-        log_i("Setup: No fetch triggered on boot (full refresh not intended and time criteria not met).");
-    }
-    // --- End Initial Fetch Check ---
+    // Setup task no longer needs WDT monitoring. Tasks will manage their own.
+    esp_task_wdt_delete(NULL);
+
+    // The `loop()` function is not used in FreeRTOS projects.
+    // MainControlTask_Function will take over the role of the main application loop.
+    // Delete this task (setup) as it's done.
+    vTaskDelete(NULL);
 }
 
-void loop()
-{
-    // Reset watchdog at the start of each loop iteration
+// --- Main Control Task ---
+void MainControlTask_Function(void *pvParameters) {
+    esp_task_wdt_init(30, true); // Panic on WDT timeout
+    esp_task_wdt_add(NULL);
+
+    AppState currentState = AppState::IDLE;
+    TickType_t lastActivityTime = xTaskGetTickCount();
+    String currentLoadedScriptId = ""; // Keep track of what's supposedly loaded/rendered
+
+    // Initial actions on boot/restart:
+    // 1. Potentially sync time
+    RTC_Time rtcTime = g_systemManager->getTime();
+    if (rtcTime.hour == 0 && rtcTime.min == 0 && rtcTime.sec == 0) { // RTC likely not set
+        g_displayManager->showMessage("Syncing Time...", 50, 15, true, true);
+        if (g_systemManager->syncTimeWithNTP(*g_networkManager)) {
+            g_displayManager->showMessage("Time Synced", 100, 15);
+        } else {
+            g_displayManager->showMessage("Time Sync Fail", 100, 15);
+        }
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
     esp_task_wdt_reset();
 
-    // Check for button presses first for maximum responsiveness
-    // Atomically load the current value of wakeup_pin set by ISR
-    uint8_t pin_val_from_isr = __atomic_load_n(&wakeup_pin, __ATOMIC_SEQ_CST);
-    
-    if (pin_val_from_isr != 0) {
-        // Verify this is a real button press by checking the actual GPIO state
-        bool is_real_press = false;
-        
-        if (pin_val_from_isr == BUTTON_UP_PIN) {
-            is_real_press = (digitalRead(BUTTON_UP_PIN) == LOW);
-        } else if (pin_val_from_isr == BUTTON_DOWN_PIN) {
-            is_real_press = (digitalRead(BUTTON_DOWN_PIN) == LOW);
-        } else if (pin_val_from_isr == BUTTON_PUSH_PIN) {
-            is_real_press = (digitalRead(BUTTON_PUSH_PIN) == LOW);
-        }
-        
-        if (is_real_press) {
-            // Button press detected and verified - handle it immediately
-            log_i("Loop: Button press detected and verified (GPIO %d), handling immediately.", pin_val_from_isr);
-            g_wakeup_handled = false; // Force handling even if we already handled a wakeup this cycle
+    // 2. Initial script load and render
+    RenderJobData initialRenderJobData; // Use RenderJobData for internal logic
+    ScriptExecState initialScriptState;
+    // Get humanId, fileId, content, and state
+    if (g_scriptManager->getScriptForExecution(initialRenderJobData.script_id, initialRenderJobData.file_id, initialRenderJobData.script_content, initialScriptState)) {
+        if (initialRenderJobData.script_id.isEmpty()) { // script_id is humanId
+            log_e("MainCtrl: getScriptForExecution returned empty human_id for initial load. Aborting initial render.");
+            g_displayManager->showMessage("Empty ID Fail", 150, 15);
         } else {
-            // This is a phantom button press - clear the wakeup_pin
-            log_w("Loop: Phantom button press detected (GPIO %d). Clearing.", pin_val_from_isr);
-            uint8_t expected_pin_val = pin_val_from_isr;
-            __atomic_compare_exchange_n(&wakeup_pin, &expected_pin_val, (uint8_t)0, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
-        }
-    }
-
-    // Process any messages from the fetch task for display
-    DisplayMsg msg;
-    if (g_displayMessageQueue != NULL && xQueueReceive(g_displayMessageQueue, &msg, 0) == pdTRUE)
-    { // Non-blocking check
-        esp_task_wdt_reset();
-        if (msg.clear_canvas_first)
-            canvas.fillCanvas(0); // Usually white
-        displayMessage(msg.text, msg.y_offset, msg.color);
-        canvas.pushCanvas(0, 0, msg.push_full_update ? UPDATE_MODE_GC16 : UPDATE_MODE_DU4);
-        esp_task_wdt_reset();
-
-        // Brief delay for important messages, but use vTaskDelay instead of blocking delay
-
-        // Brief delay for important messages, but use vTaskDelay instead of blocking delay
-        if (msg.push_full_update && (strcmp(msg.text, "Fetch OK!") == 0 || strstr(msg.text, "Failed") != NULL || strstr(msg.text, "Interrupted") != NULL))
-        {
-            // Use vTaskDelay instead of delay to allow other tasks to run
-            vTaskDelay(pdMS_TO_TICKS(200)); // Reduced from 500ms to 200ms for better responsiveness
-            esp_task_wdt_reset();           // Reset watchdog after delay
-        }
-        
-        // Check for button presses again after display operations
-        pin_val_from_isr = __atomic_load_n(&wakeup_pin, __ATOMIC_SEQ_CST);
-        if (pin_val_from_isr != 0) {
-            // Verify this is a real button press by checking the actual GPIO state
-            bool is_real_press = false;
-            
-            if (pin_val_from_isr == BUTTON_UP_PIN) {
-                is_real_press = (digitalRead(BUTTON_UP_PIN) == LOW);
-            } else if (pin_val_from_isr == BUTTON_DOWN_PIN) {
-                is_real_press = (digitalRead(BUTTON_DOWN_PIN) == LOW);
-            } else if (pin_val_from_isr == BUTTON_PUSH_PIN) {
-                is_real_press = (digitalRead(BUTTON_PUSH_PIN) == LOW);
-            }
-            
-            if (is_real_press) {
-                // Button press detected and verified during display operations
-                log_i("Loop: Button press detected and verified after display operations, handling immediately.");
-                g_wakeup_handled = false; // Force handling
+            initialRenderJobData.initial_state = initialScriptState;
+            // Increment counter for first boot execution if state was loaded, or set to 0 if not
+            if (initialScriptState.state_loaded) {
+                initialRenderJobData.initial_state.counter++;
             } else {
-                // This is a phantom button press - clear the wakeup_pin
-                log_w("Loop: Phantom button press detected after display operations (GPIO %d). Clearing.", pin_val_from_isr);
-                uint8_t expected_pin_val = pin_val_from_isr;
-                __atomic_compare_exchange_n(&wakeup_pin, &expected_pin_val, (uint8_t)0, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+                initialRenderJobData.initial_state.counter = 0;
             }
-        }
-    }
+            // Update time from RTC for this first execution
+            RTC_Time now_time = g_systemManager->getTime();
+            initialRenderJobData.initial_state.hour = now_time.hour;
+            initialRenderJobData.initial_state.minute = now_time.min;
+            initialRenderJobData.initial_state.second = now_time.sec;
 
-    // Reset watchdog before potential wakeup handling (which can be expensive)
-    esp_task_wdt_reset();
-
-    // Process wakeup if either:
-    // 1. We haven't handled it yet this wake cycle
-    // 2. We just came out of sleep (g_wakeup_handled is reset in goToLightSleep after waking up)
-    // 3. A button press was detected above (g_wakeup_handled was set to false)
-    // This ensures we catch button presses even if they happen during fetches
-
-    if (!g_wakeup_handled)
-    { // Process wakeup only once per cycle (unless forced by button press)
-        // Reload pin_val_from_isr to get the latest value
-        pin_val_from_isr = __atomic_load_n(&wakeup_pin, __ATOMIC_SEQ_CST);
-        
-        // Pass the pin_val_from_isr (could be 0 if timer wakeup or ISR didn't set)
-        // handleWakeupAndScriptExecution will perform debouncing and clear the pin if handled.
-        handleWakeupAndScriptExecution(pin_val_from_isr);
-        g_wakeup_handled = true; // Mark wakeup as handled for this cycle
-        esp_task_wdt_reset();    // Reset watchdog after potentially expensive wakeup handling
-    }
-
-    if (g_fetch_task_in_progress)
-    {
-        log_i("Loop: Fetch task is in progress, delaying sleep.");
-        // Yield for a short period to allow fetch task to run
-        esp_task_wdt_reset(); // Reset watchdog before delay
-        vTaskDelay(pdMS_TO_TICKS(20)); // Reduced from 50ms to 20ms to check for button presses more frequently
-    }
-    else
-    {
-        esp_task_wdt_reset(); // Reset watchdog before sleep
-        goToLightSleep();
-        // We'll only reach here after waking from sleep
-        esp_task_wdt_reset(); // Reset watchdog after waking up
-    }
-}
-
-void displayParseErrors()
-{
-    const auto &errors = parser.getErrors();
-    esp_task_wdt_reset();
-    canvas.fillCanvas(0); // White background
-    displayMessage("Parse Error: " + currentScriptId, 50, 15);
-    int y_pos = 100;
-    for (const String &err : errors)
-    {
-        log_e("  %s", err.c_str());
-        displayMessage(err, y_pos, 15);
-        y_pos += 30;
-        if (y_pos > canvas.height() - 50)
-            break;
-    }
-    canvas.pushCanvas(0, 0, UPDATE_MODE_GC16);
-    esp_task_wdt_reset();
-}
-
-void handleWakeupAndScriptExecution(uint8_t raw_gpio_from_isr) // Modified signature
-{
-    bool scriptChangeRequest = false;
-    bool moveUpDirection = false;
-    // Fetch triggering is now handled in setup() and after timer wakeups in goToLightSleep()
-
-    // Capture initial fetch task state to make decisions based on state at entry
-    bool initial_fetch_task_state_is_progress = g_fetch_task_in_progress;
-    bool signaled_restart_to_existing_fetch_this_cycle = false;
-
-    uint8_t processed_gpio_event = 0; // Will hold the pin if it's a valid, debounced button event
-    bool script_was_just_selected = false; // Flag to indicate if selectNextScript was called in this invocation
-
-    // 1. Determine Wakeup Reason & Intent (includes debouncing)
-    if (raw_gpio_from_isr != 0)
-    {
-        uint8_t expected_pin_val = raw_gpio_from_isr;
-        if (__atomic_compare_exchange_n(&wakeup_pin, &expected_pin_val, (uint8_t)0, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST))
-        {
-            uint32_t current_time = millis();
-            if (((current_time - g_last_button_time) >= DEBOUNCE_TIME_MS || current_time < g_last_button_time))
-            {
-                g_last_button_time = current_time;
-                processed_gpio_event = raw_gpio_from_isr;
-                log_i("Wakeup: Button event for GPIO %d accepted (debounced).", processed_gpio_event);
-            }
-            else
-            {
-                log_i("Wakeup: Debounced out GPIO %d event.", raw_gpio_from_isr);
-            }
-        }
-        else
-        {
-            log_w("Wakeup: Button event for GPIO %d was stale or changed during processing, ignoring.", raw_gpio_from_isr);
-        }
-    }
-
-    // Proceed with logic based on processed_gpio_event
-    if (processed_gpio_event != 0)
-    {
-        log_i("Handling action for debounced GPIO %d.", processed_gpio_event);
-
-        if (initial_fetch_task_state_is_progress)
-        {
-            log_i("User action during fetch. Signaling fetch task to restart.");
-            g_fetch_restart_pending = true;
-            signaled_restart_to_existing_fetch_this_cycle = true;
-        }
-
-        if (processed_gpio_event == BUTTON_UP_PIN)
-        {
-            log_i("Button UP (GPIO %d) detected.", processed_gpio_event);
-            scriptChangeRequest = true;
-            moveUpDirection = true;
-        }
-        else if (processed_gpio_event == BUTTON_DOWN_PIN)
-        {
-            log_i("Button DOWN (GPIO %d) detected.", processed_gpio_event);
-            scriptChangeRequest = true;
-            moveUpDirection = false;
-        }
-        else if (processed_gpio_event == BUTTON_PUSH_PIN)
-        {
-            log_i("Button PUSH (GPIO %d) detected.", processed_gpio_event);
-            if (initial_fetch_task_state_is_progress)
-            {
-                log_i("PUSH button pressed during fetch. Signaling fetch task to restart.");
-                g_fetch_restart_pending = true;
-                signaled_restart_to_existing_fetch_this_cycle = true;
-                esp_task_wdt_reset();
-            }
-        }
-    }
-    else
-    {
-        log_i("Wakeup: Timer, or button event was debounced/stale.");
-    }
-
-    // 2. Handle Script Selection if Requested (for UP/DOWN)
-    if (scriptChangeRequest)
-    {
-        if (!selectNextScript(moveUpDirection))
-        {
-            log_e("Failed to select next script. Will attempt to run current/default.");
-        } else {
-            script_was_just_selected = true; // Mark that a script selection attempt was made
+            log_i("MainCtrl: Initial render job for script '%s', counter %d", initialRenderJobData.script_id.c_str(), initialRenderJobData.initial_state.counter);
             
-            // Force a reload of the current script ID from SPIFFS to ensure we get the newly selected one
-            String tempId;
-            if (loadCurrentScriptId(tempId)) {
-                log_i("Successfully reloaded current script ID after selection: %s", tempId.c_str());
-            }
-        }
-    }
+            RenderJobQueueItem initialRenderJobQueueItem;
+            initialRenderJobQueueItem.fromRenderJobData(initialRenderJobData);
 
-    // 3. Load Script Content (current, newly selected, or default)
-    if (!loadScriptToExecute())
-    {
-        log_w("Failed to load script from SPIFFS. Using default script as last resort.");
-        currentScriptContent = default_script;
-        currentScriptId = "default";
-    }
-
-    // 4. Parse and Prepare Runtime
-    log_i("Preparing to execute script ID: %s", currentScriptId.c_str());
-    parser.reset();
-    if (!parser.parse(currentScriptContent))
-    {
-        log_e("Script parsing failed for ID: %s", currentScriptId.c_str());
-        displayParseErrors();
-        if (runtime)
-        {
-            delete runtime;
-            runtime = nullptr;
-        }
-    }
-    else
-    {
-        log_i("Script '%s' parsed successfully.", currentScriptId.c_str());
-        if (runtime)
-        {
-            delete runtime;
-        }
-        runtime = new MicroPatternsRuntime(&canvas, parser.getAssets());
-        runtime->setCommands(&parser.getCommands());
-        runtime->setDeclaredVariables(&parser.getDeclaredVariables());
-    }
-
-    // 5. Execute Script (if runtime is valid)
-    if (runtime)
-    {
-        esp_task_wdt_reset();
-
-        int counterForThisExecution;
-        int hourForThisExecution, minuteForThisExecution, secondForThisExecution;
-        bool isResumeWakeup = (processed_gpio_event == 0 && !scriptChangeRequest); // Timer wakeup AND no script change requested this call
-
-        bool stateLoaded = loadScriptExecutionState(currentScriptId.c_str(), counterForThisExecution, hourForThisExecution, minuteForThisExecution, secondForThisExecution);
-
-        if (isResumeWakeup && stateLoaded) {
-            // For timer wakeups with loaded state, increment the counter AND update time
-            counterForThisExecution++;
-            // Update time from RTC for timer wakeups too, just like with button presses
-            M5.RTC.getTime(&time_struct);
-            hourForThisExecution = time_struct.hour;
-            minuteForThisExecution = time_struct.min;
-            secondForThisExecution = time_struct.sec;
-            log_i("Resuming script '%s' with persisted state, incrementing counter and updating time: C=%d, T=%02d:%02d:%02d",
-                  currentScriptId.c_str(), counterForThisExecution, hourForThisExecution, minuteForThisExecution, secondForThisExecution);
-        } else {
-            M5.RTC.getTime(&time_struct);
-            hourForThisExecution = time_struct.hour;
-            minuteForThisExecution = time_struct.min;
-            secondForThisExecution = time_struct.sec;
-
-            if (stateLoaded && (processed_gpio_event != 0 || scriptChangeRequest)) { // If button press or script change, increment counter
-                counterForThisExecution++;
-            } else if (!stateLoaded) { // No state loaded, start from 0
-                counterForThisExecution = 0;
-            }
-            // If !stateLoaded and timer wakeup, counter is 0, time is current.
-            log_i("Executing script '%s' with new/updated state: C=%d, T=%02d:%02d:%02d",
-                  currentScriptId.c_str(), counterForThisExecution, hourForThisExecution, minuteForThisExecution, secondForThisExecution);
-        }
-
-        runtime->setTime(hourForThisExecution, minuteForThisExecution, secondForThisExecution);
-        runtime->setCounter(counterForThisExecution);
-
-        log_i("Executing script '%s' - Using Counter: %d, Time: %02d:%02d:%02d",
-              currentScriptId.c_str(), counterForThisExecution, hourForThisExecution, minuteForThisExecution, secondForThisExecution);
-
-        // Check for button interrupts before execution
-        uint8_t pre_execution_pin_val = __atomic_load_n(&wakeup_pin, __ATOMIC_SEQ_CST);
-        if (pre_execution_pin_val != 0 && !script_was_just_selected) {
-            // Verify this is a real button press by checking the actual GPIO state
-            // This helps filter out phantom button presses
-            bool is_real_press = false;
-            
-            if (pre_execution_pin_val == BUTTON_UP_PIN) {
-                is_real_press = (digitalRead(BUTTON_UP_PIN) == LOW);
-            } else if (pre_execution_pin_val == BUTTON_DOWN_PIN) {
-                is_real_press = (digitalRead(BUTTON_DOWN_PIN) == LOW);
-            } else if (pre_execution_pin_val == BUTTON_PUSH_PIN) {
-                is_real_press = (digitalRead(BUTTON_PUSH_PIN) == LOW);
-            }
-            
-            if (is_real_press) {
-                // If a button was pressed AND we didn't *just* select a new script due to a previous button press in *this current function call*,
-                // then skip execution to handle the new button press.
-                // If script_was_just_selected is true, we ignore pre_execution_pin_val here
-                // to ensure the selected script runs. The new pin_val will be handled by the main loop later.
-                log_i("Button press detected and verified before script execution. Skipping execution to handle button.");
-                return;
+            if (xQueueSend(g_renderCommandQueue, &initialRenderJobQueueItem, pdMS_TO_TICKS(100)) == pdTRUE) {
+                currentState = AppState::RENDERING_SCRIPT;
+                currentLoadedScriptId = initialRenderJobData.script_id;
             } else {
-                // This is a phantom button press - clear the wakeup_pin and continue
-                log_w("Phantom button press detected (GPIO %d). Clearing and continuing with script execution.", pre_execution_pin_val);
-                uint8_t expected_pin_val = pre_execution_pin_val;
-                __atomic_compare_exchange_n(&wakeup_pin, &expected_pin_val, (uint8_t)0, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+                log_e("MainCtrl: Failed to send initial render job.");
+                g_displayManager->showMessage("Render Q Fail", 150, 15);
             }
         }
-
-        unsigned long executionStartTime = millis();
-        runtime->execute(); // This includes drawing and pushing canvas
-        unsigned long executionEndTime = millis();
-        unsigned long executionDuration = executionEndTime - executionStartTime;
-
-        log_i("Script '%s' execution and rendering took %lu ms.", currentScriptId.c_str(), executionDuration);
-        
-        // Check for button interrupts immediately after execution
-        // This log is informational; the main loop will handle the interrupt.
-        uint8_t post_execution_pin_val = __atomic_load_n(&wakeup_pin, __ATOMIC_SEQ_CST);
-        if (post_execution_pin_val != 0) {
-            log_i("Button press detected during/after script execution. Will handle in next loop iteration.");
-        }
-        
-        saveScriptExecutionState(currentScriptId.c_str(), counterForThisExecution, hourForThisExecution, minuteForThisExecution, secondForThisExecution);
-
-        esp_task_wdt_reset();
-        log_i("Finished execution for script '%s', counter %d.", currentScriptId.c_str(), counterForThisExecution);
+    } else {
+        log_e("MainCtrl: Failed to get initial script for execution.");
+        g_displayManager->showMessage("Script Load Fail", 150, 15);
     }
-    else
-    {
-        log_e("Runtime not initialized, skipping execution. Check for parse errors.");
+    lastActivityTime = xTaskGetTickCount();
+    esp_task_wdt_reset();
+
+    // 3. Check for full refresh intent
+    g_systemManager->incrementFreshStartCounter();
+    if (g_systemManager->getFreshStartCounter() == 1 || g_systemManager->getFreshStartCounter() > FRESH_START_THRESHOLD) {
+        log_i("MainCtrl: Full refresh intended (counter: %d).", g_systemManager->getFreshStartCounter());
+        g_systemManager->setFullRefreshIntended(true);
+        if (g_systemManager->getFreshStartCounter() > FRESH_START_THRESHOLD) {
+            g_systemManager->resetFreshStartCounter(); // Reset counter after threshold
+            g_systemManager->incrementFreshStartCounter(); // Set to 1 for next cycle
+        }
+        g_systemManager->saveSettings(); // Persist counter and intent
     }
-}
+    esp_task_wdt_reset();
 
-void displayMessage(const String &msg, int y_offset, uint16_t color)
-{
-    if (!canvas.frameBuffer())
-        return;
-    
-    // Calculate text dimensions for background rectangle
-    canvas.setTextSize(3);
-    canvas.setTextDatum(TC_DATUM);
-    
-    // Draw a white background rectangle for better visibility
-    // Approximate width based on message length (this is an estimation)
-    int msgWidth = msg.length() * 15; // Rough estimate: 15 pixels per character at size 3
-    int msgHeight = 30; // Approximate height for text at size 3
-    int msgX = canvas.width() / 2;
-    
-    // Draw background rectangle
-    canvas.fillRect(msgX - msgWidth/2, y_offset - msgHeight/2, msgWidth, msgHeight, 0);
-    
-    // Draw the text
-    canvas.setTextColor(color);
-    canvas.drawString(msg, msgX, y_offset);
-    
-    log_i("Displaying message: %s", msg.c_str());
-}
+    // 4. Initial fetch check
+    int lf_year, lf_month, lf_day, lf_hour, lf_min;
+    g_systemManager->getLastFetchTimestamp(lf_year, lf_month, lf_day, lf_hour, lf_min);
+    RTC_Date currentDate = g_systemManager->getDate();
+    RTC_Time currentTime = g_systemManager->getTime();
+    bool timeForFetch = false;
+    if (lf_year == -1 || currentDate.year != lf_year || currentDate.mon != lf_month || currentDate.day != lf_day) {
+        timeForFetch = true; // Different day or never fetched
+    } else { // Same day, check time interval (e.g., 2 hours)
+        int elapsed_minutes = (currentTime.hour - lf_hour) * 60 + (currentTime.min - lf_min);
+        if (elapsed_minutes < 0) elapsed_minutes += 24 * 60; // Crossed midnight
+        if (elapsed_minutes >= 120) timeForFetch = true;
+    }
 
-void fetchTaskFunction(void *pvParameters)
-{
-    DisplayMsg msg_to_send;
-    log_i("FetchTask started and pinned to core %d", xPortGetCoreID());
-
-    // Initialize watchdog for this task
-    esp_task_wdt_init(30, false); // 30 second timeout, don't panic on timeout
-    esp_task_wdt_add(NULL);       // Add current task to watchdog
-
-    for (;;)
-    {
-        // Reset watchdog timer at the start of each cycle of the main loop of FetchTask
-        esp_task_wdt_reset();
-
-        // Explicitly unsubscribe FetchTask from WDT before blocking
-        esp_err_t wdt_del_err = esp_task_wdt_delete(NULL);
-        if (wdt_del_err != ESP_OK && wdt_del_err != ESP_ERR_NOT_FOUND)
-        { // ESP_ERR_NOT_FOUND is okay.
-            log_e("FetchTask: Failed to delete WDT for self before semaphore, error %d (%s)", wdt_del_err, esp_err_to_name(wdt_del_err));
+    if (g_systemManager->isFullRefreshIntended() || timeForFetch) {
+        log_i("MainCtrl: Triggering initial fetch (FullRefresh: %s, TimeForFetch: %s)",
+              g_systemManager->isFullRefreshIntended() ? "Yes" : "No", timeForFetch ? "Yes" : "No");
+        FetchJob fetchJob;
+        fetchJob.full_refresh = g_systemManager->isFullRefreshIntended();
+        if (xQueueSend(g_fetchCommandQueue, &fetchJob, pdMS_TO_TICKS(100)) == pdTRUE) {
+            currentState = AppState::FETCHING_DATA;
+            // DisplayManager message handled by FetchTask or here
+            g_displayManager->showMessage(fetchJob.full_refresh ? "Full Refresh..." : "Fetching...", 200, 15);
+        } else {
+            log_e("MainCtrl: Failed to send initial fetch job.");
         }
+    }
+    lastActivityTime = xTaskGetTickCount();
+    esp_task_wdt_reset();
 
-        BaseType_t semTakeResult = xSemaphoreTake(g_fetchRequestSemaphore, portMAX_DELAY);
 
-        // Re-subscribe FetchTask to WDT immediately after unblocking
-        esp_err_t wdt_add_err = esp_task_wdt_add(NULL);
-        if (wdt_add_err != ESP_OK)
-        {
-            log_e("FetchTask: CRITICAL - Failed to re-add WDT for self after semaphore, error %d (%s). Task may not be WDT monitored.", wdt_add_err, esp_err_to_name(wdt_add_err));
-            // Consider recovery or panic if this happens, e.g., esp_restart();
-        }
-        // Reset WDT immediately after re-subscribing. This is also critical.
+    // --- Main Loop ---
+    for (;;) {
         esp_task_wdt_reset();
+        InputEvent inputEvent;
+        RenderResultQueueItem renderResultItem; // Use RenderResultQueueItem
+        FetchResultQueueItem fetchResultItem;   // Use FetchResultQueueItem
 
-        if (g_fetchRequestSemaphore != NULL && semTakeResult == pdTRUE)
-        {
-            g_fetch_task_in_progress = true; // Set flag immediately
-            // Reset watchdog timer again after setting flag and before heavy operations
-            esp_task_wdt_reset();
-            log_i("FetchTask: Semaphore taken, g_fetch_task_in_progress=true. Starting fetch operation.");
-            bool restart_fetch_immediately;
-            bool first_attempt_in_cycle = true;
+        // Check Input Queue (non-blocking)
+        if (xQueueReceive(g_inputEventQueue, &inputEvent, 0) == pdTRUE) {
+            lastActivityTime = xTaskGetTickCount();
+            log_i("MainCtrl: Received input event: %d", (int)inputEvent.type);
+            // Stop ongoing render or fetch if significant input
+            if (currentState == AppState::RENDERING_SCRIPT) {
+                log_i("MainCtrl: Input received during render. Requesting interrupt.");
+                xEventGroupSetBits(g_renderTaskEventFlags, RENDER_INTERRUPT_BIT);
+            }
+            if (currentState == AppState::FETCHING_DATA) {
+                // Fetch task interrupt is more complex, might need a flag for NetworkManager
+                // For now, let FetchTask complete or handle its own interrupt via NetworkManager flag.
+                log_i("MainCtrl: Input received during fetch. Fetch task should handle via its interrupt flag.");
+            }
 
-            do
-            {
-                restart_fetch_immediately = false;
-                // g_user_interrupt_signal_for_fetch_task is for hard stop, cleared by perform_fetch_operations or if it triggers
-                // g_fetch_restart_pending is for soft restart, cleared when acted upon below or by perform_fetch_operations
+            bool newRenderQueued = false;
+            if (inputEvent.type == InputEventType::NEXT_SCRIPT || inputEvent.type == InputEventType::PREVIOUS_SCRIPT) {
+                String selectedId, selectedName;
+                if (g_scriptManager->selectNextScript(inputEvent.type == InputEventType::PREVIOUS_SCRIPT, selectedId, selectedName)) {
+                    g_displayManager->showMessage("Selected: " + selectedName, 250, 15, true, true); // Show selection
+                    vTaskDelay(pdMS_TO_TICKS(500)); // Display for a bit
 
-                bool is_full_refresh_for_this_attempt = g_full_refresh_intended; // Capture intent for this attempt
-
-                // Send "Fetching scripts..." or "Restarting fetch..." message to UI task
-                if (g_displayMessageQueue != NULL)
-                {
-                    if (first_attempt_in_cycle)
-                    {
-                        if (is_full_refresh_for_this_attempt) {
-                            strncpy(msg_to_send.text, "Full Refreshing...", sizeof(msg_to_send.text) - 1);
+                    RenderJobData newJobData; // Use RenderJobData
+                    ScriptExecState nextScriptState;
+                    // Load the newly selected script. getScriptForExecution will use the ID just saved by selectNextScript.
+                    if (g_scriptManager->getScriptForExecution(newJobData.script_id, newJobData.file_id, newJobData.script_content, nextScriptState)) {
+                        if (newJobData.script_id.isEmpty()) { // script_id is humanId
+                             log_e("MainCtrl: getScriptForExecution returned empty human_id after selection. Aborting render.");
                         } else {
-                            strncpy(msg_to_send.text, "Fetching scripts...", sizeof(msg_to_send.text) - 1);
-                        }
-                    }
-                    else
-                    {
-                        strncpy(msg_to_send.text, "Restarting fetch...", sizeof(msg_to_send.text) - 1);
-                    }
-                    msg_to_send.text[sizeof(msg_to_send.text) - 1] = '\0';
-                    msg_to_send.y_offset = 50;
-                    msg_to_send.color = 15;
-                    msg_to_send.clear_canvas_first = false; // Never clear the canvas for fetch messages
-                    msg_to_send.push_full_update = false; // DU4 for quick message
-                    xQueueSend(g_displayMessageQueue, &msg_to_send, pdMS_TO_TICKS(100));
-                }
-                first_attempt_in_cycle = false;
+                            newJobData.initial_state = nextScriptState;
+                            // For button presses, always increment counter or start at 0
+                            if (nextScriptState.state_loaded) newJobData.initial_state.counter++;
+                            else newJobData.initial_state.counter = 0;
+                            
+                            RTC_Time now_time = g_systemManager->getTime();
+                            newJobData.initial_state.hour = now_time.hour;
+                            newJobData.initial_state.minute = now_time.min;
+                            newJobData.initial_state.second = now_time.sec;
 
-                FetchResultStatus fetch_status = perform_fetch_operations(is_full_refresh_for_this_attempt);
+                            RenderJobQueueItem newJobQueueItem;
+                            newJobQueueItem.fromRenderJobData(newJobData); // This now copies human_id, file_id, initial_state
 
-                // Prepare result message based on status
-                bool send_final_message = true;
-                msg_to_send.y_offset = 100; // Standard y_offset for result messages
-                msg_to_send.color = 15;
-                msg_to_send.clear_canvas_first = false;
-                msg_to_send.push_full_update = true; // GC16 for final status
-
-                switch (fetch_status)
-                {
-                case FETCH_SUCCESS:
-                    if (is_full_refresh_for_this_attempt) {
-                        strncpy(msg_to_send.text, "Full Refresh OK!", sizeof(msg_to_send.text) - 1);
-                        g_full_refresh_intended = false; // Clear the intent flag
-                        log_i("FetchTask: Full refresh completed successfully. Intent cleared.");
-                    } else {
-                        strncpy(msg_to_send.text, "Fetch OK!", sizeof(msg_to_send.text) - 1);
-                        log_i("FetchTask: Incremental fetch completed successfully.");
-                    }
-                    disconnectWiFi(); // Disconnect on final success
-
-                    // Update last successful fetch time and date
-                    {
-                        RTC_Time currentTime;
-                        RTC_Date currentDate;
-                        M5.RTC.getTime(&currentTime);
-                        M5.RTC.getDate(&currentDate);
-                        last_fetch_hour = currentTime.hour;
-                        last_fetch_minute = currentTime.min;
-                        last_fetch_day = currentDate.day;
-                        last_fetch_month = currentDate.mon;
-                        last_fetch_year = currentDate.year;
-                        log_i("Updated last fetch timestamp to %d-%02d-%02d %02d:%02d",
-                              last_fetch_year, last_fetch_month, last_fetch_day,
-                              last_fetch_hour, last_fetch_minute);
-                    }
-                    break;
-                case FETCH_GENUINE_ERROR:
-                    strncpy(msg_to_send.text, "Fetch Failed!", sizeof(msg_to_send.text) - 1);
-                    log_e("FetchTask: Failed with genuine error.");
-                    disconnectWiFi(); // Disconnect on final error
-                    break;
-                case FETCH_INTERRUPTED_BY_USER: // Hard interrupt
-                    strncpy(msg_to_send.text, "Fetch Interrupted!", sizeof(msg_to_send.text) - 1);
-                    log_i("FetchTask: Hard interrupted by user.");
-                    // disconnectWiFi() should have been called by perform_fetch_operations
-                    break;
-                case FETCH_NO_WIFI:
-                    // This case now covers "SSID not found" and general "connection failed".
-                    // The specific log in perform_fetch_operations will detail the cause.
-                    strncpy(msg_to_send.text, "WiFi connection failed, skipping fetch", sizeof(msg_to_send.text) - 1);
-                    msg_to_send.push_full_update = false; // DU4 for transient message
-                    log_w("FetchTask: No WiFi connection or SSID not found, skipping fetch operation.");
-                    disconnectWiFi(); // Ensure WiFi is off
-                    break;
-                case FETCH_RESTART_REQUESTED:
-                    log_i("FetchTask: Restart requested. Looping.");
-                    // UI message for restarting is handled by the next iteration's "Restarting fetch..."
-                    send_final_message = false;      // Don't send a "final" message yet
-                    g_fetch_restart_pending = false; // Consume the flag
-                    restart_fetch_immediately = true;
-                    esp_task_wdt_reset();           // Reset watchdog before delay
-                    vTaskDelay(pdMS_TO_TICKS(200)); // Brief pause before restarting
-                    break;
-                }
-                msg_to_send.text[sizeof(msg_to_send.text) - 1] = '\0';
-
-                if (send_final_message && g_displayMessageQueue != NULL)
-                {
-                    xQueueSend(g_displayMessageQueue, &msg_to_send, pdMS_TO_TICKS(100));
-                }
-
-                // g_fetch_task_in_progress = false; // Moved to after the do...while loop
-
-            } while (restart_fetch_immediately);
-
-            // Make sure we're truly done with all operations
-            esp_task_wdt_reset();
-
-            g_fetch_task_in_progress = false; // Clear flag after all attempts for this semaphore signal are done
-            // g_user_interrupt_signal_for_fetch_task should be false here unless a hard interrupt occurred.
-            // g_fetch_restart_pending is false.
-            log_i("FetchTask: Operation cycle finished, g_fetch_task_in_progress=false. Waiting for semaphore.");
-        }
-    }
-} // Closing brace for fetchTaskFunction
-
-// Helper struct for temporarily storing script data during full refresh
-struct TempScriptData {
-    String humanId;
-    String name;
-    String content;
-};
-
-FetchResultStatus perform_fetch_operations(bool isFullRefresh)
-{
-    // Clear hard interrupt signal for this specific attempt. Restart signal is handled differently.
-    g_user_interrupt_signal_for_fetch_task = false;
-
-    log_i("perform_fetch_operations: Starting. Full Refresh Mode: %s", isFullRefresh ? "YES" : "NO");
-
-    // Reset watchdog before potentially long WiFi connection
-    esp_task_wdt_reset();
-
-    // Instead of scanning first, try to connect directly
-    // This is more reliable as scanning can sometimes miss networks
-    log_i("perform_fetch_operations: Attempting to connect to WiFi SSID '%s'...", WIFI_SSID);
-    
-    // Reset watchdog before potentially long WiFi connection
-    esp_task_wdt_reset();
-    
-    // Try to connect directly without scanning first
-    bool wifiConnected = connectToWiFi(); // connectToWiFi checks g_user_interrupt_signal_for_fetch_task
-    
-    if (g_user_interrupt_signal_for_fetch_task) {
-        log_i("perform_fetch_operations: connectToWiFi hard-interrupted.");
-        // connectToWiFi should have handled disconnect
-        return FETCH_INTERRUPTED_BY_USER;
-    }
-    
-    if (g_fetch_restart_pending) {
-        log_i("perform_fetch_operations: Restart requested after connectToWiFi attempt.");
-        // WiFi might be on or off depending on connectToWiFi result. If on, keep it on.
-        return FETCH_RESTART_REQUESTED;
-    }
-
-    if (!wifiConnected) {
-        log_w("perform_fetch_operations: WiFi connection failed. SSID '%s' may not be available.", WIFI_SSID);
-        disconnectWiFi();  // Ensure WiFi is off
-        return FETCH_NO_WIFI;
-    }
-    
-    // WiFi is now connected (we checked above)
-
-    // If we reach here, WiFi is connected.
-    log_i("perform_fetch_operations: WiFi connected. Proceeding with fetch.");
-
-    WiFiClientSecure httpsClient;
-    httpsClient.setCACert(rootCACertificate);
-    HTTPClient http;
-    bool overall_fetch_successful = true; // Assume success unless something fails
-
-    // --- Variables for both full and incremental refresh ---
-    DynamicJsonDocument serverListDoc(4096); // To store the list fetched from server
-    DynamicJsonDocument finalSpiifsListDoc(8192); // To build the list to be saved to SPIFFS
-    JsonArray finalSpiifsArray = finalSpiifsListDoc.to<JsonArray>();
-    std::set<String> assignedFileIdsThisFetch; // Track fileIds used in this fetch to ensure uniqueness
-
-    // --- Fetch Script List from Server (common for both modes) ---
-    String listUrl = String(API_BASE_URL) + "/api/device/scripts";
-    log_i("perform_fetch_operations: Fetching script list from: %s", listUrl.c_str());
-
-    if (g_user_interrupt_signal_for_fetch_task) { http.end(); disconnectWiFi(); return FETCH_INTERRUPTED_BY_USER; }
-    if (g_fetch_restart_pending) { http.end(); return FETCH_RESTART_REQUESTED; }
-
-    if (!http.begin(httpsClient, listUrl)) {
-        log_e("perform_fetch_operations: HTTPClient begin failed for list URL!");
-        disconnectWiFi(); // Ensure WiFi is disconnected on error
-        return FETCH_GENUINE_ERROR;
-    }
-    esp_task_wdt_reset();
-    int httpCode = http.GET();
-    vTaskDelay(pdMS_TO_TICKS(10));
-    esp_task_wdt_reset();
-
-    if (g_user_interrupt_signal_for_fetch_task) { http.end(); disconnectWiFi(); return FETCH_INTERRUPTED_BY_USER; }
-    if (g_fetch_restart_pending) { http.end(); return FETCH_RESTART_REQUESTED; }
-
-    if (httpCode == HTTP_CODE_OK) {
-        String serverJsonPayload = http.getString();
-        if (g_user_interrupt_signal_for_fetch_task) { http.end(); disconnectWiFi(); return FETCH_INTERRUPTED_BY_USER; }
-        if (g_fetch_restart_pending) { http.end(); return FETCH_RESTART_REQUESTED; }
-
-        DeserializationError error = deserializeJson(serverListDoc, serverJsonPayload);
-        if (error) {
-            log_e("perform_fetch_operations: Failed to parse server script list JSON: %s", error.c_str());
-            overall_fetch_successful = false;
-        } else if (!serverListDoc.is<JsonArray>()) {
-            log_e("perform_fetch_operations: Server script list JSON is not an array.");
-            overall_fetch_successful = false;
-        }
-    } else {
-        log_e("perform_fetch_operations: HTTP error fetching script list: %d (%s)", httpCode, http.errorToString(httpCode).c_str());
-        overall_fetch_successful = false;
-    }
-    http.end();
-
-    if (!overall_fetch_successful) {
-        return FETCH_GENUINE_ERROR; // Disconnect will be handled by caller task for GENUINE_ERROR
-    }
-    if (!serverListDoc.is<JsonArray>() || serverListDoc.as<JsonArray>().size() == 0) {
-        log_w("perform_fetch_operations: Server script list is empty or invalid. Saving an empty list locally.");
-        if (isFullRefresh) {
-            clearAllScriptDataFromSPIFFS(); // Clear old data if full refresh and server list is empty
-        }
-        DynamicJsonDocument emptyListDoc(JSON_ARRAY_SIZE(0)); // Create an empty array
-        emptyListDoc.to<JsonArray>();
-        if (!saveScriptList(emptyListDoc)) {
-             log_e("perform_fetch_operations: Failed to save empty script list to SPIFFS.");
-             return FETCH_GENUINE_ERROR;
-        }
-        // Also clean up script states if we're saving an empty list
-        DynamicJsonDocument emptyStatesDoc(JSON_OBJECT_SIZE(0));
-        emptyStatesDoc.to<JsonObject>(); // Create an empty object
-        File statesFile = SPIFFS.open(SCRIPT_STATES_PATH, FILE_WRITE);
-        if (statesFile) {
-            serializeJson(emptyStatesDoc, statesFile);
-            statesFile.close();
-            log_i("perform_fetch_operations: Cleared script states due to empty server list.");
-        } else {
-            log_e("perform_fetch_operations: Failed to open script_states.json for clearing.");
-        }
-        return FETCH_SUCCESS; // Successfully processed an empty list from server
-    }
-
-    // --- Branch logic for Full Refresh vs Incremental ---
-    if (isFullRefresh) {
-        log_i("perform_fetch_operations: --- Full Refresh Path ---");
-        std::vector<TempScriptData> fetchedScripts;
-        JsonArray serverArray = serverListDoc.as<JsonArray>();
-        log_i("perform_fetch_operations (Full): Processing %d scripts from server list for content fetch.", serverArray.size());
-
-        // IMPORTANT: First fetch ALL script contents BEFORE clearing SPIFFS
-        // This ensures we don't wipe existing scripts if the fetch fails
-        int scriptCounter = 0;
-        for (JsonObject serverScriptInfo : serverArray) {
-            if (scriptCounter++ % 3 == 0) esp_task_wdt_reset();
-            if (g_user_interrupt_signal_for_fetch_task) { disconnectWiFi(); return FETCH_INTERRUPTED_BY_USER; }
-            if (g_fetch_restart_pending) { return FETCH_RESTART_REQUESTED; }
-
-            const char *humanId = serverScriptInfo["id"];
-            const char *humanName = serverScriptInfo["name"];
-            if (!humanId || strlen(humanId) == 0) {
-                log_w("perform_fetch_operations (Full): Skipping script from server with missing 'id'.");
-                continue;
-            }
-
-            String scriptUrl = String(API_BASE_URL) + "/api/scripts/" + humanId;
-            if (!http.begin(httpsClient, scriptUrl)) {
-                log_e("perform_fetch_operations (Full): HTTPClient begin failed for script content URL: %s", scriptUrl.c_str());
-                overall_fetch_successful = false;
-                esp_task_wdt_reset(); // Reset watchdog before potentially breaking
-                break; // Abort full refresh
-            }
-            int scriptHttpCode = http.GET();
-            vTaskDelay(pdMS_TO_TICKS(10)); esp_task_wdt_reset();
-            
-            if (g_user_interrupt_signal_for_fetch_task) { http.end(); disconnectWiFi(); return FETCH_INTERRUPTED_BY_USER; }
-            if (g_fetch_restart_pending) { http.end(); return FETCH_RESTART_REQUESTED; }
-
-            if (scriptHttpCode == HTTP_CODE_OK) {
-                String scriptPayload = http.getString();
-                http.end(); // End connection for this script content fetch
-                
-                DynamicJsonDocument scriptDoc(8192);
-                DeserializationError scriptError = deserializeJson(scriptDoc, scriptPayload);
-                if (scriptError) {
-                    log_e("perform_fetch_operations (Full): Failed to parse script content JSON for humanId %s: %s", humanId, scriptError.c_str());
-                    overall_fetch_successful = false; break;
-                }
-                const char *scriptContentFetched = scriptDoc["content"];
-                if (scriptContentFetched) {
-                    fetchedScripts.push_back({String(humanId), String(humanName ? humanName : humanId), String(scriptContentFetched)});
-                    log_i("perform_fetch_operations (Full): Successfully fetched content for humanId %s", humanId);
-                } else {
-                    log_e("perform_fetch_operations (Full): Missing 'content' field for humanId %s.", humanId);
-                    overall_fetch_successful = false; break;
-                }
-            } else {
-                http.end(); // End connection on error
-                log_w("perform_fetch_operations (Full): HTTP error %d (%s) fetching script content for humanId %s.",
-                      scriptHttpCode, http.errorToString(scriptHttpCode).c_str(), humanId);
-                overall_fetch_successful = false; break;
-            }
-        } // End loop for fetching all contents
-
-        if (!overall_fetch_successful || fetchedScripts.empty()) {
-            log_e("perform_fetch_operations (Full): Aborting full refresh due to errors in fetching all script contents or no scripts fetched.");
-            return FETCH_GENUINE_ERROR;
-        }
-
-        // All content fetched successfully, NOW clear old SPIFFS data and save new
-        log_i("perform_fetch_operations (Full): All %d script contents fetched successfully. NOW clearing old data and saving new.", fetchedScripts.size());
-        clearAllScriptDataFromSPIFFS();
-        esp_task_wdt_reset();
-
-        int fileIdCounter = 0;
-        for (const auto& scriptData : fetchedScripts) {
-            String newFileId = "s" + String(fileIdCounter++);
-            if (saveScriptContent(newFileId.c_str(), scriptData.content.c_str())) {
-                JsonObject newEntry = finalSpiifsArray.createNestedObject();
-                newEntry["id"] = scriptData.humanId;
-                newEntry["name"] = scriptData.name;
-                newEntry["fileId"] = newFileId;
-                log_i("perform_fetch_operations (Full): Saved script content for humanId %s with fileId %s", scriptData.humanId.c_str(), newFileId.c_str());
-            } else {
-                log_e("perform_fetch_operations (Full): Failed to save script content for humanId %s (new fileId %s). Critical error during save phase.", scriptData.humanId.c_str(), newFileId.c_str());
-                // This is a critical error after clearing, might leave system in bad state.
-                // For now, mark as overall failure.
-                overall_fetch_successful = false;
-                break;
-            }
-        }
-        if (!overall_fetch_successful) {
-            log_e("perform_fetch_operations (Full): Failed during saving phase after clearing SPIFFS. System may be inconsistent.");
-            return FETCH_GENUINE_ERROR; // Indicate a serious problem
-        }
-
-    } else { // --- Incremental Refresh Path ---
-        log_i("perform_fetch_operations: --- Incremental Refresh Path ---");
-        DynamicJsonDocument oldSpiifsListDoc(8192);
-        bool oldListLoaded = loadScriptList(oldSpiifsListDoc);
-        if (oldListLoaded) {
-            log_i("perform_fetch_operations (Inc): Successfully loaded existing list.json to help preserve fileIds (%d entries).", oldSpiifsListDoc.as<JsonArray>().size());
-        } else {
-            log_w("perform_fetch_operations (Inc): Could not load existing list.json or it was empty/invalid.");
-        }
-        vTaskDelay(pdMS_TO_TICKS(10));
-
-        JsonArray serverArray = serverListDoc.as<JsonArray>();
-        log_i("perform_fetch_operations (Inc): Processing %d scripts from server list.", serverArray.size());
-        int scriptCounter = 0;
-
-        for (JsonObject serverScriptInfo : serverArray) {
-            // (Logic from existing incremental path - reconcile, fetch missing, assign fileIds)
-            // This part needs to be carefully merged from the original perform_fetch_operations
-            // For brevity, assuming the existing complex reconciliation logic is here.
-            // Key parts:
-            // - Determine fileId (reuse from oldSpiifsListDoc or generate new)
-            // - Check if content exists or needs fetching (based on existence or ideally lastModified)
-            // - Fetch content if needed
-            // - Add to finalSpiifsArray
-            // - Ensure assignedFileIdsThisFetch is updated
-
-            // Reset watchdog periodically during script processing
-            if (scriptCounter++ % 3 == 0) {
-                esp_task_wdt_reset();
-            }
-            if (g_user_interrupt_signal_for_fetch_task) { disconnectWiFi(); return FETCH_INTERRUPTED_BY_USER; }
-            if (g_fetch_restart_pending) { return FETCH_RESTART_REQUESTED; }
-
-            const char *humanId = serverScriptInfo["id"];
-            const char *humanName = serverScriptInfo["name"];
-            // const char *serverLastModified = serverScriptInfo["lastModified"]; // If using lastModified checks
-
-            if (!humanId || strlen(humanId) == 0) {
-                log_w("perform_fetch_operations (Inc): Skipping script from server with missing 'id'.");
-                continue;
-            }
-
-            String determinedFileId = "";
-            bool foundInOldList = false;
-
-            if (oldListLoaded && oldSpiifsListDoc.is<JsonArray>()) {
-                for (JsonObject oldScriptInfo : oldSpiifsListDoc.as<JsonArray>()) {
-                    const char *oldHumanId = oldScriptInfo["id"];
-                    const char *oldFileId = oldScriptInfo["fileId"];
-                    if (oldHumanId && oldFileId && strcmp(oldHumanId, humanId) == 0) {
-                        if (assignedFileIdsThisFetch.count(oldFileId)) {
-                            log_w("perform_fetch_operations (Inc): FileId '%s' for humanId '%s' from old list already assigned. Generating new.", oldFileId, humanId);
-                        } else {
-                            determinedFileId = oldFileId;
-                            foundInOldList = true;
-                            break;
-                        }
-                    }
-                }
-            }
-
-            if (foundInOldList) {
-                log_i("perform_fetch_operations (Inc): Reusing fileId '%s' for humanId '%s'.", determinedFileId.c_str(), humanId);
-                assignedFileIdsThisFetch.insert(determinedFileId);
-            } else {
-                int tempIdCounter = 0;
-                do {
-                    determinedFileId = "s" + String(tempIdCounter++);
-                } while (assignedFileIdsThisFetch.count(determinedFileId));
-                log_i("perform_fetch_operations (Inc): Assigning new fileId '%s' for humanId '%s'.", determinedFileId.c_str(), humanId);
-                assignedFileIdsThisFetch.insert(determinedFileId);
-            }
-
-            String contentPath = "/scripts/content/" + determinedFileId;
-            bool contentAvailableOrFetched = false;
-
-            // TODO: Add lastModified check here if server provides it and we store it.
-            // For now, just check existence.
-            if (SPIFFS.exists(contentPath.c_str())) {
-                log_d("perform_fetch_operations (Inc): Content for humanId '%s' (fileId '%s') already exists.", humanId, determinedFileId.c_str());
-                contentAvailableOrFetched = true;
-            } else {
-                log_i("perform_fetch_operations (Inc): Content for humanId '%s' (fileId '%s') missing, fetching.", humanId, determinedFileId.c_str());
-                String scriptUrl = String(API_BASE_URL) + "/api/scripts/" + humanId;
-                if (!http.begin(httpsClient, scriptUrl)) {
-                    log_e("perform_fetch_operations (Inc): HTTPClient begin failed for script content URL: %s", scriptUrl.c_str());
-                    assignedFileIdsThisFetch.erase(determinedFileId); // Release ID
-                    continue; // Skip this script
-                }
-                int scriptHttpCode = http.GET();
-                vTaskDelay(pdMS_TO_TICKS(10)); esp_task_wdt_reset();
-                http.end();
-
-                if (g_user_interrupt_signal_for_fetch_task) { disconnectWiFi(); return FETCH_INTERRUPTED_BY_USER; }
-                if (g_fetch_restart_pending) { return FETCH_RESTART_REQUESTED; }
-
-                if (scriptHttpCode == HTTP_CODE_OK) {
-                    String scriptPayload = http.getString();
-                    DynamicJsonDocument scriptDoc(8192);
-                    DeserializationError scriptError = deserializeJson(scriptDoc, scriptPayload);
-                    if (scriptError) {
-                        log_e("perform_fetch_operations (Inc): Failed to parse script content JSON for %s: %s", humanId, scriptError.c_str());
-                    } else {
-                        const char *scriptContentFetched = scriptDoc["content"];
-                        if (scriptContentFetched) {
-                            if (saveScriptContent(determinedFileId.c_str(), scriptContentFetched)) {
-                                contentAvailableOrFetched = true;
+                            if (xQueueSend(g_renderCommandQueue, &newJobQueueItem, pdMS_TO_TICKS(100)) == pdTRUE) {
+                                currentState = AppState::RENDERING_SCRIPT;
+                                currentLoadedScriptId = newJobData.script_id; // humanId
+                                newRenderQueued = true;
                             } else {
-                                log_e("perform_fetch_operations (Inc): Failed to save content for %s (fileId %s).", humanId, determinedFileId.c_str());
+                                log_e("MainCtrl: Failed to send render job for %s", selectedId.c_str());
                             }
-                        } else {
-                            log_e("perform_fetch_operations (Inc): Missing 'content' for %s.", humanId);
                         }
                     }
+                }
+            } else if (inputEvent.type == InputEventType::CONFIRM_ACTION) {
+                // Example: Trigger a fetch on PUSH button, regardless of time, but not full refresh unless intended
+                log_i("MainCtrl: Confirm action received. Triggering fetch.");
+                FetchJob fetchJob;
+                fetchJob.full_refresh = g_systemManager->isFullRefreshIntended(); // Respect existing intent
+                if (xQueueSend(g_fetchCommandQueue, &fetchJob, pdMS_TO_TICKS(100)) == pdTRUE) {
+                    currentState = AppState::FETCHING_DATA;
+                     g_displayManager->showMessage(fetchJob.full_refresh ? "Full Refresh..." : "Fetching...", 200, 15, true, true);
                 } else {
-                    log_w("perform_fetch_operations (Inc): HTTP error %d fetching content for %s.", scriptHttpCode, humanId);
+                    log_e("MainCtrl: Failed to send fetch job on confirm_action.");
                 }
             }
-
-            if (contentAvailableOrFetched) {
-                JsonObject newEntry = finalSpiifsArray.createNestedObject();
-                newEntry["id"] = humanId;
-                newEntry["name"] = humanName ? humanName : humanId;
-                newEntry["fileId"] = determinedFileId;
-                // newEntry["lastModified"] = serverLastModified; // If storing this
-            } else {
-                log_w("perform_fetch_operations (Inc): Script %s (fileId %s) excluded, content unavailable/save failed.", humanId, determinedFileId.c_str());
-                assignedFileIdsThisFetch.erase(determinedFileId);
-            }
-            vTaskDelay(pdMS_TO_TICKS(50));
-        }
-    } // End of Full vs Incremental branch
-
-    // --- Common operations for both paths (Cleanup, Save List) ---
-    esp_task_wdt_reset();
-
-    // Cleanup Orphaned Script Content Files (only if not a full refresh, as full refresh clears all first)
-    if (!isFullRefresh) {
-        log_i("perform_fetch_operations: Cleaning up orphaned script content files (Incremental Mode)...");
-        File root = SPIFFS.open("/scripts/content");
-        if (root && root.isDirectory()) {
-            File entry = root.openNextFile();
-            while (entry) {
-                if (g_user_interrupt_signal_for_fetch_task) { root.close(); entry.close(); disconnectWiFi(); return FETCH_INTERRUPTED_BY_USER; }
-                if (g_fetch_restart_pending) { root.close(); entry.close(); return FETCH_RESTART_REQUESTED; }
-                if (!entry.isDirectory()) {
-                    String entryName = entry.name();
-                    String pathToRemove;
-                    String fileIdFromPath;
-                    if (entryName.startsWith("/")) { pathToRemove = entryName; }
-                    else { pathToRemove = "/scripts/content/" + entryName; }
-                    fileIdFromPath = pathToRemove.substring(pathToRemove.lastIndexOf('/') + 1);
-
-                    bool foundInFinalList = false;
-                    for (JsonObject scriptInFinalList : finalSpiifsArray) {
-                        if (fileIdFromPath == scriptInFinalList["fileId"].as<String>()) {
-                            foundInFinalList = true;
-                            break;
-                        }
-                    }
-                    if (!foundInFinalList) {
-                        log_i("perform_fetch_operations: Removing orphaned script content: %s", pathToRemove.c_str());
-                        if (!SPIFFS.remove(pathToRemove)) {
-                            log_e("perform_fetch_operations: Failed to remove %s", pathToRemove.c_str());
-                        }
-                    }
-                }
-                entry.close();
-                entry = root.openNextFile();
-            }
-            root.close();
-        } else {
-            log_w("perform_fetch_operations: Could not open /scripts/content for cleanup or not a directory.");
-        }
-        vTaskDelay(pdMS_TO_TICKS(10));
-    }
-
-
-    // Save the New list.json
-    if (!saveScriptList(finalSpiifsListDoc)) {
-        log_e("perform_fetch_operations: Failed to save final script list to SPIFFS.");
-        overall_fetch_successful = false; // This is a critical failure
-    } else {
-        // State Cleanup Logic (common for both full and incremental, happens after successful list save)
-        log_i("perform_fetch_operations: Cleaning up orphaned script execution states...");
-        DynamicJsonDocument currentStatesDoc(2048);
-        File statesFile = SPIFFS.open(SCRIPT_STATES_PATH, FILE_READ);
-        bool statesLoaded = false;
-        if (!statesFile || statesFile.isDirectory() || statesFile.size() == 0) {
-            if(statesFile) statesFile.close();
-            log_w("perform_fetch_operations: %s not found, is directory, or empty. No states to clean.", SCRIPT_STATES_PATH);
-        } else {
-            DeserializationError error = deserializeJson(currentStatesDoc, statesFile);
-            statesFile.close();
-            if (error) {
-                log_e("perform_fetch_operations: Failed to parse %s for cleanup: %s. Skipping cleanup.", SCRIPT_STATES_PATH, error.c_str());
-            } else if (!currentStatesDoc.is<JsonObject>()) {
-                log_e("perform_fetch_operations: %s content not a JSON object. Skipping cleanup.", SCRIPT_STATES_PATH);
-            } else {
-                statesLoaded = true;
-            }
+            if (newRenderQueued) currentState = AppState::RENDERING_SCRIPT;
+            else if (currentState != AppState::FETCHING_DATA) currentState = AppState::IDLE; // Or MENU_DISPLAY
         }
 
-        if (statesLoaded) {
-            std::set<String> validHumanIds;
-            for (JsonObject scriptInfo : finalSpiifsArray) { // Use finalSpiifsArray directly
-                 const char* humanId = scriptInfo["id"];
-                 if (humanId) validHumanIds.insert(String(humanId));
-            }
-            log_i("Found %d valid human script IDs in the final list for state cleanup.", validHumanIds.size());
-            JsonObject statesRoot = currentStatesDoc.as<JsonObject>();
-            bool statesModified = false;
-            std::vector<String> keysToRemove;
-            for (JsonPair kv : statesRoot) {
-                String scriptIdKey = kv.key().c_str();
-                if (validHumanIds.find(scriptIdKey) == validHumanIds.end()) {
-                    keysToRemove.push_back(scriptIdKey);
-                    statesModified = true;
-                }
-            }
-            if (statesModified) {
-                log_i("Removing states for %d orphaned script IDs:", keysToRemove.size());
-                for (const String& key : keysToRemove) {
-                    log_i("  - Removing state for: %s", key.c_str());
-                    statesRoot.remove(key);
-                }
-                statesFile = SPIFFS.open(SCRIPT_STATES_PATH, FILE_WRITE);
-                if (!statesFile) {
-                    log_e("perform_fetch_operations: Failed to open %s for writing cleaned states.", SCRIPT_STATES_PATH);
-                } else {
-                     if (serializeJson(currentStatesDoc, statesFile) > 0) {
-                         log_i("Successfully saved cleaned-up script states to %s.", SCRIPT_STATES_PATH);
-                     } else {
-                         log_e("Failed to write updated states to %s.", SCRIPT_STATES_PATH);
-                     }
-                     statesFile.close();
-                }
-            } else {
-                log_i("No orphaned script states found to remove.");
-            }
-        }
-    }
+        // Check Render Status Queue (non-blocking)
+        if (xQueueReceive(g_renderStatusQueue, &renderResultItem, 0) == pdTRUE) { // Use renderResultItem
+            lastActivityTime = xTaskGetTickCount();
 
-    // Final checks before returning
-    if (g_user_interrupt_signal_for_fetch_task) { disconnectWiFi(); return FETCH_INTERRUPTED_BY_USER; }
-    if (g_fetch_restart_pending) { return FETCH_RESTART_REQUESTED; }
+            String received_script_id(renderResultItem.script_id); // Construct String from char[]
+            String received_error_message(renderResultItem.error_message); // Construct String from char[]
 
-    return overall_fetch_successful ? FETCH_SUCCESS : FETCH_GENUINE_ERROR;
-}
-
-// Selects the next script ID based on the direction (up/down)
-bool selectNextScript(bool moveUp)
-{
-    DynamicJsonDocument listDoc(4096);
-
-    if (!loadScriptList(listDoc))
-    {
-        log_e("Cannot select next script, failed to load script list from SPIFFS.");
-        return false;
-    }
-    if (!listDoc.is<JsonArray>() || listDoc.as<JsonArray>().size() == 0)
-    {
-        log_e("Cannot select next script, list is empty or not an array after loading. Fetch will not be triggered from here.");
-        // Fetch is no longer triggered from here.
-        // The main loop will proceed, and loadScriptToExecute will handle the missing/bad list,
-        // potentially falling back to default. A fetch might occur later if it's a boot/timer-wakeup.
-        return false;
-    }
-
-    JsonArray scriptList = listDoc.as<JsonArray>();
-    vTaskDelay(pdMS_TO_TICKS(10)); // Yield after SPIFFS load
-
-    String loadedCurrentId;
-    loadCurrentScriptId(loadedCurrentId);
-
-    int currentIndex = -1;
-    for (int i = 0; i < scriptList.size(); i++)
-    {
-        JsonObject scriptInfo = scriptList[i];
-        const char *idJson = scriptInfo["id"];
-        if (idJson && loadedCurrentId == idJson)
-        {
-            currentIndex = i;
-            break;
-        }
-    }
-
-    int nextIndex = 0;
-    if (scriptList.size() > 0)
-    {
-        if (currentIndex != -1)
-        {
-            int delta = moveUp ? -1 : 1;
-            nextIndex = (currentIndex + delta + scriptList.size()) % scriptList.size();
-        }
-        else
-        {
-            nextIndex = moveUp ? scriptList.size() - 1 : 0;
-        }
-        JsonObject nextScriptInfo = scriptList[nextIndex];
-        const char *nextId = nextScriptInfo["id"];
-        const char *nextName = nextScriptInfo["name"];
-
-        if (nextId)
-        {
-            log_i("Selected script index: %d, ID: %s, Name: %s", nextIndex, nextId, nextName ? nextName : "N/A");
-            if (saveCurrentScriptId(nextId))
-            {
-                vTaskDelay(pdMS_TO_TICKS(10)); // Yield after SPIFFS save
-                esp_task_wdt_reset(); // WDT reset before canvas operations
-                canvas.fillCanvas(0);
-                displayMessage((nextName ? nextName : nextId), 150, 15);
-                canvas.pushCanvas(0, 0, UPDATE_MODE_GC16);
-                esp_task_wdt_reset(); // WDT reset after canvas operations
-                // Brief delay to allow EPD to start processing, but not long enough to cause interrupt issues
-                vTaskDelay(pdMS_TO_TICKS(50));
-                return true; // Crucial fix: return true on success
-            }
-            else
-            {
-                log_e("Failed to save the new current script ID: %s", nextId);
-                return false;
-            }
-        }
-        else
-        {
-            log_e("Script at index %d has no ID.", nextIndex);
-            return false;
-        }
-        // If saveCurrentScriptId was successful, it would have returned true.
-        // If it failed, it would have returned false.
-        // If nextId was null, it would have returned false.
-        // This part of the function should ideally not be reached if nextId was processed.
-        // However, to be safe and ensure all paths return a value:
-        log_w("selectNextScript: Reached unexpected location, implies logic error or unhandled case for nextId processing. Returning false.");
-        return false;
-    }
-    else
-    {
-        // This case should be caught by the earlier check, but defensive.
-        log_e("Script list is empty, cannot select.");
-        return false;
-    }
-}
-
-// Loads the current script ID and its content into global variables
-bool loadScriptToExecute()
-{
-    String humanReadableScriptIdFromSpiffs; // ID from /current_script.id
-    bool spiffsIdLoaded = false;
-    String determinedFileId = "";
-    String finalHumanIdForExecution = ""; // This will be set to the ID we actually try to load content for
-
-    // 1. Load human-readable ID from /current_script.id
-    if (loadCurrentScriptId(humanReadableScriptIdFromSpiffs) && humanReadableScriptIdFromSpiffs.length() > 0)
-    {
-        log_i("loadScriptToExecute: Current human-readable script ID from SPIFFS: '%s'", humanReadableScriptIdFromSpiffs.c_str());
-        spiffsIdLoaded = true;
-    }
-    else
-    {
-        log_w("loadScriptToExecute: No current script ID found in SPIFFS or it was empty. Will try first from list.");
-    }
-    vTaskDelay(pdMS_TO_TICKS(10));
-
-    // 2. Load the script list
-    DynamicJsonDocument listDoc(4096);
-    bool listIsProblematic = false; // Flag if list.json seems to have issues
-    JsonArray scriptList;
-    bool hasScriptsInList = false;
-
-    if (loadScriptList(listDoc) && listDoc.is<JsonArray>() && listDoc.as<JsonArray>().size() > 0)
-    {
-        scriptList = listDoc.as<JsonArray>();
-        hasScriptsInList = scriptList.size() > 0;
-        log_i("loadScriptToExecute: Script list loaded with %d entries.", scriptList.size());
-        
-        if (hasScriptsInList) {
-            JsonObject firstEntryTest = scriptList[0];
-            const char *testId = firstEntryTest["id"];
-            const char *testFileId = firstEntryTest["fileId"];
-            if (!testId || strlen(testId) == 0 || !testFileId || strlen(testFileId) == 0)
-            {
-                log_w("loadScriptToExecute: First script in list.json is missing 'id' or 'fileId'. List may be problematic.");
-                listIsProblematic = true;
-            }
-        }
-    }
-    else
-    {
-        log_e("loadScriptToExecute: Failed to load script list, or list is empty/invalid. Marking as problematic.");
-        listIsProblematic = true;
-    }
-    vTaskDelay(pdMS_TO_TICKS(10));
-
-    // 3. Try to use humanReadableScriptIdFromSpiffs if it was loaded and list is not problematic
-    bool foundAndMappedSpiffsId = false;
-    if (spiffsIdLoaded && !listIsProblematic && hasScriptsInList)
-    {
-        bool idExistsInList = false;
-        for (JsonObject scriptInfo : scriptList)
-        {
-            const char *hId = scriptInfo["id"];
-            if (hId && humanReadableScriptIdFromSpiffs == hId)
-            {
-                idExistsInList = true;
-                const char *fId = scriptInfo["fileId"];
-                if (fId && strlen(fId) > 0)
-                {
-                    determinedFileId = fId;
-                    finalHumanIdForExecution = humanReadableScriptIdFromSpiffs;
-                    foundAndMappedSpiffsId = true;
-                    log_i("loadScriptToExecute: Found fileId '%s' for humanId '%s' (from SPIFFS preference).", determinedFileId.c_str(), finalHumanIdForExecution.c_str());
-                }
-                else
-                {
-                    log_w("loadScriptToExecute: HumanId '%s' (from SPIFFS preference) found in list but has no valid fileId.", humanReadableScriptIdFromSpiffs.c_str());
-                    // Don't mark list as problematic here, just try the first script instead
-                }
-                break;
-            }
-        }
-        if (!idExistsInList)
-        {
-            log_w("loadScriptToExecute: HumanId '%s' (from SPIFFS preference) not found in the script list. Will try first from list.", humanReadableScriptIdFromSpiffs.c_str());
-        }
-    }
-
-    // 4. If spiffsId wasn't used, try first script from list (if list is usable)
-    if (!foundAndMappedSpiffsId && !listIsProblematic && hasScriptsInList)
-    {
-        log_i("loadScriptToExecute: Attempting to use first script from the list.");
-        JsonObject firstScript = scriptList[0];
-        const char *firstHumanId = firstScript["id"];
-        const char *firstFileId = firstScript["fileId"];
-
-        if (firstHumanId && strlen(firstHumanId) > 0 && firstFileId && strlen(firstFileId) > 0)
-        {
-            finalHumanIdForExecution = firstHumanId;
-            determinedFileId = firstFileId;
-            log_i("loadScriptToExecute: Using first script: humanId '%s', fileId '%s'", finalHumanIdForExecution.c_str(), determinedFileId.c_str());
-            if (!saveCurrentScriptId(finalHumanIdForExecution.c_str()))
-            {
-                log_w("loadScriptToExecute: Failed to save the first script's humanId ('%s') as current to SPIFFS.", finalHumanIdForExecution.c_str());
-            }
-        }
-        else
-        {
-            // This case implies listIsProblematic should have been true.
-            log_e("loadScriptToExecute: First script in list has no valid humanId or fileId, despite earlier checks. List is problematic.");
-            listIsProblematic = true;
-        }
-        vTaskDelay(pdMS_TO_TICKS(10));
-    }
-
-    // 5. If we still don't have a fileId (due to list problems or empty list), check if we need to trigger a fetch
-    if (determinedFileId.length() == 0)
-    {
-        // Only use default script if we have no scripts at all on the device
-        if (!hasScriptsInList) {
-            log_w("loadScriptToExecute: No scripts found in list. Using default script as last resort.");
-            currentScriptId = "default";
-            currentScriptContent = default_script;
+            log_i("MainCtrl: Received render result for '%s'. Success: %s, Interrupted: %s",
+                  received_script_id.c_str(), renderResultItem.success ? "Yes":"No", renderResultItem.interrupted ? "Yes":"No");
             
-            // Fetch is no longer triggered from here.
-            log_w("loadScriptToExecute: No scripts found in list or list problematic. Using default script. Fetch will not be triggered from here.");
-            // A fetch might occur later if it's a boot/timer-wakeup scenario and shouldPerformFetch allows.
-            return true; // Return true since we're using the default script
+            if (renderResultItem.success && !renderResultItem.interrupted) {
+                g_scriptManager->saveScriptExecutionState(received_script_id, renderResultItem.final_state);
+            } else if (renderResultItem.interrupted) {
+                g_displayManager->showMessage("Render Interrupted", 300, 15, false, true);
+                vTaskDelay(pdMS_TO_TICKS(1000));
+            } else { // Render failed
+                g_displayManager->showMessage("Render Failed: " + received_script_id, 300, 15, false, true);
+                if (!received_error_message.isEmpty()) {
+                    log_e("Render Error: %s", received_error_message.c_str());
+                }
+                vTaskDelay(pdMS_TO_TICKS(2000));
+            }
+            if (currentState == AppState::RENDERING_SCRIPT) currentState = AppState::IDLE;
+        }
+
+        // Check Fetch Status Queue (non-blocking)
+        if (xQueueReceive(g_fetchStatusQueue, &fetchResultItem, 0) == pdTRUE) { // Use fetchResultItem
+            lastActivityTime = xTaskGetTickCount();
+            
+            String fetch_message(fetchResultItem.message); // Construct String from char[]
+
+            log_i("MainCtrl: Received fetch result. Status: %d", (int)fetchResultItem.status);
+            g_displayManager->showMessage("Fetch: " + fetch_message, 350, 15, false, true);
+            vTaskDelay(pdMS_TO_TICKS(1500));
+
+            if (fetchResultItem.status == FetchResultStatus::SUCCESS) {
+                g_systemManager->updateLastFetchTimestamp();
+                if (g_systemManager->isFullRefreshIntended()) {
+                    g_systemManager->setFullRefreshIntended(false);
+                }
+                g_systemManager->saveSettings();
+
+                if (fetchResultItem.new_scripts_available) {
+                    g_displayManager->showMessage("New Scripts!", 400, 15);
+                    vTaskDelay(pdMS_TO_TICKS(1000));
+                    bool currentStillValid = false;
+                    JsonDocument listDoc;
+                    if(g_scriptManager->loadScriptList(listDoc) && listDoc.is<JsonArray>()){
+                        for(JsonObject item : listDoc.as<JsonArray>()){
+                            if(item["id"].as<String>() == currentLoadedScriptId){
+                                currentStillValid = true;
+                                break;
+                            }
+                        }
+                    }
+                    if(!currentStillValid && !currentLoadedScriptId.isEmpty()){
+                        log_i("MainCtrl: Current script '%s' no longer in list after fetch. Rendering first available.", currentLoadedScriptId.c_str());
+                        RenderJobData newJobData; ScriptExecState state; // Use RenderJobData
+                        if(g_scriptManager->getScriptForExecution(newJobData.script_id, newJobData.file_id, newJobData.script_content, state)){
+                            if (newJobData.script_id.isEmpty()) { // script_id is humanId
+                                log_e("MainCtrl: getScriptForExecution (after fetch) returned empty human_id. Aborting render.");
+                            } else {
+                                newJobData.initial_state = state;
+                                if (state.state_loaded) newJobData.initial_state.counter++; else newJobData.initial_state.counter = 0;
+                                RTC_Time now_time = g_systemManager->getTime();
+                                newJobData.initial_state.hour = now_time.hour; newJobData.initial_state.minute = now_time.min; newJobData.initial_state.second = now_time.sec;
+                                
+                                RenderJobQueueItem newJobQueueItem;
+                                newJobQueueItem.fromRenderJobData(newJobData); // This now copies human_id, file_id, initial_state
+                                if (xQueueSend(g_renderCommandQueue, &newJobQueueItem, pdMS_TO_TICKS(100)) == pdTRUE) {
+                                    currentState = AppState::RENDERING_SCRIPT;
+                                    currentLoadedScriptId = newJobData.script_id; // humanId
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if (currentState == AppState::FETCHING_DATA && currentState != AppState::RENDERING_SCRIPT) {
+                 currentState = AppState::IDLE;
+            }
         }
         
-        // If listIsProblematic but hasScriptsInList is false, the above block handles it.
-        // If listIsProblematic is true AND hasScriptsInList is true, it means we have a list, but it's flawed.
-        // We will proceed to try and load based on finalHumanIdForExecution / determinedFileId if they were set.
-        // If they weren't set (e.g. first script in problematic list was bad), determinedFileId will be empty.
+        // Sleep Management
+        if (currentState == AppState::IDLE && (xTaskGetTickCount() - lastActivityTime) > pdMS_TO_TICKS(SLEEP_IDLE_THRESHOLD_MS)) {
+            log_i("MainCtrl: Idle timeout. Going to light sleep.");
+            g_displayManager->showMessage("Sleeping...", 450, 15, false, true);
+            vTaskDelay(pdMS_TO_TICKS(500));
+            
+            esp_task_wdt_delete(NULL);
+            g_systemManager->goToLightSleep(SystemManager::DEFAULT_SLEEP_DURATION_S); // Use constant
+            esp_task_wdt_init(30, true);
+            esp_task_wdt_add(NULL);
 
-        // If determinedFileId is still empty at this point, it means:
-        // - List was problematic and first entry was bad, OR
-        // - SPIFFS ID was loaded but not found in a problematic list, OR
-        // - Some other edge case where we couldn't map to a fileId.
-        // In this scenario, we fall back to default.
-        if (determinedFileId.length() == 0) { // This check is now more encompassing
-            log_w("loadScriptToExecute: Could not determine a fileId due to list issues or missing entries. Using default script.");
-            currentScriptId = "default";
-            currentScriptContent = default_script;
-            // Fetch is not triggered from here.
-            return true;
+            lastActivityTime = xTaskGetTickCount();
+            log_i("MainCtrl: Woke up. Cause: %d", g_systemManager->getWakeupCause());
+            g_displayManager->showMessage("Awake!", 50, 15, true, true);
+            vTaskDelay(pdMS_TO_TICKS(500));
+
+            RenderJobData wakeRenderJobData; // Use RenderJobData
+            ScriptExecState wakeScriptState;
+            if (g_scriptManager->getScriptForExecution(wakeRenderJobData.script_id, wakeRenderJobData.file_id, wakeRenderJobData.script_content, wakeScriptState)) {
+                if (wakeRenderJobData.script_id.isEmpty()) { // script_id is humanId
+                    log_e("MainCtrl: getScriptForExecution (after wakeup) returned empty human_id. Aborting render.");
+                } else {
+                    wakeRenderJobData.initial_state = wakeScriptState;
+                    if (g_systemManager->getWakeupCause() == ESP_SLEEP_WAKEUP_TIMER) {
+                         if (wakeScriptState.state_loaded) wakeRenderJobData.initial_state.counter++;
+                         else wakeRenderJobData.initial_state.counter = 0;
+                    }
+                    RTC_Time now_time = g_systemManager->getTime();
+                    wakeRenderJobData.initial_state.hour = now_time.hour;
+                    wakeRenderJobData.initial_state.minute = now_time.min;
+                    wakeRenderJobData.initial_state.second = now_time.sec;
+
+                    RenderJobQueueItem wakeRenderJobQueueItem;
+                    wakeRenderJobQueueItem.fromRenderJobData(wakeRenderJobData); // This now copies human_id, file_id, initial_state
+                    if (xQueueSend(g_renderCommandQueue, &wakeRenderJobQueueItem, pdMS_TO_TICKS(100)) == pdTRUE) {
+                        currentState = AppState::RENDERING_SCRIPT;
+                        currentLoadedScriptId = wakeRenderJobData.script_id; // humanId
+                    }
+                }
+            }
+
+            // 2. If timer wakeup, check if fetch is due
+            if (g_systemManager->getWakeupCause() == ESP_SLEEP_WAKEUP_TIMER) {
+                int ly, lm, ld, lh, lmin;
+                g_systemManager->getLastFetchTimestamp(ly, lm, ld, lh, lmin);
+                RTC_Date cd = g_systemManager->getDate();
+                RTC_Time ct = g_systemManager->getTime();
+                bool fetchDue = false;
+                if (ly == -1 || cd.year != ly || cd.mon != lm || cd.day != ld) {
+                    fetchDue = true;
+                } else {
+                    int elapsed = (ct.hour - lh) * 60 + (ct.min - lmin);
+                    if (elapsed < 0) elapsed += 24 * 60;
+                    if (elapsed >= 120) fetchDue = true;
+                }
+                if (fetchDue) {
+                    log_i("MainCtrl: Triggering fetch after timer wakeup.");
+                    FetchJob fetchJob;
+                    fetchJob.full_refresh = g_systemManager->isFullRefreshIntended();
+                     if (xQueueSend(g_fetchCommandQueue, &fetchJob, pdMS_TO_TICKS(100)) == pdTRUE) {
+                        if (currentState != AppState::RENDERING_SCRIPT) currentState = AppState::FETCHING_DATA;
+                        // Display message about fetch starting
+                         g_displayManager->showMessage(fetchJob.full_refresh ? "Full Refresh..." : "Fetching...", 200, 15, false, false); // Don't clear if rendering
+                    }
+                }
+            }
+        }
+        vTaskDelay(MAIN_LOOP_IDLE_DELAY); // Small delay to prevent busy-waiting
+    }
+}
+
+// --- Input Task ---
+// Global reference to the raw input queue for InputManager's ISR.
+// This is initialized to NULL here and set by the InputManager's constructor
+// to point to its internal raw input queue.
+QueueHandle_t g_im_raw_queue_ref = NULL;
+
+void InputTask_Function(void *pvParameters) {
+    esp_task_wdt_init(30, true); // Panic on WDT timeout
+    esp_task_wdt_add(NULL);
+
+    if (g_inputManager) {
+        g_inputManager->taskFunction(); // This is a blocking loop
+    } else {
+        log_e("InputTask: g_inputManager is NULL!");
+    }
+    // Should not reach here if taskFunction is an infinite loop
+    log_e("InputTask_Function exiting unexpectedly!");
+    esp_task_wdt_delete(NULL);
+    vTaskDelete(NULL);
+}
+
+// --- Render Task ---
+void RenderTask_Function(void *pvParameters) {
+    esp_task_wdt_init(60, true); // Longer timeout for rendering, panic on WDT timeout
+    esp_task_wdt_add(NULL);
+
+    RenderController renderCtrl(*g_displayManager); // Create RenderController instance for this task
+
+    RenderJobQueueItem jobItem; // Use RenderJobQueueItem
+    for (;;) {
+        esp_task_wdt_reset();
+        if (xQueueReceive(g_renderCommandQueue, &jobItem, portMAX_DELAY) == pdTRUE) {
+            // Construct RenderJobData, loading script content here
+            RenderJobData jobData;
+            jobData.script_id = String(jobItem.human_id); // This is human_id
+            jobData.file_id = String(jobItem.file_id);
+            jobData.initial_state = jobItem.initial_state;
+
+            log_i("RenderTask: Received job for human_id: %s, file_id: %s", jobData.script_id.c_str(), jobData.file_id.c_str());
+
+            if (!g_scriptManager->loadScriptContent(jobData.file_id, jobData.script_content)) {
+                log_e("RenderTask: Failed to load script content for fileId: %s (humanId: %s)", jobData.file_id.c_str(), jobData.script_id.c_str());
+                RenderResultData errorResultData;
+                errorResultData.script_id = jobData.script_id;
+                errorResultData.success = false;
+                errorResultData.interrupted = false;
+                errorResultData.error_message = "RenderTask: Failed to load script content.";
+                // final_state will be default
+                
+                RenderResultQueueItem errorResultQueueItem;
+                errorResultQueueItem.fromRenderResultData(errorResultData);
+                if (xQueueSend(g_renderStatusQueue, &errorResultQueueItem, pdMS_TO_TICKS(100)) != pdTRUE) {
+                    log_e("RenderTask: Failed to send error render status for %s", jobData.script_id.c_str());
+                }
+                continue; // Skip to next job
+            }
+            log_i("RenderTask: Content loaded for script ID: %s", jobData.script_id.c_str());
+            
+            RenderResultData resultData; // To store result from RenderController
+
+            if (g_displayManager->lockEPD(pdMS_TO_TICKS(1000))) { // Lock EPD, 1s timeout
+                // Clear any pending interrupt bit before starting
+                xEventGroupClearBits(g_renderTaskEventFlags, RENDER_INTERRUPT_BIT);
+                
+                resultData = renderCtrl.renderScript(jobData); // This will use the canvas and push it
+                
+                // Check if MainControlTask signaled an interrupt during the process
+                EventBits_t uxBits = xEventGroupGetBits(g_renderTaskEventFlags);
+                if (uxBits & RENDER_INTERRUPT_BIT) {
+                    log_i("RenderTask: Interrupt bit was set by MainControlTask during/after render.");
+                    resultData.interrupted = true; // Ensure result reflects this
+                    resultData.success = false;
+                    if(resultData.error_message.isEmpty()) resultData.error_message = "Render interrupted by external signal.";
+                    xEventGroupClearBits(g_renderTaskEventFlags, RENDER_INTERRUPT_BIT); // Clear the bit
+                }
+                g_displayManager->unlockEPD(); // Unlock EPD
+            } else {
+                log_e("RenderTask: Failed to lock EPD for rendering script %s", jobData.script_id.c_str());
+                resultData.script_id = jobData.script_id; // Populate for error reporting
+                resultData.success = false;
+                resultData.interrupted = false; // Not interrupted by user, but by system issue
+                resultData.error_message = "Failed to acquire display lock for rendering.";
+                // final_state will be default
+            }
+
+            RenderResultQueueItem resultQueueItem;
+            resultQueueItem.fromRenderResultData(resultData); // Convert to char[] based for queue
+
+            if (xQueueSend(g_renderStatusQueue, &resultQueueItem, pdMS_TO_TICKS(100)) != pdTRUE) {
+                log_e("RenderTask: Failed to send render status for %s", jobData.script_id.c_str());
+            }
         }
     }
+}
 
-    // 6. Load script content using the determined fileId
-    currentScriptId = finalHumanIdForExecution;
-    log_i("loadScriptToExecute: Attempting to load content for humanId '%s' using fileId '%s'", currentScriptId.c_str(), determinedFileId.c_str());
-    if (!loadScriptContent(determinedFileId.c_str(), currentScriptContent))
-    {
-        log_e("loadScriptToExecute: Failed to load script content for fileId '%s' (humanId '%s'). This file should exist according to list.json.", determinedFileId.c_str(), currentScriptId.c_str());
-        
-        // Try to use default script only if we have no scripts at all
-        if (!hasScriptsInList) { // This implies list.json was empty or didn't exist
-            log_w("loadScriptToExecute: No scripts available (list empty/missing). Using default script as last resort.");
-            currentScriptId = "default";
-            currentScriptContent = default_script;
-            // Fetch is not triggered from here.
-            return true;
-        }
-        
-        // If content is missing for a script that list.json says should exist:
-        log_e("loadScriptToExecute: Content for humanId '%s' (fileId '%s') is missing, but list.json entry exists. Using default script.", currentScriptId.c_str(), determinedFileId.c_str());
-        currentScriptId = "default"; // Fallback to default
-        currentScriptContent = default_script;
-        // Fetch is not triggered from here. A future fetch (on boot/timer) should repair this.
-        return true; // Return true as we are providing default script
+// --- Fetch Task ---
+void FetchTask_Function(void *pvParameters) {
+    esp_task_wdt_init(120, true); // Long timeout for network ops, panic on WDT timeout
+    esp_task_wdt_add(NULL);
+
+    volatile bool user_interrupt_flag_for_network_manager = false;
+    if (g_networkManager) {
+        g_networkManager->setInterruptFlag(&user_interrupt_flag_for_network_manager);
     }
-    vTaskDelay(pdMS_TO_TICKS(10));
 
-    log_i("loadScriptToExecute: Successfully set up script humanId '%s' (fileId '%s') for execution.", currentScriptId.c_str(), determinedFileId.c_str());
-    return true;
+    FetchJob job; // FetchJob is simple, no Strings, can remain as is
+    for (;;) {
+        esp_task_wdt_reset();
+        user_interrupt_flag_for_network_manager = false; // Reset before waiting for new job
+
+        if (xQueueReceive(g_fetchCommandQueue, &job, portMAX_DELAY) == pdTRUE) {
+            log_i("FetchTask: Received job. Full Refresh: %s", job.full_refresh ? "Yes" : "No");
+            
+            FetchResultData resultData; // Use FetchResultData for internal logic
+            resultData.new_scripts_available = false; // Default
+            resultData.status = FetchResultStatus::GENUINE_ERROR; // Default
+
+            // Connect WiFi
+            if (!g_networkManager->connectWiFi()) { // connectWiFi uses its internal interrupt flag
+                resultData.status = FetchResultStatus::NO_WIFI;
+                resultData.message = "WiFi Connect Fail";
+            } else {
+                // Perform fetch operations
+                JsonDocument serverListDoc;
+                JsonDocument scriptContentDoc;
+
+                if (job.full_refresh) {
+                    g_scriptManager->clearAllScriptData(); // Clear local data first for full refresh
+                    esp_task_wdt_reset();
+                }
+
+                resultData.status = g_networkManager->fetchScriptList(serverListDoc);
+                esp_task_wdt_reset();
+
+                if (resultData.status == FetchResultStatus::SUCCESS) {
+                    JsonArray serverList = serverListDoc.as<JsonArray>();
+                    log_i("FetchTask: Fetched server list with %d scripts.", serverList.size());
+                    
+                    JsonDocument localListDoc;
+                    bool localListExists = g_scriptManager->loadScriptList(localListDoc);
+                    if (!localListExists || localListDoc.as<JsonArray>().size() != serverList.size()) {
+                        resultData.new_scripts_available = true;
+                    }
+
+                    if (!g_scriptManager->saveScriptList(serverListDoc)) {
+                        resultData.status = FetchResultStatus::GENUINE_ERROR;
+                        resultData.message = "Save List Fail";
+                    } else {
+                        bool allContentFetched = true;
+                        for (JsonObject scriptInfo : serverList) {
+                            esp_task_wdt_reset();
+                            const char* humanId = scriptInfo["id"];
+                            if (!humanId) continue;
+                            
+                            FetchResultStatus contentStatus = g_networkManager->fetchScriptContent(humanId, scriptContentDoc);
+                            if (contentStatus == FetchResultStatus::SUCCESS) {
+                                if (scriptContentDoc.is<JsonObject>() && scriptContentDoc.as<JsonObject>().containsKey("content") && scriptContentDoc.as<JsonObject>()["content"].is<const char*>()) {
+                                    const char* content = scriptContentDoc["content"].as<const char*>();
+                                    if (content) {
+                                        String fileId = scriptInfo["fileId"];
+                                        if (fileId.isEmpty()) {
+                                            fileId = humanId;
+                                        }
+                                        if (!g_scriptManager->saveScriptContent(fileId, content)) {
+                                            log_e("FetchTask: Failed to save content for %s", humanId);
+                                            allContentFetched = false;
+                                        }
+                                    } else {
+                                        log_e("FetchTask: 'content' field is null in JSON for %s", humanId);
+                                        allContentFetched = false;
+                                    }
+                                } else {
+                                    log_e("FetchTask: scriptContentDoc for %s is not an object, or missing 'content' field, or content is not a string.", humanId);
+                                    allContentFetched = false;
+                                }
+                            } else if (contentStatus == FetchResultStatus::INTERRUPTED_BY_USER) {
+                                resultData.status = FetchResultStatus::INTERRUPTED_BY_USER;
+                                allContentFetched = false;
+                                break;
+                            } else {
+                                log_e("FetchTask: Failed to fetch content for %s", humanId);
+                                allContentFetched = false;
+                            }
+                            if (user_interrupt_flag_for_network_manager) break;
+                        }
+
+                        if (resultData.status != FetchResultStatus::INTERRUPTED_BY_USER) {
+                            if (allContentFetched) {
+                                resultData.message = job.full_refresh ? "Full Refresh OK" : "Fetch OK";
+                                resultData.status = FetchResultStatus::SUCCESS;
+                                g_scriptManager->cleanupOrphanedContent(serverList);
+                                g_scriptManager->cleanupOrphanedStates(serverList);
+                            } else {
+                                resultData.message = "Partial Fetch";
+                                resultData.status = FetchResultStatus::GENUINE_ERROR;
+                            }
+                        }
+                    }
+                } else if (resultData.status == FetchResultStatus::INTERRUPTED_BY_USER) {
+                     resultData.message = "Fetch Interrupted";
+                } else {
+                    resultData.message = "Fetch List Fail";
+                }
+                g_networkManager->disconnectWiFi();
+            } // End if WiFi connected
+
+            FetchResultQueueItem resultQueueItem;
+            resultQueueItem.fromFetchResultData(resultData); // Convert to char[] based for queue
+
+            if (xQueueSend(g_fetchStatusQueue, &resultQueueItem, pdMS_TO_TICKS(100)) != pdTRUE) {
+                log_e("FetchTask: Failed to send fetch status.");
+            }
+        } // End if receive from queue
+    } // End for(;;)
+}
+
+
+// --- Main Loop (not used in FreeRTOS) ---
+void loop() {
+    // This function is not called when using FreeRTOS.
+    // Tasks handle all ongoing operations.
+    vTaskDelay(portMAX_DELAY); // Should not be reached
 }

@@ -8,7 +8,7 @@ const uint8_t RUNTIME_COLOR_WHITE = 0;
 const uint8_t RUNTIME_COLOR_BLACK = 15;
 
 MicroPatternsRuntime::MicroPatternsRuntime(M5EPD_Canvas *canvas, const std::map<String, MicroPatternsAsset> &assets)
-    : _canvas(canvas), _drawing(canvas), _assets(assets)
+    : _canvas(canvas), _drawing(canvas), _assets(assets), _interrupt_requested(false), _interrupt_check_cb(nullptr)
 {
     resetState();
     // Initialize environment variables that don't change per run
@@ -20,6 +20,23 @@ MicroPatternsRuntime::MicroPatternsRuntime(M5EPD_Canvas *canvas, const std::map<
     _environment["$SECOND"] = 0;
     _environment["$COUNTER"] = 0;
     // $INDEX is managed during execution
+}
+
+// Ensure this definition matches the header: int getCounter() const;
+int MicroPatternsRuntime::getCounter() const
+{
+    if (_environment.count("$COUNTER")) {
+        return _environment.at("$COUNTER");
+    }
+    return 0;
+}
+
+// Ensure this definition matches the header: void getTime(int&, int&, int&) const;
+void MicroPatternsRuntime::getTime(int& hour, int& minute, int& second) const
+{
+    hour = (_environment.count("$HOUR")) ? _environment.at("$HOUR") : 0;
+    minute = (_environment.count("$MINUTE")) ? _environment.at("$MINUTE") : 0;
+    second = (_environment.count("$SECOND")) ? _environment.at("$SECOND") : 0;
 }
 
 void MicroPatternsRuntime::setCommands(const std::list<MicroPatternsCommand> *commands) // Changed to std::list
@@ -499,7 +516,9 @@ void MicroPatternsRuntime::execute()
     // VAR initialization is now handled by executeCommand when CMD_VAR is encountered.
     // This allows VARs inside blocks to be initialized correctly.
 
+    _drawing.setInterruptCheckCallback(_interrupt_check_cb); // Pass callback to drawing module
     _drawing.clearCanvas(); // Start with a clear (white) canvas
+    clearInterrupt(); // Clear any pending interrupt before starting execution
 
     // Execute top-level commands
     int commandCounter = 0;
@@ -527,6 +546,12 @@ void MicroPatternsRuntime::execute()
 // Execute a single command, potentially recursively for blocks
 void MicroPatternsRuntime::executeCommand(const MicroPatternsCommand &cmd, int loopIndex)
 {
+    if (_interrupt_requested || (_interrupt_check_cb && _interrupt_check_cb())) {
+        _interrupt_requested = true; // Ensure it's set if callback triggered it
+        // log_d("Command execution interrupted at line %d", cmd.lineNumber);
+        return; // Stop further execution if interrupted
+    }
+
     // loopIndex is >= 0 if inside a REPEAT loop, -1 otherwise.
 
     // Resolve parameters only when needed for each specific command type
@@ -791,6 +816,10 @@ void MicroPatternsRuntime::executeCommand(const MicroPatternsCommand &cmd, int l
                 // Execute each command in the nested block, passing current loop index 'i'
                 for (const auto &nestedCmd : cmd.nestedCommands)
                 {
+                    if (_interrupt_requested || (_interrupt_check_cb && _interrupt_check_cb())) {
+                        _interrupt_requested = true;
+                        goto end_repeat_loop; // Break out of outer loop
+                    }
                     executeCommand(nestedCmd, i); // Pass 'i' as loopIndex
                 }
                 
@@ -805,7 +834,6 @@ void MicroPatternsRuntime::executeCommand(const MicroPatternsCommand &cmd, int l
                 }
             }
 
-
             // Restore previous $INDEX or remove it
             if (hadPreviousIndex)
             {
@@ -815,6 +843,7 @@ void MicroPatternsRuntime::executeCommand(const MicroPatternsCommand &cmd, int l
             {
                 _environment.erase("$INDEX");
             }
+            end_repeat_loop:; // Label for goto
             break; // End CMD_REPEAT block
         }
 

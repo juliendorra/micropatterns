@@ -1,93 +1,40 @@
 #include "systeminit.h"
-#include "global_setting.h" // For LoadSetting, initializeSPIFFS, getNTPTime
-#include <rtc.h>            // For RTC_TimeTypeDef
+#include "esp32-hal-log.h"
+#include "nvs_flash.h" // For nvs_flash_init, nvs_flash_erase
+#include "nvs.h" // For NVS error codes
+// No longer includes global_setting.h for most things.
+// Specific managers will handle their own initializations.
 
-// WiFi/NTP constants and functions moved to global_setting.cpp/h
-
-void SysInit_Start(void)
+// This function handles essential pre-M5.begin() initializations.
+// M5.begin() will handle Serial, Power, RTC, EPD.
+void SysInit_EarlyHardware(void)
 {
-    pinMode(M5EPD_MAIN_PWR_PIN, OUTPUT);
-    M5.enableMainPower();
-
-    bool ret = false;
-    Serial.begin(115200);
-    Serial.flush();
-    delay(50);
-    Serial.print("M5EPD initializing...");
-
-    // Initialize watchdog early
-    esp_task_wdt_init(30, false); // 30 second timeout, don't panic on timeout
-    esp_task_wdt_add(NULL);       // Add current task to watchdog
-
-    // Initialize GPIOs for buttons early
-    pinMode(BUTTON_UP_PIN, INPUT_PULLUP);   // GPIO 37 (UP)
-    pinMode(BUTTON_DOWN_PIN, INPUT_PULLUP); // GPIO 39 (DOWN)
-    pinMode(BUTTON_PUSH_PIN, INPUT_PULLUP); // GPIO 38 (PUSH)
-
-    // Power Pins
-    pinMode(M5EPD_EXT_PWR_EN_PIN, OUTPUT);
-    pinMode(M5EPD_EPD_PWR_EN_PIN, OUTPUT);
-    // Other Key Pins (if needed, though we use 37,38,39)
-    // pinMode(M5EPD_KEY_RIGHT_PIN, INPUT);
-    // pinMode(M5EPD_KEY_LEFT_PIN, INPUT);
-    delay(100);
-
-    M5.enableEXTPower();
-    M5.enableEPDPower();
-    delay(1000); // Wait for power stabilization
-
-    M5.BatteryADCBegin();
-    log_i("Battery Voltage: %d mV", M5.getBatteryVoltage());
-
-    M5.RTC.begin();
-
-    // Initialize SPIFFS *before* potentially needing it for NTP fallback time?
-    if (!initializeSPIFFS())
-    {
-        log_e("FATAL: SPIFFS Initialization failed!");
-        // Handle error appropriately, maybe halt or display error
-        while (1)
-            delay(1000);
+    // Initialize NVS (Non-Volatile Storage)
+    // This is crucial for SystemManager and other components that might use NVS.
+    esp_err_t ret = nvs_flash_init();
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+      ESP_ERROR_CHECK(nvs_flash_erase());
+      ret = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(ret);
+    log_i("SysInit_EarlyHardware: NVS flash initialized.");
+    
+    // Install global ISR service once. InputManager will add handlers to it.
+    // It's safe to call multiple times; it only installs if not already done.
+    esp_err_t isr_service_err = gpio_install_isr_service(0); // ESP_INTR_FLAG_IRAM or 0
+    if (isr_service_err == ESP_OK) {
+        log_i("SysInit_EarlyHardware: GPIO ISR service installed.");
+    } else if (isr_service_err == ESP_ERR_NOT_FOUND || isr_service_err == ESP_ERR_NO_MEM) {
+        log_e("SysInit_EarlyHardware: Failed to install GPIO ISR service: %s", esp_err_to_name(isr_service_err));
+        // This is a critical failure for button inputs.
+    } else {
+        // ESP_ERR_INVALID_STATE means already installed, which is fine.
+        if (isr_service_err != ESP_ERR_INVALID_STATE) {
+            log_w("SysInit_EarlyHardware: GPIO ISR service status: %s", esp_err_to_name(isr_service_err));
+        } else {
+            log_i("SysInit_EarlyHardware: GPIO ISR service already installed.");
+        }
     }
 
-    // Get time via NTP (uses WiFi functions from global_setting)
-    getNTPTime();
-
-    // Initialize EPD
-    M5.EPD.begin(M5EPD_SCK_PIN, M5EPD_MOSI_PIN, M5EPD_MISO_PIN, M5EPD_CS_PIN,
-                 M5EPD_BUSY_PIN);
-    M5.EPD.SetRotation(M5EPD_Driver::ROTATE_90);
-    // M5.EPD.Clear(true); // Avoid full clear on startup unless necessary
-
-    // Initialize Touch Panel
-    if (M5.TP.begin(21, 22, 36) != ESP_OK)
-    {
-        log_e("Touch pad initialization failed.");
-    }
-    else
-    {
-        M5.TP.SetRotation(GT911::ROTATE_90);
-    }
-    taskYIELD();
-
-    // Load NVS settings (like timezone)
-    LoadSetting();
-
-    // Setup Interrupt Service Routine
-    gpio_install_isr_service(0);
-
-    // Configure interrupts for each button to trigger on falling edge (press)
-    gpio_set_intr_type(BUTTON_UP_PIN, GPIO_INTR_NEGEDGE);
-    gpio_isr_handler_add(BUTTON_UP_PIN, button_isr, (void *)BUTTON_UP_PIN);
-
-    gpio_set_intr_type(BUTTON_DOWN_PIN, GPIO_INTR_NEGEDGE);
-    gpio_isr_handler_add(BUTTON_DOWN_PIN, button_isr, (void *)BUTTON_DOWN_PIN);
-
-    gpio_set_intr_type(BUTTON_PUSH_PIN, GPIO_INTR_NEGEDGE);
-    gpio_isr_handler_add(BUTTON_PUSH_PIN, button_isr, (void *)BUTTON_PUSH_PIN);
-
-    log_i("System Initialization done");
-    Serial.println("OK");
-
-    delay(500); // Keep a small delay
+    log_i("SysInit_EarlyHardware: Minimal pre-M5.begin() setup completed.");
 }

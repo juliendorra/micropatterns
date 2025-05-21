@@ -6,6 +6,7 @@
 #include <list> // Added for std::list
 #include <map>
 #include <set> // Include set for declared variables check
+#include <functional> // For std::function
 #include <esp_task_wdt.h> // For watchdog resets
 #include "micropatterns_command.h"
 #include "micropatterns_drawing.h"
@@ -25,10 +26,25 @@ public:
     void setCounter(int counter);
     void setTime(int hour, int minute, int second); // Add method to set time
 
+    // Getters for state (used by RenderController)
+    int getCounter() const;
+    void getTime(int& hour, int& minute, int& second) const;
+
     // Error reporting
     void runtimeError(const String& message, int lineNumber);
 
+    // Interrupt handling
+    void requestInterrupt() { _interrupt_requested = true; }
+    bool isInterrupted() const { return _interrupt_requested; }
+    void clearInterrupt() { _interrupt_requested = false; } // Clear before new execution
+    
+    // Set callback for interrupt checking (passed to MicroPatternsDrawing)
+    void setInterruptCheckCallback(std::function<bool()> cb) { _interrupt_check_cb = cb; }
+
 private:
+    volatile bool _interrupt_requested; // Flag to signal interruption
+    std::function<bool()> _interrupt_check_cb; // Callback for drawing to check interrupt
+
     M5EPD_Canvas* _canvas;
     MicroPatternsDrawing _drawing;
     const std::map<String, MicroPatternsAsset>& _assets; // Reference to assets from parser

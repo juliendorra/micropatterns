@@ -1,9 +1,9 @@
 #include "micropatterns_drawing.h"
+#include "micropatterns_drawing.h"
 #include <cmath> // For round, floor, ceil, sinf, cosf, fabs, sqrtf
-#include <Arduino.h> // For yield()
 #include <algorithm> // For std::min, std::max
 
-MicroPatternsDrawing::MicroPatternsDrawing(M5EPD_Canvas* canvas) : _canvas(canvas) {
+MicroPatternsDrawing::MicroPatternsDrawing(M5EPD_Canvas* canvas) : _canvas(canvas), _interrupt_check_cb(nullptr) {
     if (_canvas) {
         _canvasWidth = _canvas->width();
         _canvasHeight = _canvas->height();
@@ -23,6 +23,10 @@ void MicroPatternsDrawing::setCanvas(M5EPD_Canvas* canvas) {
         _canvasWidth = 0;
         _canvasHeight = 0;
     }
+}
+
+void MicroPatternsDrawing::setInterruptCheckCallback(std::function<bool()> cb) {
+    _interrupt_check_cb = cb;
 }
 
 void MicroPatternsDrawing::clearCanvas() {
@@ -261,7 +265,10 @@ void MicroPatternsDrawing::fillRect(int lx, int ly, int lw, int lh, const MicroP
 
     int pixelCount = 0;
     for (int sy_iter = min_sy; sy_iter < max_sy; ++sy_iter) {
+        if (_interrupt_check_cb && _interrupt_check_cb()) return; // Check interrupt
         for (int sx_iter = min_sx; sx_iter < max_sx; ++sx_iter) {
+            if (_interrupt_check_cb && _interrupt_check_cb()) return; // Check interrupt
+    
             if (pixelCount > 0 && pixelCount % 2000 == 0) { // Yield less frequently for fillRect
                 yield();
                 if (pixelCount % 8000 == 0) {
@@ -269,7 +276,7 @@ void MicroPatternsDrawing::fillRect(int lx, int ly, int lw, int lh, const MicroP
                 }
             }
             pixelCount++;
-
+    
             float screen_center_x = static_cast<float>(sx_iter) + 0.5f;
             float screen_center_y = static_cast<float>(sy_iter) + 0.5f;
 
@@ -370,9 +377,12 @@ void MicroPatternsDrawing::fillCircle(int lcx, int lcy, int lr, const MicroPatte
 
     float logical_radius_sq = logical_radius * logical_radius;
     int pixelCount = 0;
-
+    
     for (int sy_iter = min_sy; sy_iter < max_sy; ++sy_iter) {
+        if (_interrupt_check_cb && _interrupt_check_cb()) return; // Check interrupt
         for (int sx_iter = min_sx; sx_iter < max_sx; ++sx_iter) {
+            if (_interrupt_check_cb && _interrupt_check_cb()) return; // Check interrupt
+    
             if (pixelCount > 0 && pixelCount % 2000 == 0) {
                 yield();
                 if (pixelCount % 8000 == 0) {
@@ -380,7 +390,7 @@ void MicroPatternsDrawing::fillCircle(int lcx, int lcy, int lr, const MicroPatte
                 }
             }
             pixelCount++;
-
+    
             float screen_center_x = static_cast<float>(sx_iter) + 0.5f;
             float screen_center_y = static_cast<float>(sy_iter) + 0.5f;
 
@@ -422,7 +432,10 @@ void MicroPatternsDrawing::drawAsset(int lx_asset_origin, int ly_asset_origin, c
 
     int pixelCount = 0;
     for (int sy_iter = min_sy; sy_iter < max_sy; ++sy_iter) {
+        if (_interrupt_check_cb && _interrupt_check_cb()) return; // Check interrupt
         for (int sx_iter = min_sx; sx_iter < max_sx; ++sx_iter) {
+            if (_interrupt_check_cb && _interrupt_check_cb()) return; // Check interrupt
+            
              if (pixelCount > 0 && pixelCount % 1000 == 0) {
                 yield();
                  if (pixelCount % 4000 == 0) {
@@ -430,7 +443,7 @@ void MicroPatternsDrawing::drawAsset(int lx_asset_origin, int ly_asset_origin, c
                 }
             }
             pixelCount++;
-
+    
             float screen_center_x = static_cast<float>(sx_iter) + 0.5f;
             float screen_center_y = static_cast<float>(sy_iter) + 0.5f;
 
