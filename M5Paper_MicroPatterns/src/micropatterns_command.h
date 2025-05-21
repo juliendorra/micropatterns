@@ -5,6 +5,7 @@
 #include <vector>
 #include <list> // Added for std::list
 #include <map> // Use map for parameters
+#include "matrix_utils.h" // For matrix_identity
 
 // Enum for command types
 enum CommandType {
@@ -105,10 +106,32 @@ struct MicroPatternsState {
     // Default constructor initializes state
     MicroPatternsState() : color(15), fillAsset(nullptr), scale(1.0f) {
         // Initialize matrix and inverseMatrix to identity
-        matrix[0] = 1.0f; matrix[1] = 0.0f;
-        matrix[2] = 0.0f; matrix[3] = 1.0f;
-        matrix[4] = 0.0f; matrix[5] = 0.0f;
-        memcpy(inverseMatrix, matrix, sizeof(float) * 6);
+        matrix_identity(matrix);
+        matrix_identity(inverseMatrix);
+    }
+};
+
+// Structure for an item in the display list
+struct DisplayListItem {
+    CommandType type = CMD_UNKNOWN;
+    int sourceLine = 0;
+
+    // Resolved parameters
+    std::map<String, int> intParams;
+    std::map<String, String> stringParams; // For asset names, color keywords etc.
+
+    // Snapshotted rendering state
+    float matrix[6];
+    float inverseMatrix[6];
+    float scaleFactor = 1.0f;
+    uint8_t color = 15; // Resolved color (0=white, 15=black)
+    const MicroPatternsAsset* fillAsset = nullptr; // Pointer to asset, or nullptr for SOLID
+
+    bool isOpaque = false; // Hint for occlusion culling
+
+    DisplayListItem() {
+        matrix_identity(matrix);
+        matrix_identity(inverseMatrix);
     }
 };
 

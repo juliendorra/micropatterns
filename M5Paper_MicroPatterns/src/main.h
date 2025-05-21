@@ -70,7 +70,7 @@ extern InputManager *g_inputManager;
 extern DisplayManager *g_displayManager;
 extern ScriptManager *g_scriptManager;
 extern NetworkManager *g_networkManager;
-extern RenderController *g_renderController; // RenderController is used by RenderTask
+// extern RenderController *g_renderController; // RenderController is instantiated by RenderTask
 
 // Note: Original FetchResultStatus enum moved to event_defs.h
 // Note: RTC_DATA_ATTR variables like g_full_refresh_intended are now managed by SystemManager.

@@ -4,8 +4,8 @@
 #include "micropatterns_parser.h"
 #include "micropatterns_runtime.h"
 #include "display_manager.h"
-#include "script_manager.h" // For ScriptExecState, though it's in event_defs.h
-#include "event_defs.h"     // For RenderJob, RenderResult, ScriptExecState
+#include "event_defs.h"     // For RenderJobData, RenderResultData
+#include "display_list_renderer.h" // New include
 
 class RenderController
 {
@@ -13,23 +13,19 @@ public:
     RenderController(DisplayManager &displayMgr);
     ~RenderController();
 
-    // Renders the script specified in the job.
-    // Returns a RenderResultData indicating success, failure, or interruption.
-    RenderResultData renderScript(const RenderJobData &job); // Changed RenderJob to RenderJobData
-
-    // Signals the currently running MicroPatternsRuntime to interrupt its execution.
+    RenderResultData renderScript(const RenderJobData &job);
     void requestInterrupt();
 
 private:
     DisplayManager &_displayMgr;
     MicroPatternsParser _parser;
-    MicroPatternsRuntime *_runtime; // Dynamically allocated for each script run
+    MicroPatternsRuntime *_runtime; // For display list generation
+    DisplayListRenderer *_renderer; // For rendering the display list
 
-    // Interrupt flag for the runtime
-    volatile bool _interrupt_requested_for_runtime;
+    volatile bool _interrupt_requested_for_runtime_or_renderer;
 
-    // Callback for MicroPatternsDrawing interrupt check
-    bool checkRuntimeInterrupt();
+    // Callback for interrupt checking (passed to runtime and renderer)
+    bool checkInterrupt();
 };
 
 #endif // RENDER_CONTROLLER_H

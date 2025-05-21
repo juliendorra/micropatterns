@@ -1,880 +1,411 @@
 #include "micropatterns_runtime.h"
-#include "esp32-hal-log.h" // For logging errors
-#include <Arduino.h>       // For yield()
-#include "matrix_utils.h"  // For matrix operations
+#include "esp32-hal-log.h"
+#include <Arduino.h>
+#include "matrix_utils.h"
 
-// Define colors (consistent with drawing class)
 const uint8_t RUNTIME_COLOR_WHITE = 0;
 const uint8_t RUNTIME_COLOR_BLACK = 15;
 
-MicroPatternsRuntime::MicroPatternsRuntime(M5EPD_Canvas *canvas, const std::map<String, MicroPatternsAsset> &assets)
-    : _canvas(canvas), _drawing(canvas), _assets(assets), _interrupt_requested(false), _interrupt_check_cb(nullptr)
-{
-    resetState();
-    // Initialize environment variables that don't change per run
-    _environment["$WIDTH"] = _canvas ? _canvas->width() : 540;   // Default or actual
-    _environment["$HEIGHT"] = _canvas ? _canvas->height() : 960; // Default or actual
-    // Initialize time/counter to 0, will be set externally
+MicroPatternsRuntime::MicroPatternsRuntime(int canvasWidth, int canvasHeight, const std::map<String, MicroPatternsAsset>& assets)
+    : _assets(assets), _interrupt_requested(false), _interrupt_check_cb(nullptr),
+      _canvasWidth(canvasWidth), _canvasHeight(canvasHeight) {
+    resetStateAndList();
+    _environment["$WIDTH"] = _canvasWidth;
+    _environment["$HEIGHT"] = _canvasHeight;
     _environment["$HOUR"] = 0;
     _environment["$MINUTE"] = 0;
     _environment["$SECOND"] = 0;
     _environment["$COUNTER"] = 0;
-    // $INDEX is managed during execution
 }
 
-// Ensure this definition matches the header: int getCounter() const;
-int MicroPatternsRuntime::getCounter() const
-{
-    if (_environment.count("$COUNTER")) {
-        return _environment.at("$COUNTER");
-    }
-    return 0;
+int MicroPatternsRuntime::getCounter() const {
+    return _environment.count("$COUNTER") ? _environment.at("$COUNTER") : 0;
 }
 
-// Ensure this definition matches the header: void getTime(int&, int&, int&) const;
-void MicroPatternsRuntime::getTime(int& hour, int& minute, int& second) const
-{
-    hour = (_environment.count("$HOUR")) ? _environment.at("$HOUR") : 0;
-    minute = (_environment.count("$MINUTE")) ? _environment.at("$MINUTE") : 0;
-    second = (_environment.count("$SECOND")) ? _environment.at("$SECOND") : 0;
+void MicroPatternsRuntime::getTime(int& hour, int& minute, int& second) const {
+    hour = _environment.count("$HOUR") ? _environment.at("$HOUR") : 0;
+    minute = _environment.count("$MINUTE") ? _environment.at("$MINUTE") : 0;
+    second = _environment.count("$SECOND") ? _environment.at("$SECOND") : 0;
 }
 
-void MicroPatternsRuntime::setCommands(const std::list<MicroPatternsCommand> *commands) // Changed to std::list
-{
+void MicroPatternsRuntime::setCommands(const std::list<MicroPatternsCommand>* commands) {
     _commands = commands;
 }
 
-void MicroPatternsRuntime::setDeclaredVariables(const std::set<String> *declaredVariables)
-{
+void MicroPatternsRuntime::setDeclaredVariables(const std::set<String>* declaredVariables) {
     _declaredVariables = declaredVariables;
 }
 
-void MicroPatternsRuntime::resetState()
-{
-    _currentState = MicroPatternsState(); // Reset drawing state (color, fill, transforms)
-    _variables.clear();                   // Clear user variables
-    _environment.erase("$INDEX");         // Ensure $INDEX is cleared initially
-
-    // Re-initialize environment variables that might change per run (counter, time)
-    // Note: $WIDTH/$HEIGHT are set once in constructor.
-
-    // Environment values for time and counter need to be set via setCounter/setTime before execute()
-    // Counter is preserved  across resets and managed by the system
-    // Hour, Minute and Second are based on the RTC
+void MicroPatternsRuntime::resetStateAndList() {
+    _currentState = MicroPatternsState();
+    _variables.clear();
+    _environment.erase("$INDEX");
+    _displayList.clear();
+    // _displayList.reserve(200); // Pre-allocate some space if average list size is known
 }
 
-void MicroPatternsRuntime::setCounter(int counter)
-{
-    log_d("Runtime setCounter: %d", counter);
+void MicroPatternsRuntime::setCounter(int counter) {
     _environment["$COUNTER"] = counter;
 }
 
-void MicroPatternsRuntime::setTime(int hour, int minute, int second)
-{
-    // Basic validation could be added here
+void MicroPatternsRuntime::setTime(int hour, int minute, int second) {
     _environment["$HOUR"] = hour;
     _environment["$MINUTE"] = minute;
     _environment["$SECOND"] = second;
 }
 
-void MicroPatternsRuntime::runtimeError(const String &message, int lineNumber)
-{
-    // Simple error logging for now
+void MicroPatternsRuntime::runtimeError(const String& message, int lineNumber) {
     log_e("Runtime Error (Line %d): %s", lineNumber, message.c_str());
-    // Could potentially halt execution or store errors
 }
 
-// --- Parameter Resolution ---
-
-// Resolves a single value (int literal or variable reference)
-// Uses lineNumber for error reporting. loopIndex provides context for $INDEX.
-int MicroPatternsRuntime::resolveValue(const ParamValue &val, int lineNumber, int loopIndex)
-{
-    if (val.type == ParamValue::TYPE_INT)
-    {
+int MicroPatternsRuntime::resolveValue(const ParamValue& val, int lineNumber, int loopIndex) {
+    if (val.type == ParamValue::TYPE_INT) {
         return val.intValue;
-    }
-    else if (val.type == ParamValue::TYPE_VARIABLE)
-    {
-        // Variable names in ParamValue are stored including '$', case preserved from parsing
+    } else if (val.type == ParamValue::TYPE_VARIABLE) {
         String varName = val.stringValue;
-        varName.toUpperCase(); // Use uppercase for lookup (ensures case-insensitivity)
-
-        // Special handling for $INDEX (case-insensitive)
-        if (varName == "$INDEX")
-        {
-            if (loopIndex < 0)
-            {
+        varName.toUpperCase();
+        if (varName == "$INDEX") {
+            if (loopIndex < 0) {
                 runtimeError("Variable $INDEX can only be used inside a REPEAT loop.", lineNumber);
-                return 0; // Default value on error
+                return 0;
             }
-            return loopIndex; // Return the current loop index directly
+            return loopIndex;
         }
-
-        // Check environment variables (keys are like "$COUNTER")
-        if (_environment.count(varName))
-        {
-            int value = _environment.at(varName);
-            if (varName == "$COUNTER")
-            {
-                log_d("Runtime resolveValue accessing $COUNTER: %d", value);
-            }
-
-            if (varName == "$SECOND")
-            {
-                log_d("Runtime resolveValue accessing $SECOND: %d", value);
-            }
-            if (varName == "$MINUTE")
-            {
-                log_d("Runtime resolveValue accessing $MINUTE: %d", value);
-            }
-
-            if (varName == "$HOUR")
-            {
-                log_d("Runtime resolveValue accessing $HOUR: %d", value);
-            }
-
-            return value;
-        }
-
-        // Check user variables (keys are like "$MYVAR")
-        if (_variables.count(varName))
-        {
-            return _variables.at(varName);
-        }
-        else
-        {
-            // This should ideally be caught by parser, but check defensively
-            runtimeError("Undefined variable: " + val.stringValue, lineNumber);
-            return 0; // Default value on error
-        }
+        if (_environment.count(varName)) return _environment.at(varName);
+        if (_variables.count(varName)) return _variables.at(varName);
+        runtimeError("Undefined variable: " + val.stringValue, lineNumber);
+        return 0;
     }
-    else
-    {
-        // String literal or other type - cannot resolve to int directly
-        runtimeError("Expected integer or variable, got: " + val.stringValue, lineNumber);
-        return 0; // Default value on error
-    }
-}
-
-// This is the correct resolveIntParam, now matching the 5-argument header declaration.
-int MicroPatternsRuntime::resolveIntParam(const String &paramName, const std::map<String, ParamValue> &params, int defaultValue, int lineNumber, int loopIndex)
-{
-    String upperParamName = paramName;
-    upperParamName.toUpperCase(); // Ensure lookup is case-insensitive
-
-    if (params.count(upperParamName))
-    {
-        const ParamValue &val = params.at(upperParamName);
-        if (val.type == ParamValue::TYPE_INT || val.type == ParamValue::TYPE_VARIABLE)
-        {
-            // Resolve the value, passing the correct loopIndex
-            return resolveValue(val, lineNumber, loopIndex);
-        }
-        else
-        {
-            runtimeError("Parameter " + paramName + " requires an integer or variable, got string: " + val.stringValue, lineNumber);
-            return defaultValue;
-        }
-    }
-    // Parameter not found - return default. This is not an error.
-    return defaultValue;
-}
-
-// This function resolves string parameters like color names or keywords.
-String MicroPatternsRuntime::resolveStringParam(const String &paramName, const std::map<String, ParamValue> &params, const String& defaultValue, int lineNumber)
-{
-    String upperParamName = paramName;
-    upperParamName.toUpperCase(); // Ensure case-insensitive parameter name lookup
-
-    if (params.count(upperParamName))
-    {
-        const ParamValue &val = params.at(upperParamName);
-        // Expect TYPE_STRING for keywords like BLACK/WHITE or unquoted pattern names from parseValue
-        if (val.type == ParamValue::TYPE_STRING)
-        {
-            return val.stringValue; // Return the parsed string value
-        }
-        else
-        {
-            // This case should ideally not be hit if parser creates ParamValue correctly for string params
-            runtimeError("Parameter " + paramName + " requires a string or keyword. Got type " + String(val.type) + " with value " + String(val.intValue), lineNumber);
-            return defaultValue;
-        }
-    }
-    // Return default value for missing parameters (optional parameters)
-    return defaultValue;
-}
-
-// Handles NAME=SOLID or NAME="pattern"
-// Returns "SOLID" or the UPPERCASE pattern name string.
-String MicroPatternsRuntime::resolveAssetNameParam(const String &paramName, const std::map<String, ParamValue> &params, int lineNumber)
-{
-    String upperParamName = paramName;
-    upperParamName.toUpperCase(); // Ensure case-insensitive parameter name lookup
-
-    if (params.count(upperParamName))
-    {
-        const ParamValue &val = params.at(upperParamName);
-        // Expect TYPE_STRING which holds either the keyword "SOLID" or the pattern name
-        if (val.type == ParamValue::TYPE_STRING)
-        {
-            String nameValue = val.stringValue;
-            nameValue.toUpperCase(); // Ensure case-insensitive comparison/lookup
-            if (nameValue == "SOLID")
-            {
-                return "SOLID"; // Return normalized keyword
-            }
-            else
-            {
-                // Return the pattern name (already uppercase from string conversion)
-                return nameValue;
-            }
-        }
-        else
-        {
-            runtimeError("Parameter " + paramName + " requires SOLID or a pattern name string. Got type " + String(val.type), lineNumber);
-            return "SOLID"; // Default to solid on error
-        }
-    }
-    // Return default value for missing parameters (optional parameters)
-    return "SOLID"; // Default to solid if NAME param is missing
-}
-
-// --- Expression & Condition Evaluation ---
-
-// Helper to apply operation, returns result or logs error and returns 0
-int applyOperation(int val1, const String &op, int val2, int lineNumber, MicroPatternsRuntime *runtime)
-{
-    if (op == "+")
-        return val1 + val2;
-    if (op == "-")
-        return val1 - val2;
-    if (op == "*")
-        return val1 * val2;
-    if (op == "/")
-    {
-        if (val2 == 0)
-        {
-            runtime->runtimeError("Division by zero.", lineNumber);
-            return 0;
-        }
-        // Integer division truncates towards zero
-        return val1 / val2;
-    }
-    if (op == "%")
-    {
-        if (val2 == 0)
-        {
-            runtime->runtimeError("Modulo by zero.", lineNumber);
-            return 0;
-        }
-        // C++ % handles negative numbers correctly for this purpose
-        return val1 % val2;
-    }
-    runtime->runtimeError("Unknown operator: " + op, lineNumber);
+    runtimeError("Expected integer or variable, got: " + val.stringValue, lineNumber);
     return 0;
 }
 
-// Evaluates a sequence of expression tokens (numbers, variables, operators)
-int MicroPatternsRuntime::evaluateExpression(const std::vector<ParamValue> &tokens, int lineNumber, int loopIndex)
-{
-    if (tokens.empty())
-    {
-        // VAR $x = ; results in empty tokens. Default to 0.
-        return 0;
+int MicroPatternsRuntime::resolveIntParam(const String& paramName, const std::map<String, ParamValue>& params, int defaultValue, int lineNumber, int loopIndex) {
+    String upperParamName = paramName;
+    upperParamName.toUpperCase();
+    if (params.count(upperParamName)) {
+        const ParamValue& val = params.at(upperParamName);
+        if (val.type == ParamValue::TYPE_INT || val.type == ParamValue::TYPE_VARIABLE) {
+            return resolveValue(val, lineNumber, loopIndex);
+        }
+        runtimeError("Parameter " + paramName + " requires an integer or variable.", lineNumber);
     }
+    return defaultValue;
+}
 
-    // 1. Resolve all variables to numbers, keep operators
+String MicroPatternsRuntime::resolveStringParam(const String& paramName, const std::map<String, ParamValue>& params, const String& defaultValue, int lineNumber) {
+    String upperParamName = paramName;
+    upperParamName.toUpperCase();
+    if (params.count(upperParamName)) {
+        const ParamValue& val = params.at(upperParamName);
+        if (val.type == ParamValue::TYPE_STRING) {
+            return val.stringValue;
+        }
+        runtimeError("Parameter " + paramName + " requires a string/keyword.", lineNumber);
+    }
+    return defaultValue;
+}
+
+String MicroPatternsRuntime::resolveAssetNameParam(const String& paramName, const std::map<String, ParamValue>& params, int lineNumber) {
+    String upperParamName = paramName;
+    upperParamName.toUpperCase();
+    if (params.count(upperParamName)) {
+        const ParamValue& val = params.at(upperParamName);
+        if (val.type == ParamValue::TYPE_STRING) {
+            String nameValue = val.stringValue;
+            nameValue.toUpperCase();
+            return nameValue; // SOLID or UPPERCASE pattern name
+        }
+        runtimeError("Parameter " + paramName + " requires SOLID or a pattern name string.", lineNumber);
+    }
+    return "SOLID"; // Default
+}
+
+int MicroPatternsRuntime::evaluateExpression(const std::vector<ParamValue>& tokens, int lineNumber, int loopIndex) {
+    if (tokens.empty()) return 0;
+
     std::vector<ParamValue> resolvedTokens;
-    for (const auto &token : tokens)
-    {
-        if (token.type == ParamValue::TYPE_VARIABLE)
-        {
+    for (const auto& token : tokens) {
+        if (token.type == ParamValue::TYPE_VARIABLE) {
             resolvedTokens.push_back(ParamValue(resolveValue(token, lineNumber, loopIndex)));
-        }
-        else if (token.type == ParamValue::TYPE_INT || token.type == ParamValue::TYPE_OPERATOR)
-        {
+        } else if (token.type == ParamValue::TYPE_INT || token.type == ParamValue::TYPE_OPERATOR) {
             resolvedTokens.push_back(token);
-        }
-        else
-        {
-            runtimeError("Unexpected token type during expression resolution: " + token.stringValue, lineNumber);
+        } else {
+            runtimeError("Unexpected token type in expression: " + token.stringValue, lineNumber);
             return 0;
         }
     }
+    
+    // Basic structural checks (simplified for brevity, more robust checks in JS version)
+    if (resolvedTokens.empty() && !tokens.empty()) { /* Error if original tokens not empty but resolved is */ return 0; }
+    if (resolvedTokens.empty() && tokens.empty()) { return 0; } // Empty expression is 0
+    if (resolvedTokens.back().type == ParamValue::TYPE_OPERATOR) { /* Error */ return 0; }
+    if (resolvedTokens.front().type == ParamValue::TYPE_OPERATOR) { /* Error */ return 0; }
 
-    // Basic structural checks after resolution
-    if (resolvedTokens.empty())
-    {
-        runtimeError("Expression resolved to empty token list.", lineNumber);
-        return 0;
-    }
-    // Check for operator at start/end or consecutive operators/values
-    bool expectValue = true;
-    for (size_t i = 0; i < resolvedTokens.size(); ++i)
-    {
-        bool isValue = resolvedTokens[i].type == ParamValue::TYPE_INT;
-        bool isOperator = resolvedTokens[i].type == ParamValue::TYPE_OPERATOR;
-        if (expectValue && !isValue)
-        {
-            runtimeError("Syntax error in expression: Expected number, found operator '" + resolvedTokens[i].stringValue + "'.", lineNumber);
-            return 0;
-        }
-        if (!expectValue && !isOperator)
-        {
-            runtimeError("Syntax error in expression: Expected operator, found number '" + String(resolvedTokens[i].intValue) + "'.", lineNumber);
-            return 0;
-        }
-        expectValue = !expectValue;
-    }
-    if (expectValue)
-    { // Must end with a value
-        runtimeError("Syntax error in expression: Cannot end with an operator.", lineNumber);
-        return 0;
-    }
 
-    // 2. Pass 1: Perform Multiplication, Division, Modulo
-    std::vector<ParamValue> pass1Result;
-    for (size_t i = 0; i < resolvedTokens.size(); ++i)
-    {
-        const ParamValue &currentToken = resolvedTokens[i];
-
-        if (currentToken.type == ParamValue::TYPE_OPERATOR && (currentToken.stringValue == "*" || currentToken.stringValue == "/" || currentToken.stringValue == "%"))
-        {
-            if (pass1Result.empty() || pass1Result.back().type != ParamValue::TYPE_INT)
-            {
-                runtimeError("Invalid expression: Missing left operand for operator " + currentToken.stringValue, lineNumber);
-                return 0;
+    std::vector<ParamValue> pass1Result; // For MDM operators (*, /, %)
+    for (size_t i = 0; i < resolvedTokens.size(); ++i) {
+        const ParamValue& currentToken = resolvedTokens[i];
+        if (currentToken.type == ParamValue::TYPE_OPERATOR && (currentToken.stringValue == "*" || currentToken.stringValue == "/" || currentToken.stringValue == "%")) {
+            if (pass1Result.empty() || pass1Result.back().type != ParamValue::TYPE_INT || i + 1 >= resolvedTokens.size() || resolvedTokens[i+1].type != ParamValue::TYPE_INT) {
+                runtimeError("Syntax error with operator " + currentToken.stringValue, lineNumber); return 0;
             }
-            if (i + 1 >= resolvedTokens.size() || resolvedTokens[i + 1].type != ParamValue::TYPE_INT)
-            {
-                runtimeError("Invalid expression: Missing right operand for operator " + currentToken.stringValue, lineNumber);
-                return 0;
-            }
-
-            int leftVal = pass1Result.back().intValue;
-            pass1Result.pop_back();
-            String op = currentToken.stringValue;
-            int rightVal = resolvedTokens[i + 1].intValue;
-
-            int result = applyOperation(leftVal, op, rightVal, lineNumber, this);
+            int leftVal = pass1Result.back().intValue; pass1Result.pop_back();
+            int rightVal = resolvedTokens[i+1].intValue;
+            int result = 0;
+            if (currentToken.stringValue == "*") result = leftVal * rightVal;
+            else if (currentToken.stringValue == "/") { if (rightVal == 0) { runtimeError("Division by zero.", lineNumber); return 0; } result = leftVal / rightVal; }
+            else if (currentToken.stringValue == "%") { if (rightVal == 0) { runtimeError("Modulo by zero.", lineNumber); return 0; } result = leftVal % rightVal; }
             pass1Result.push_back(ParamValue(result));
-
-            i++; // Skip the right operand token
-        }
-        else
-        {
-            // Push numbers and low-precedence operators (+, -)
-            if (currentToken.type == ParamValue::TYPE_INT || (currentToken.type == ParamValue::TYPE_OPERATOR && (currentToken.stringValue == "+" || currentToken.stringValue == "-")))
-            {
-                pass1Result.push_back(currentToken);
-            }
-            else
-            {
-                runtimeError("Invalid token encountered during Pass 1: " + currentToken.stringValue, lineNumber);
-                return 0;
-            }
+            i++; // Skip right operand
+        } else {
+            pass1Result.push_back(currentToken);
         }
     }
 
-    // 3. Pass 2: Perform Addition, Subtraction (left-to-right)
-    if (pass1Result.empty())
-    {
-        if (resolvedTokens.size() == 1 && resolvedTokens[0].type == ParamValue::TYPE_INT)
-        {
-            return resolvedTokens[0].intValue; // Single value expression
-        }
-        else
-        {
-            runtimeError("Expression evaluation failed (Pass 1 result empty unexpectedly).", lineNumber);
-            return 0;
-        }
-    }
-    if (pass1Result[0].type != ParamValue::TYPE_INT)
-    {
-        runtimeError("Invalid expression state after Pass 1 (does not start with number).", lineNumber);
-        return 0;
-    }
-
-    int finalResult = pass1Result[0].intValue;
-    for (size_t i = 1; i < pass1Result.size(); i += 2)
-    {
-        if (i + 1 >= pass1Result.size() || pass1Result[i].type != ParamValue::TYPE_OPERATOR || pass1Result[i + 1].type != ParamValue::TYPE_INT)
-        {
-            runtimeError("Invalid expression structure during Pass 2 evaluation.", lineNumber);
-            return 0;
+    if (pass1Result.empty()) return 0; // Should not happen if resolvedTokens was not empty
+    int finalResult = pass1Result[0].intValue; // Must start with a number
+    for (size_t i = 1; i < pass1Result.size(); i += 2) {
+        if (i + 1 >= pass1Result.size() || pass1Result[i].type != ParamValue::TYPE_OPERATOR || pass1Result[i+1].type != ParamValue::TYPE_INT) {
+            runtimeError("Syntax error in expression (AS pass).", lineNumber); return 0;
         }
         String op = pass1Result[i].stringValue;
-        int rightVal = pass1Result[i + 1].intValue;
-
-        if (op != "+" && op != "-")
-        {
-            runtimeError("Internal error: Unexpected operator '" + op + "' during Pass 2.", lineNumber);
-            return 0;
-        }
-        finalResult = applyOperation(finalResult, op, rightVal, lineNumber, this);
+        int rightVal = pass1Result[i+1].intValue;
+        if (op == "+") finalResult += rightVal;
+        else if (op == "-") finalResult -= rightVal;
+        else { runtimeError("Unexpected operator in AS pass: " + op, lineNumber); return 0; }
     }
-
     return finalResult;
 }
 
-// Evaluates a sequence of condition tokens
-bool MicroPatternsRuntime::evaluateCondition(const std::vector<ParamValue> &tokens, int lineNumber, int loopIndex)
-{
-    if (tokens.empty())
-    {
-        runtimeError("Cannot evaluate empty condition.", lineNumber);
-        return false;
-    }
-
-    // Conditions can be complex, involving arithmetic before comparison.
-    // Example: $X + 10 > $Y / 2
-    // Example: $COUNTER % 10 == 0
-
-    // For simplicity, let's assume the structure is either:
-    // 1. value op value (where op is comparison)
-    // 2. value % literal op value (where op is comparison)
-
-    // Find the comparison operator
-    int comparisonOpIndex = -1;
-    String comparisonOp = "";
-    for (size_t i = 0; i < tokens.size(); ++i)
-    {
-        if (tokens[i].type == ParamValue::TYPE_OPERATOR)
-        {
-            String opStr = tokens[i].stringValue;
-            if (opStr == "==" || opStr == "!=" || opStr == "<" || opStr == ">" || opStr == "<=" || opStr == ">=")
-            {
-                if (comparisonOpIndex != -1)
-                {
-                    runtimeError("Multiple comparison operators found in condition.", lineNumber);
-                    return false;
-                }
-                comparisonOpIndex = i;
-                comparisonOp = opStr;
+bool MicroPatternsRuntime::evaluateCondition(const std::vector<ParamValue>& tokens, int lineNumber, int loopIndex) {
+    if (tokens.empty()) { runtimeError("Empty condition.", lineNumber); return false; }
+    
+    int comparisonOpIndex = -1; String comparisonOp = "";
+    for (size_t i = 0; i < tokens.size(); ++i) {
+        if (tokens[i].type == ParamValue::TYPE_OPERATOR) {
+            const String& opStr = tokens[i].stringValue;
+            if (opStr == "==" || opStr == "!=" || opStr == "<" || opStr == ">" || opStr == "<=" || opStr == ">=") {
+                if (comparisonOpIndex != -1) { runtimeError("Multiple comparison operators.", lineNumber); return false; }
+                comparisonOpIndex = i; comparisonOp = opStr;
             }
         }
     }
+    if (comparisonOpIndex == -1) { runtimeError("No comparison operator in condition.", lineNumber); return false; }
 
-    if (comparisonOpIndex == -1)
-    {
-        runtimeError("No comparison operator (==, !=, <, >, <=, >=) found in condition.", lineNumber);
-        return false;
-    }
-
-    // Split tokens into left and right expressions based on the comparison operator
     std::vector<ParamValue> leftTokens(tokens.begin(), tokens.begin() + comparisonOpIndex);
     std::vector<ParamValue> rightTokens(tokens.begin() + comparisonOpIndex + 1, tokens.end());
+    if (leftTokens.empty() || rightTokens.empty()) { runtimeError("Missing operand in condition.", lineNumber); return false; }
 
-    if (leftTokens.empty() || rightTokens.empty())
-    {
-        runtimeError("Missing left or right side of comparison in condition.", lineNumber);
-        return false;
-    }
-
-    // Evaluate left and right expressions
     int leftValue = evaluateExpression(leftTokens, lineNumber, loopIndex);
     int rightValue = evaluateExpression(rightTokens, lineNumber, loopIndex);
 
-    // Perform comparison
-    if (comparisonOp == "==")
-        return leftValue == rightValue;
-    if (comparisonOp == "!=")
-        return leftValue != rightValue;
-    if (comparisonOp == "<")
-        return leftValue < rightValue;
-    if (comparisonOp == ">")
-        return leftValue > rightValue;
-    if (comparisonOp == "<=")
-        return leftValue <= rightValue;
-    if (comparisonOp == ">=")
-        return leftValue >= rightValue;
-
-    // Should not reach here
+    if (comparisonOp == "==") return leftValue == rightValue;
+    if (comparisonOp == "!=") return leftValue != rightValue;
+    if (comparisonOp == "<")  return leftValue < rightValue;
+    if (comparisonOp == ">")  return leftValue > rightValue;
+    if (comparisonOp == "<=") return leftValue <= rightValue;
+    if (comparisonOp == ">=") return leftValue >= rightValue;
     runtimeError("Unknown comparison operator: " + comparisonOp, lineNumber);
     return false;
 }
 
-// --- Execution ---
+bool MicroPatternsRuntime::isAssetDataFullyOpaque(const MicroPatternsAsset* asset) const {
+    if (!asset || asset->data.empty()) return false;
+    for (uint8_t pixelValue : asset->data) {
+        if (pixelValue == 0) return false; // 0 is transparent for DRAW
+    }
+    return true;
+}
 
-void MicroPatternsRuntime::execute()
-{
-    if (!_commands || !_canvas || !_declaredVariables)
-    {
-        log_e("Runtime not properly initialized (commands, canvas, or declared vars missing).");
+bool MicroPatternsRuntime::determineItemOpacity(CommandType type, const std::map<String, ParamValue>& params, const String& assetNameParamValue) const {
+    if (type == CMD_FILL_RECT || type == CMD_FILL_CIRCLE || type == CMD_FILL_PIXEL || type == CMD_PIXEL) {
+        return true;
+    }
+    if (type == CMD_DRAW) {
+        // assetNameParamValue is already resolved, uppercase name or "SOLID"
+        if (assetNameParamValue != "SOLID" && _assets.count(assetNameParamValue)) {
+            return isAssetDataFullyOpaque(&_assets.at(assetNameParamValue));
+        }
+        return false;
+    }
+    return false;
+}
+
+
+void MicroPatternsRuntime::generateDisplayList() {
+    if (!_commands || !_declaredVariables) {
+        log_e("Runtime not properly initialized for display list generation.");
+        return;
+    }
+    resetStateAndList(); // Clears _displayList and resets _currentState, _variables
+    esp_task_wdt_reset();
+    clearInterrupt();
+
+    int commandCounter = 0;
+    for (const auto& cmd : *_commands) {
+        processCommandForDisplayList(cmd, -1); // loopIndex = -1 for top-level
+        commandCounter++;
+        if (commandCounter > 0 && commandCounter % 50 == 0) { // Yield less frequently
+            yield();
+            if (commandCounter % 150 == 0) {
+                 esp_task_wdt_reset();
+            }
+        }
+        if (_interrupt_requested) break;
+    }
+    esp_task_wdt_reset();
+}
+
+const std::vector<DisplayListItem>& MicroPatternsRuntime::getDisplayList() const {
+    return _displayList;
+}
+
+void MicroPatternsRuntime::processCommandForDisplayList(const MicroPatternsCommand& cmd, int loopIndex) {
+    if (_interrupt_requested || (_interrupt_check_cb && _interrupt_check_cb())) {
+        _interrupt_requested = true;
         return;
     }
 
-    // Reset state before each full execution (clears user vars, resets drawing state, preserves counter)
-    resetState();
-    log_d("Runtime execute start - Counter after resetState: %d", _environment["$COUNTER"]);
+    DisplayListItem dlItem;
+    dlItem.type = cmd.type;
+    dlItem.sourceLine = cmd.lineNumber;
 
-    // Reset watchdog timer before script execution
-    esp_task_wdt_reset();
+    // Snapshot current state common to most drawing items
+    memcpy(dlItem.matrix, _currentState.matrix, sizeof(float) * 6);
+    memcpy(dlItem.inverseMatrix, _currentState.inverseMatrix, sizeof(float) * 6);
+    dlItem.scaleFactor = _currentState.scale;
+    dlItem.color = _currentState.color;
+    dlItem.fillAsset = _currentState.fillAsset;
+    
+    // Temp storage for resolved asset name for opacity check
+    String resolvedAssetNameForOpacity = "";
 
-    // VAR initialization is now handled by executeCommand when CMD_VAR is encountered.
-    // This allows VARs inside blocks to be initialized correctly.
 
-    _drawing.setInterruptCheckCallback(_interrupt_check_cb); // Pass callback to drawing module
-    _drawing.clearCanvas(); // Start with a clear (white) canvas
-    clearInterrupt(); // Clear any pending interrupt before starting execution
-
-    // Execute top-level commands
-    int commandCounter = 0;
-    for (const auto &cmd : *_commands) // Iterate all top-level commands
-    {
-        // VAR commands will now be handled by executeCommand like any other command.
-        executeCommand(cmd, -1); // Pass loopIndex = -1 for top-level execution
-        commandCounter++;
-        if (commandCounter > 0 && commandCounter % 20 == 0) {
-            yield();
-            // Reset watchdog timer periodically during execution
-            if (commandCounter % 60 == 0) {
-                esp_task_wdt_reset();
-            }
+    switch (cmd.type) {
+        case CMD_VAR: {
+            String varKey = "$" + cmd.varName;
+            _variables[varKey] = cmd.initialExpressionTokens.empty() ? 0 : evaluateExpression(cmd.initialExpressionTokens, cmd.lineNumber, loopIndex);
+            return; // VAR does not generate a display list item
         }
-    }
-
-    // Reset watchdog before final canvas push (which can be time-consuming)
-    esp_task_wdt_reset();
-
-    // After executing all commands, push the final canvas to the display
-    _canvas->pushCanvas(0, 0, UPDATE_MODE_GLD16);
-}
-
-// Execute a single command, potentially recursively for blocks
-void MicroPatternsRuntime::executeCommand(const MicroPatternsCommand &cmd, int loopIndex)
-{
-    if (_interrupt_requested || (_interrupt_check_cb && _interrupt_check_cb())) {
-        _interrupt_requested = true; // Ensure it's set if callback triggered it
-        // log_d("Command execution interrupted at line %d", cmd.lineNumber);
-        return; // Stop further execution if interrupted
-    }
-
-    // loopIndex is >= 0 if inside a REPEAT loop, -1 otherwise.
-
-    // Resolve parameters only when needed for each specific command type
-    // Pass current loopIndex to resolvers
-
-    try
-    { // Add try-catch around command execution
-        switch (cmd.type)
-        {
-        case CMD_VAR:
-        {
-            // cmd.varName is UPPERCASE, no '$'
-            String varKey = "$" + cmd.varName; // Store with '$' prefix
-            // This handles VAR initialization at any level (top-level or nested).
-            // For VARs inside loops, this will re-initialize them on each execution of VAR.
-            if (!cmd.initialExpressionTokens.empty())
-            {
-                int initialValue = evaluateExpression(cmd.initialExpressionTokens, cmd.lineNumber, loopIndex);
-                _variables[varKey] = initialValue;
+        case CMD_LET: {
+            String targetVarKey = "$" + cmd.letTargetVar;
+            if (_variables.count(targetVarKey)) {
+                _variables[targetVarKey] = cmd.letExpressionTokens.empty() ? 0 : evaluateExpression(cmd.letExpressionTokens, cmd.lineNumber, loopIndex);
+            } else {
+                runtimeError("LET: Undeclared variable: " + targetVarKey, cmd.lineNumber);
             }
-            else
-            {
-                _variables[varKey] = 0; // Default to 0 if no initializer
-            }
-            break;
+            return; // LET does not generate a display list item
         }
-
-        case CMD_LET:
-        {
-            // Assignment: Evaluate expression and assign to target var
-            // cmd.letTargetVar is UPPERCASE, no '$'
-            String targetVarKey = "$" + cmd.letTargetVar; // Lookup/store with '$'
-            if (_variables.count(targetVarKey))
-            {
-                if (!cmd.letExpressionTokens.empty())
-                {
-                    int valueToAssign = evaluateExpression(cmd.letExpressionTokens, cmd.lineNumber, loopIndex);
-                    _variables[targetVarKey] = valueToAssign;
-                }
-                else
-                {
-                    runtimeError("Missing expression for LET statement.", cmd.lineNumber);
-                }
-            }
-            else
-            {
-                // Should be caught by parser (undeclared var)
-                runtimeError("Attempted to assign to undeclared variable: " + targetVarKey, cmd.lineNumber);
-            }
-            break;
-        } // End CMD_LET block
-
-        case CMD_COLOR:
-        {
+        case CMD_COLOR: {
             String colorName = resolveStringParam("NAME", cmd.params, "BLACK", cmd.lineNumber);
-            colorName.toUpperCase(); // Ensure case-insensitive comparison
-            if (colorName == "WHITE")
-                _currentState.color = RUNTIME_COLOR_WHITE;
-            else if (colorName == "BLACK")
-                _currentState.color = RUNTIME_COLOR_BLACK;
-            else
-                runtimeError("Invalid COLOR NAME: " + colorName, cmd.lineNumber);
-            break;
+            colorName.toUpperCase();
+            _currentState.color = (colorName == "WHITE") ? RUNTIME_COLOR_WHITE : RUNTIME_COLOR_BLACK;
+            return; // State change, no display list item
         }
-        case CMD_FILL:
-        {
-            String fillName = resolveAssetNameParam("NAME", cmd.params, cmd.lineNumber); // Handles SOLID or pattern name (UPPERCASE)
-            if (fillName == "SOLID")
-            {
-                _currentState.fillAsset = nullptr;
+        case CMD_FILL: {
+            String fillName = resolveAssetNameParam("NAME", cmd.params, cmd.lineNumber); // SOLID or UPPERCASE pattern
+            _currentState.fillAsset = (fillName == "SOLID" || !_assets.count(fillName)) ? nullptr : &_assets.at(fillName);
+            if (fillName != "SOLID" && !_assets.count(fillName)) {
+                runtimeError("Undefined fill pattern: " + fillName, cmd.lineNumber);
             }
-            else
-            {
-                if (_assets.count(fillName))
-                {
-                    _currentState.fillAsset = &_assets.at(fillName);
-                }
-                else
-                {
-                    // Use original name from asset if possible for error
-                    String originalName = fillName; // Fallback
-                    for (const auto &pair : _assets)
-                    {
-                        if (pair.first == fillName)
-                        {
-                            originalName = pair.second.originalName;
-                            break;
-                        }
-                    }
-                    runtimeError("Undefined fill pattern: \"" + originalName + "\"", cmd.lineNumber);
-                    _currentState.fillAsset = nullptr; // Default to solid on error
-                }
-            }
-            break;
+            return; // State change
         }
         case CMD_RESET_TRANSFORMS:
             _currentState.scale = 1.0f;
             matrix_identity(_currentState.matrix);
             matrix_identity(_currentState.inverseMatrix);
-            break;
-        case CMD_TRANSLATE:
-        {
+            return; // State change
+        case CMD_TRANSLATE: {
             float dx = static_cast<float>(resolveIntParam("DX", cmd.params, 0, cmd.lineNumber, loopIndex));
             float dy = static_cast<float>(resolveIntParam("DY", cmd.params, 0, cmd.lineNumber, loopIndex));
-            
-            float T_op[6];
-            matrix_make_translation(T_op, dx, dy);
-
-            // M_new = M_current * T_op
-            matrix_multiply(_currentState.matrix, _currentState.matrix, T_op); // Multiply in place is fine if matrix_multiply handles it (it does via temp)
-            
-            if (!matrix_invert(_currentState.inverseMatrix, _currentState.matrix)) {
-                runtimeError("Matrix became non-invertible after TRANSLATE.", cmd.lineNumber);
-                // Optionally reset to identity to prevent further issues
-                // matrix_identity(_currentState.matrix);
-                // matrix_identity(_currentState.inverseMatrix);
-            }
-            break;
+            float T_op[6]; matrix_make_translation(T_op, dx, dy);
+            matrix_multiply(_currentState.matrix, _currentState.matrix, T_op);
+            if (!matrix_invert(_currentState.inverseMatrix, _currentState.matrix)) { /* error */ }
+            return; // State change
         }
-        case CMD_ROTATE:
-        {
+        case CMD_ROTATE: {
             float degrees = static_cast<float>(resolveIntParam("DEGREES", cmd.params, 0, cmd.lineNumber, loopIndex));
-
-            float R_op[6];
-            matrix_make_rotation(R_op, degrees);
-
-            // M_new = M_current * R_op
+            float R_op[6]; matrix_make_rotation(R_op, degrees);
             matrix_multiply(_currentState.matrix, _currentState.matrix, R_op);
-
-            if (!matrix_invert(_currentState.inverseMatrix, _currentState.matrix)) {
-                 runtimeError("Matrix became non-invertible after ROTATE.", cmd.lineNumber);
-            }
-            break;
+            if (!matrix_invert(_currentState.inverseMatrix, _currentState.matrix)) { /* error */ }
+            return; // State change
         }
         case CMD_SCALE:
-        {
-            int factor = resolveIntParam("FACTOR", cmd.params, 1, cmd.lineNumber, loopIndex);
-            // Set the absolute scale factor
-            _currentState.scale = (factor >= 1) ? factor : 1.0;
-            break;
-        }
+            _currentState.scale = std::max(1, resolveIntParam("FACTOR", cmd.params, 1, cmd.lineNumber, loopIndex));
+            return; // State change
 
-        // Drawing commands
+        // Drawing commands - resolve params and add to list
         case CMD_PIXEL:
-        {
-            int x = resolveIntParam("X", cmd.params, 0, cmd.lineNumber, loopIndex);
-            int y = resolveIntParam("Y", cmd.params, 0, cmd.lineNumber, loopIndex);
-            _drawing.drawPixel(x, y, _currentState);
+            dlItem.intParams["X"] = resolveIntParam("X", cmd.params, 0, cmd.lineNumber, loopIndex);
+            dlItem.intParams["Y"] = resolveIntParam("Y", cmd.params, 0, cmd.lineNumber, loopIndex);
             break;
-        }
         case CMD_FILL_PIXEL:
-        {
-            int x = resolveIntParam("X", cmd.params, 0, cmd.lineNumber, loopIndex);
-            int y = resolveIntParam("Y", cmd.params, 0, cmd.lineNumber, loopIndex);
-            _drawing.drawFilledPixel(x, y, _currentState);
+            dlItem.intParams["X"] = resolveIntParam("X", cmd.params, 0, cmd.lineNumber, loopIndex);
+            dlItem.intParams["Y"] = resolveIntParam("Y", cmd.params, 0, cmd.lineNumber, loopIndex);
             break;
-        }
         case CMD_LINE:
-        {
-            int x1 = resolveIntParam("X1", cmd.params, 0, cmd.lineNumber, loopIndex);
-            int y1 = resolveIntParam("Y1", cmd.params, 0, cmd.lineNumber, loopIndex);
-            int x2 = resolveIntParam("X2", cmd.params, 0, cmd.lineNumber, loopIndex);
-            int y2 = resolveIntParam("Y2", cmd.params, 0, cmd.lineNumber, loopIndex);
-            _drawing.drawLine(x1, y1, x2, y2, _currentState);
+            dlItem.intParams["X1"] = resolveIntParam("X1", cmd.params, 0, cmd.lineNumber, loopIndex);
+            dlItem.intParams["Y1"] = resolveIntParam("Y1", cmd.params, 0, cmd.lineNumber, loopIndex);
+            dlItem.intParams["X2"] = resolveIntParam("X2", cmd.params, 0, cmd.lineNumber, loopIndex);
+            dlItem.intParams["Y2"] = resolveIntParam("Y2", cmd.params, 0, cmd.lineNumber, loopIndex);
             break;
-        }
         case CMD_RECT:
-        {
-            int x = resolveIntParam("X", cmd.params, 0, cmd.lineNumber, loopIndex);
-            int y = resolveIntParam("Y", cmd.params, 0, cmd.lineNumber, loopIndex);
-            int w = resolveIntParam("WIDTH", cmd.params, 0, cmd.lineNumber, loopIndex);
-            int h = resolveIntParam("HEIGHT", cmd.params, 0, cmd.lineNumber, loopIndex);
-            _drawing.drawRect(x, y, w, h, _currentState);
-            break;
-        }
         case CMD_FILL_RECT:
-        {
-            int x = resolveIntParam("X", cmd.params, 0, cmd.lineNumber, loopIndex);
-            int y = resolveIntParam("Y", cmd.params, 0, cmd.lineNumber, loopIndex);
-            int w = resolveIntParam("WIDTH", cmd.params, 0, cmd.lineNumber, loopIndex);
-            int h = resolveIntParam("HEIGHT", cmd.params, 0, cmd.lineNumber, loopIndex);
-            _drawing.fillRect(x, y, w, h, _currentState);
+            dlItem.intParams["X"] = resolveIntParam("X", cmd.params, 0, cmd.lineNumber, loopIndex);
+            dlItem.intParams["Y"] = resolveIntParam("Y", cmd.params, 0, cmd.lineNumber, loopIndex);
+            dlItem.intParams["WIDTH"] = resolveIntParam("WIDTH", cmd.params, 0, cmd.lineNumber, loopIndex);
+            dlItem.intParams["HEIGHT"] = resolveIntParam("HEIGHT", cmd.params, 0, cmd.lineNumber, loopIndex);
             break;
-        }
         case CMD_CIRCLE:
-        {
-            int x = resolveIntParam("X", cmd.params, 0, cmd.lineNumber, loopIndex);
-            int y = resolveIntParam("Y", cmd.params, 0, cmd.lineNumber, loopIndex);
-            int r = resolveIntParam("RADIUS", cmd.params, 0, cmd.lineNumber, loopIndex);
-            _drawing.drawCircle(x, y, r, _currentState);
-            break;
-        }
         case CMD_FILL_CIRCLE:
-        {
-            int x = resolveIntParam("X", cmd.params, 0, cmd.lineNumber, loopIndex);
-            int y = resolveIntParam("Y", cmd.params, 0, cmd.lineNumber, loopIndex);
-            int r = resolveIntParam("RADIUS", cmd.params, 0, cmd.lineNumber, loopIndex);
-            _drawing.fillCircle(x, y, r, _currentState);
+            dlItem.intParams["X"] = resolveIntParam("X", cmd.params, 0, cmd.lineNumber, loopIndex);
+            dlItem.intParams["Y"] = resolveIntParam("Y", cmd.params, 0, cmd.lineNumber, loopIndex);
+            dlItem.intParams["RADIUS"] = resolveIntParam("RADIUS", cmd.params, 0, cmd.lineNumber, loopIndex);
             break;
-        }
         case CMD_DRAW:
-        {
-            String assetName = resolveAssetNameParam("NAME", cmd.params, cmd.lineNumber); // UPPERCASE name
-            int x = resolveIntParam("X", cmd.params, 0, cmd.lineNumber, loopIndex);
-            int y = resolveIntParam("Y", cmd.params, 0, cmd.lineNumber, loopIndex);
-            if (assetName != "SOLID")
-            {
-                if (_assets.count(assetName))
-                {
-                    _drawing.drawAsset(x, y, _assets.at(assetName), _currentState);
-                }
-                else
-                {
-                    String originalName = assetName; // Fallback
-                    for (const auto &pair : _assets)
-                    {
-                        if (pair.first == assetName)
-                        {
-                            originalName = pair.second.originalName;
-                            break;
-                        }
-                    }
-                    runtimeError("Undefined asset for DRAW: \"" + originalName + "\"", cmd.lineNumber);
-                }
-            }
-            else
-            {
-                runtimeError("Cannot DRAW SOLID.", cmd.lineNumber);
+            dlItem.intParams["X"] = resolveIntParam("X", cmd.params, 0, cmd.lineNumber, loopIndex);
+            dlItem.intParams["Y"] = resolveIntParam("Y", cmd.params, 0, cmd.lineNumber, loopIndex);
+            resolvedAssetNameForOpacity = resolveAssetNameParam("NAME", cmd.params, cmd.lineNumber);
+            dlItem.stringParams["NAME"] = resolvedAssetNameForOpacity;
+            if (resolvedAssetNameForOpacity == "SOLID" || !_assets.count(resolvedAssetNameForOpacity)) {
+                runtimeError("DRAW: Invalid asset name '" + resolvedAssetNameForOpacity + "'.", cmd.lineNumber);
+                return; // Don't add invalid DRAW to list
             }
             break;
-        }
-
-        case CMD_REPEAT:
-        {
-            int count = resolveValue(cmd.count, cmd.lineNumber, loopIndex); // Resolve count using current context
-            
-            if (count < 0)
-            {
-                runtimeError("REPEAT count cannot be negative: " + String(count), cmd.lineNumber);
-                break;
-            }
         
-            // Reset watchdog for potentially long REPEAT loops
+        // Control Flow
+        case CMD_REPEAT: {
+            int count = resolveValue(cmd.count, cmd.lineNumber, loopIndex);
+            if (count < 0) { runtimeError("REPEAT count negative.", cmd.lineNumber); return; }
             esp_task_wdt_reset();
-            
-            // Store previous $INDEX if nested loops
-            int previousIndex = -1;
-            bool hadPreviousIndex = _environment.count("$INDEX");
-            if (hadPreviousIndex)
-            {
-                previousIndex = _environment.at("$INDEX");
-            }
-        
-            // Execute the nested commands 'count' times
-            for (int i = 0; i < count; i++)
-            {
-                // Set the INDEX environment variable for this iteration
-                // This makes $INDEX available both via direct environment lookup
-                // and via the loopIndex parameter in resolveValue
+            int previousIndex = _environment.count("$INDEX") ? _environment.at("$INDEX") : -1;
+            for (int i = 0; i < count; ++i) {
                 _environment["$INDEX"] = i;
-        
-                // Execute each command in the nested block, passing current loop index 'i'
-                for (const auto &nestedCmd : cmd.nestedCommands)
-                {
-                    if (_interrupt_requested || (_interrupt_check_cb && _interrupt_check_cb())) {
-                        _interrupt_requested = true;
-                        goto end_repeat_loop; // Break out of outer loop
-                    }
-                    executeCommand(nestedCmd, i); // Pass 'i' as loopIndex
+                for (const auto& nestedCmd : cmd.nestedCommands) {
+                    processCommandForDisplayList(nestedCmd, i);
+                    if (_interrupt_requested) break;
                 }
-                
-                // Yield periodically within the REPEAT loop
-                if (i > 0 && i % 10 == 0) { // Yield every 10 iterations (but not the first)
-                    yield();
-                    
-                    // Reset watchdog periodically for long repeat loops
-                    if (i > 0 && i % 30 == 0) { // Increased frequency from 50 to 30
-                        esp_task_wdt_reset();
-                    }
-                }
+                if (_interrupt_requested) break;
+                if (i > 0 && i % 20 == 0) { yield(); if (i % 60 == 0) esp_task_wdt_reset(); }
             }
-
-            // Restore previous $INDEX or remove it
-            if (hadPreviousIndex)
-            {
-                _environment["$INDEX"] = previousIndex;
-            }
-            else
-            {
-                _environment.erase("$INDEX");
-            }
-            end_repeat_loop:; // Label for goto
-            break; // End CMD_REPEAT block
+            if (previousIndex != -1) _environment["$INDEX"] = previousIndex; else _environment.erase("$INDEX");
+            return; // REPEAT block expanded, no single item for REPEAT itself
         }
-
-        case CMD_IF:
-        {
+        case CMD_IF: {
             bool conditionMet = evaluateCondition(cmd.conditionTokens, cmd.lineNumber, loopIndex);
-            const auto &commandsToRun = conditionMet ? cmd.thenCommands : cmd.elseCommands;
-
-            // Execute the chosen block of commands
-            for (const auto &nestedCmd : commandsToRun)
-            {
-                // Pass down the current loopIndex if IF is inside REPEAT
-                executeCommand(nestedCmd, loopIndex);
+            const auto& commandsToRun = conditionMet ? cmd.thenCommands : cmd.elseCommands;
+            for (const auto& nestedCmd : commandsToRun) {
+                processCommandForDisplayList(nestedCmd, loopIndex); // Pass outer loopIndex
+                if (_interrupt_requested) break;
             }
-            break; // End CMD_IF block
+            return; // IF block expanded
         }
+        default: // CMD_UNKNOWN, CMD_DEFINE_PATTERN, CMD_NOOP, CMD_ENDREPEAT, CMD_ELSE, CMD_ENDIF
+            return; // Do not add to display list
+    }
 
-        case CMD_UNKNOWN:
-        case CMD_DEFINE_PATTERN: // Handled by parser
-        case CMD_NOOP:
-        case CMD_ENDREPEAT: // Should not be executed
-        case CMD_ELSE:      // Should not be executed
-        case CMD_ENDIF:     // Should not be executed
-            // Do nothing or log internal error if these are encountered
-            break;
-        } // End switch
-    }
-    catch (...)
-    {
-        // Catch potential exceptions during command execution (e.g., from drawing)
-        runtimeError("Unexpected exception during command execution.", cmd.lineNumber);
-        // Potentially rethrow or handle differently
-    }
+    // Determine opacity for the item being added
+    dlItem.isOpaque = determineItemOpacity(dlItem.type, cmd.params, resolvedAssetNameForOpacity);
+    _displayList.push_back(dlItem);
 }

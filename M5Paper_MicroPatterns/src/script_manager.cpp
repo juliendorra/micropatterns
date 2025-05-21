@@ -1538,9 +1538,14 @@ void ScriptManager::clearAllScriptData()
                     esp_task_wdt_reset(); // Reset WDT during file iteration
                     if (!entry.isDirectory())
                     {
-                        // entry.name() should return the full path of the file
-                        log_i("Deleting content file: %s", entry.name());
-                        SPIFFS.remove(entry.name());
+                        String baseName = entry.name(); // This seems to return basename e.g. "s1"
+                        // entry.path() might be more reliable if available and returns full path.
+                        // For now, construct path based on observed behavior of entry.name().
+                        String fullPath = String(CONTENT_DIR_PATH) + "/" + baseName;
+                        log_i("Deleting content file: %s (derived from base: %s)", fullPath.c_str(), baseName.c_str());
+                        if (!SPIFFS.remove(fullPath.c_str())) {
+                            log_e("Failed to remove %s", fullPath.c_str());
+                        }
                     }
                     entry.close(); // Close file handle
                     entry = root.openNextFile();

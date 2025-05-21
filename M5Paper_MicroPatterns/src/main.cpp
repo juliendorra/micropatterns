@@ -598,11 +598,22 @@ void RenderTask_Function(void *pvParameters) {
                 EventBits_t uxBits = xEventGroupGetBits(g_renderTaskEventFlags);
                 if (uxBits & RENDER_INTERRUPT_BIT) {
                     log_i("RenderTask: Interrupt bit was set by MainControlTask during/after render.");
-                    resultData.interrupted = true; // Ensure result reflects this
-                    resultData.success = false;
-                    if(resultData.error_message.isEmpty()) resultData.error_message = "Render interrupted by external signal.";
+                    renderCtrl.requestInterrupt(); // Signal interrupt to RenderController
+                    // Result data will be updated by renderCtrl if interrupt occurred
                     xEventGroupClearBits(g_renderTaskEventFlags, RENDER_INTERRUPT_BIT); // Clear the bit
                 }
+
+                // After rendering is complete (or interrupted), push the canvas
+                // The DisplayListRenderer now handles clearing the canvas.
+                // The final push to EPD happens here.
+                // Directly call canvas push since mutex is already held by RenderTask.
+                M5EPD_Canvas* canvas = g_displayManager->getCanvas();
+                if (canvas) {
+                    canvas->pushCanvas(0, 0, UPDATE_MODE_GLD16); // Or appropriate mode
+                } else {
+                    log_e("RenderTask: Failed to get canvas from DisplayManager.");
+                }
+                
                 g_displayManager->unlockEPD(); // Unlock EPD
             } else {
                 log_e("RenderTask: Failed to lock EPD for rendering script %s", jobData.script_id.c_str());
