@@ -16,7 +16,7 @@
 #include "system_manager.h"
 #include "input_manager.h"
 #include "display_manager.h"
-#include "script_manager.h"
+#include "script_manager.h" // Also brings in JSON_DOC_CAPACITY_SCRIPT_LIST, JSON_DOC_CAPACITY_SCRIPT_STATES
 #include "network_manager.h"
 #include "render_controller.h"
 

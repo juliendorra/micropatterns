@@ -13,7 +13,9 @@ public:
     RenderController(DisplayManager &displayMgr);
     ~RenderController();
 
-    RenderResultData renderScript(const RenderJobData &job);
+    // RenderJobData no longer contains script_content. Content is passed separately.
+    // file_id is not strictly needed by parser/runtime if content is provided, but script_id is.
+    RenderResultData renderScript(const String& script_id, const String& script_content, const ScriptExecState& initial_state);
     void requestInterrupt();
 
 private:

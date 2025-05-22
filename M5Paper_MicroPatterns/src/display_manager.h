@@ -38,8 +38,7 @@ private:
 
     bool _isInitialized;
 
-    // Internal helper for drawing text, assuming mutex is already taken
-    void _drawTextInternal(const String& text, int y_offset, uint16_t color);
+    // _drawTextInternal removed, logic moved to showMessage
 };
 
 #endif // DISPLAY_MANAGER_H

@@ -146,6 +146,113 @@ void setup() {
     vTaskDelete(NULL);
 }
 
+// Helper function to queue a render job
+// if useAsIsState is true, it uses the state directly from getScriptForExecution (for WiFi fail recovery)
+// if useAsIsState is false, it increments counter (if loaded) and uses current RTC time (for user-initiated re-render/next script etc.)
+// Returns true if a job was successfully queued, false otherwise.
+static bool triggerScriptRender(const String& humanIdToRender, bool useAsIsState, AppState& currentAppState_ref, String& currentLoadedScriptId_ref) {
+    if (humanIdToRender.isEmpty()) {
+        log_w("triggerScriptRender: humanIdToRender is empty. Cannot render.");
+        // Attempt to load and render default script as a fallback
+        RenderJobData defaultJobData; // script_content is no longer a member
+        ScriptExecState defaultScriptState;
+        // getScriptForExecution with empty ID should provide default script details (ID, FileID, State)
+        if (g_scriptManager->getScriptForExecution(defaultJobData.script_id, defaultJobData.file_id, defaultScriptState)) { // No script_content
+            if (!defaultJobData.script_id.isEmpty()) {
+                log_i("triggerScriptRender: humanIdToRender was empty, attempting to render default script '%s'", defaultJobData.script_id.c_str());
+                // For default script, always use 'fresh' state (useAsIsState = false effectively)
+                defaultJobData.initial_state = defaultScriptState; // Base state
+                if (defaultScriptState.state_loaded) { // Default script state_loaded should be false from getScriptForExecution
+                    defaultJobData.initial_state.counter++;
+                } else {
+                    defaultJobData.initial_state.counter = 0;
+                }
+                RTC_Time now_time = g_systemManager->getTime();
+                defaultJobData.initial_state.hour = now_time.hour;
+                defaultJobData.initial_state.minute = now_time.min;
+                defaultJobData.initial_state.second = now_time.sec;
+
+                RenderJobQueueItem defaultJobQueueItem;
+                defaultJobQueueItem.fromRenderJobData(defaultJobData);
+                if (xQueueSend(g_renderCommandQueue, &defaultJobQueueItem, pdMS_TO_TICKS(100)) == pdTRUE) {
+                    currentAppState_ref = AppState::RENDERING_SCRIPT;
+                    currentLoadedScriptId_ref = defaultJobData.script_id;
+                    return true;
+                } else {
+                    log_e("triggerScriptRender: Failed to send render job for default script '%s'.", defaultJobData.script_id.c_str());
+                    g_displayManager->showMessage("Render Q Fail", 150, 15, false, false);
+                    return false;
+                }
+            } else {
+                 log_e("triggerScriptRender: getScriptForExecution also failed to provide a default script ID.");
+                 g_displayManager->showMessage("No Script ID", 150, 15, false, false);
+                 return false;
+            }
+        } else {
+            log_e("triggerScriptRender: Failed to get default script details.");
+            g_displayManager->showMessage("Default Load Fail", 150, 15, false, false);
+            return false;
+        }
+    }
+
+    // Avoid queuing a new "standard" render if one is already in progress. Recovery renders can proceed.
+    if (currentAppState_ref == AppState::RENDERING_SCRIPT && !useAsIsState) {
+        log_w("triggerScriptRender: Standard render requested for '%s' while already rendering. Ignoring.", humanIdToRender.c_str());
+        return false;
+    }
+
+    RenderJobData jobData; // script_content is no longer a member
+    ScriptExecState scriptState; // This will be the state from storage
+    String fileId;
+    // String scriptContentForJob; // REMOVED - content not handled here
+
+    // getScriptForExecution now returns humanId, fileId, and initial_state.
+    // Content will be loaded by RenderTask.
+    if (g_scriptManager->getScriptForExecution(jobData.script_id, fileId, scriptState)) { // No scriptContentForJob
+        // Ensure jobData.script_id is the one we intended, or the one getScriptForExecution resolved to (e.g. default)
+        // If humanIdToRender was valid, jobData.script_id should match it.
+        // If humanIdToRender was invalid and getScriptForExecution gave default, jobData.script_id is default.
+        jobData.file_id = fileId;
+        // jobData.script_content = scriptContentForJob; // REMOVED
+        jobData.initial_state = scriptState; // Base state from storage
+
+        if (!useAsIsState) { // Standard render: increment counter (if loaded), use current RTC time
+            if (scriptState.state_loaded) {
+                jobData.initial_state.counter++; // Increment the counter from the loaded state
+            } else {
+                jobData.initial_state.counter = 0; // Ensure counter is 0 if state wasn't loaded (first run for this script)
+            }
+            RTC_Time now_time = g_systemManager->getTime();
+            jobData.initial_state.hour = now_time.hour;
+            jobData.initial_state.minute = now_time.min;
+            jobData.initial_state.second = now_time.sec;
+        }
+        // If useAsIsState is true, jobData.initial_state is already set correctly to scriptState (from storage).
+
+        log_i("triggerScriptRender: Queuing render for '%s' (resolved from '%s'), file_id '%s', counter %d. useAsIsState: %s",
+              jobData.script_id.c_str(), humanIdToRender.c_str(), jobData.file_id.c_str(), jobData.initial_state.counter, useAsIsState ? "true" : "false");
+
+        RenderJobQueueItem jobQueueItem;
+        jobQueueItem.fromRenderJobData(jobData); // This copies human_id, file_id, initial_state
+
+        if (xQueueSend(g_renderCommandQueue, &jobQueueItem, pdMS_TO_TICKS(100)) == pdTRUE) {
+            currentAppState_ref = AppState::RENDERING_SCRIPT;
+            currentLoadedScriptId_ref = jobData.script_id; // Update the main task's tracker
+            return true;
+        } else {
+            log_e("triggerScriptRender: Failed to send render job for '%s'.", jobData.script_id.c_str());
+            g_displayManager->showMessage("Render Q Fail", 150, 15, false, false);
+            return false;
+        }
+    } else {
+        // This case should ideally be rare if getScriptForExecution always falls back to default.
+        log_e("triggerScriptRender: Failed to get script details for '%s' (even default).", humanIdToRender.c_str());
+        g_displayManager->showMessage("Script Load Fail", 150, 15, false, false);
+        return false;
+    }
+}
+
+
 // --- Main Control Task ---
 void MainControlTask_Function(void *pvParameters) {
     esp_task_wdt_init(30, true); // Panic on WDT timeout
@@ -162,51 +269,46 @@ void MainControlTask_Function(void *pvParameters) {
         g_displayManager->showMessage("Syncing Time...", 50, 15, true, true);
         if (g_systemManager->syncTimeWithNTP(*g_networkManager)) {
             g_displayManager->showMessage("Time Synced", 100, 15);
+            vTaskDelay(pdMS_TO_TICKS(1000)); // Delay only on success
         } else {
-            g_displayManager->showMessage("Time Sync Fail", 100, 15);
+            g_displayManager->showMessage("Time Sync Fail", 100, 15, false, false); // Brief message
+            // No long delay here, attempt to re-render current script
+            if (!currentLoadedScriptId.isEmpty()) {
+                log_i("MainCtrl: NTP sync failed. Re-rendering current script '%s' with saved state.", currentLoadedScriptId.c_str());
+                triggerScriptRender(currentLoadedScriptId, true, currentState, currentLoadedScriptId); // true for useAsIsState
+            } else {
+                log_w("MainCtrl: NTP sync failed, but no current script loaded to re-render.");
+                // If no script is loaded, the message "Time Sync Fail" will be shown briefly.
+                // Consider a small delay to ensure message is visible if no re-render happens.
+                vTaskDelay(pdMS_TO_TICKS(500));
+            }
         }
-        vTaskDelay(pdMS_TO_TICKS(1000));
     }
     esp_task_wdt_reset();
 
     // 2. Initial script load and render
-    RenderJobData initialRenderJobData; // Use RenderJobData for internal logic
-    ScriptExecState initialScriptState;
-    // Get humanId, fileId, content, and state
-    if (g_scriptManager->getScriptForExecution(initialRenderJobData.script_id, initialRenderJobData.file_id, initialRenderJobData.script_content, initialScriptState)) {
-        if (initialRenderJobData.script_id.isEmpty()) { // script_id is humanId
-            log_e("MainCtrl: getScriptForExecution returned empty human_id for initial load. Aborting initial render.");
-            g_displayManager->showMessage("Empty ID Fail", 150, 15);
-        } else {
-            initialRenderJobData.initial_state = initialScriptState;
-            // Increment counter for first boot execution if state was loaded, or set to 0 if not
-            if (initialScriptState.state_loaded) {
-                initialRenderJobData.initial_state.counter++;
-            } else {
-                initialRenderJobData.initial_state.counter = 0;
-            }
-            // Update time from RTC for this first execution
-            RTC_Time now_time = g_systemManager->getTime();
-            initialRenderJobData.initial_state.hour = now_time.hour;
-            initialRenderJobData.initial_state.minute = now_time.min;
-            initialRenderJobData.initial_state.second = now_time.sec;
+    // The initial script ID will be determined by getScriptForExecution,
+    // which might be the last saved, the first in list, or default.
+    // For the very first render, we want 'fresh' state (counter 0, current time).
+    String initialHumanIdToLoad = "";
+    String initialFileIdUnused; // Not used here, but needed for signature
+    ScriptExecState tempInitialState;
 
-            log_i("MainCtrl: Initial render job for script '%s', counter %d", initialRenderJobData.script_id.c_str(), initialRenderJobData.initial_state.counter);
-            
-            RenderJobQueueItem initialRenderJobQueueItem;
-            initialRenderJobQueueItem.fromRenderJobData(initialRenderJobData);
-
-            if (xQueueSend(g_renderCommandQueue, &initialRenderJobQueueItem, pdMS_TO_TICKS(100)) == pdTRUE) {
-                currentState = AppState::RENDERING_SCRIPT;
-                currentLoadedScriptId = initialRenderJobData.script_id;
-            } else {
-                log_e("MainCtrl: Failed to send initial render job.");
-                g_displayManager->showMessage("Render Q Fail", 150, 15);
-            }
-        }
+    // Get initial script ID and state, content is not loaded here.
+    if(g_scriptManager->getScriptForExecution(initialHumanIdToLoad, initialFileIdUnused, tempInitialState)){
+        // initialHumanIdToLoad is now set by getScriptForExecution
     } else {
-        log_e("MainCtrl: Failed to get initial script for execution.");
-        g_displayManager->showMessage("Script Load Fail", 150, 15);
+        // Fallback if getScriptForExecution fails catastrophically (should not happen if default is robust)
+        // This path should ideally not be hit if getScriptForExecution always returns a default.
+        initialHumanIdToLoad = ScriptManager::DEFAULT_SCRIPT_ID; // Use known default
+    }
+
+    if (!initialHumanIdToLoad.isEmpty()) {
+        log_i("MainCtrl: Initial script determined as '%s'. Triggering render.", initialHumanIdToLoad.c_str());
+        triggerScriptRender(initialHumanIdToLoad, false, currentState, currentLoadedScriptId); // false for useAsIsState (fresh)
+    } else {
+        log_e("MainCtrl: Failed to determine an initial script to load. This should not happen.");
+        g_displayManager->showMessage("Initial Load Fail", 150, 15, true, true);
     }
     lastActivityTime = xTaskGetTickCount();
     esp_task_wdt_reset();
@@ -291,114 +393,37 @@ void MainControlTask_Function(void *pvParameters) {
                     g_displayManager->showMessage(selectedName, 250, 15, true, true);
                     vTaskDelay(pdMS_TO_TICKS(500)); // Display selection message
 
-                    currentLoadedScriptId = selectedHumanId; // Update tracking
-
-                    // Prepare and send a render job for the newly selected script
-                    RenderJobData newRenderJobData;
-                    ScriptExecState newScriptState;
-                    String newFileId;
-                    String tempContent; // script_content from getScriptForExecution, not strictly needed for queue item
-
-                    if (g_scriptManager->getScriptForExecution(selectedHumanId, newFileId, tempContent, newScriptState)) {
-                        if (selectedHumanId.isEmpty()) {
-                            log_e("MainCtrl: getScriptForExecution returned empty human_id for '%s'. Aborting render.", selectedHumanId.c_str());
-                            currentState = AppState::IDLE;
-                        } else {
-                            newRenderJobData.script_id = selectedHumanId;
-                            newRenderJobData.file_id = newFileId;
-                            newRenderJobData.initial_state = newScriptState;
-                            // script_content is not set in newRenderJobData as RenderTask loads it.
-
-                            if (newScriptState.state_loaded) {
-                                newRenderJobData.initial_state.counter++;
-                            } else {
-                                newRenderJobData.initial_state.counter = 0;
-                            }
-                            RTC_Time now_time = g_systemManager->getTime();
-                            newRenderJobData.initial_state.hour = now_time.hour;
-                            newRenderJobData.initial_state.minute = now_time.min;
-                            newRenderJobData.initial_state.second = now_time.sec;
-
-                            log_i("MainCtrl: Queuing render job for selected script '%s', file_id '%s', counter %d",
-                                  newRenderJobData.script_id.c_str(), newRenderJobData.file_id.c_str(), newRenderJobData.initial_state.counter);
-                            
-                            RenderJobQueueItem newRenderJobQueueItem;
-                            newRenderJobQueueItem.fromRenderJobData(newRenderJobData);
-
-                            if (xQueueSend(g_renderCommandQueue, &newRenderJobQueueItem, pdMS_TO_TICKS(100)) == pdTRUE) {
-                                currentState = AppState::RENDERING_SCRIPT;
-                            } else {
-                                log_e("MainCtrl: Failed to send render job for selected script '%s'.", selectedHumanId.c_str());
-                                g_displayManager->showMessage("Render Q Fail", 150, 15);
-                                currentState = AppState::IDLE;
-                            }
-                        }
-                    } else {
-                        log_e("MainCtrl: Failed to get script details for execution for selected script '%s'.", selectedHumanId.c_str());
-                        g_displayManager->showMessage("Script Load Fail", 150, 15);
-                        currentState = AppState::IDLE;
+                    // currentLoadedScriptId will be updated by triggerScriptRender if successful
+                    log_i("MainCtrl: Selected script '%s'. Triggering render.", selectedHumanId.c_str());
+                    triggerScriptRender(selectedHumanId, false, currentState, currentLoadedScriptId); // false for useAsIsState (fresh)
+                } else {
+                    // selectNextScript failed or returned default
+                    log_w("MainCtrl: selectNextScript failed or no scripts available. Current script: '%s'", currentLoadedScriptId.c_str());
+                    // Optionally, re-render current if selection failed but a script is loaded, or render default.
+                    // For now, if selection fails, it might have already set to default.
+                    // If currentLoadedScriptId is still valid, we could re-render it.
+                    // If selectNextScript sets currentLoadedScriptId to default, triggerScriptRender will handle it.
+                    if (!selectedHumanId.isEmpty()){ // If selectNextScript provided an ID (even default)
+                         triggerScriptRender(selectedHumanId, false, currentState, currentLoadedScriptId);
                     }
                 }
             } else if (inputEvent.type == InputEventType::CONFIRM_ACTION) {
-                log_i("MainCtrl: Confirm action received. Attempting to re-render current script.");
-
-                if (currentState == AppState::RENDERING_SCRIPT) { // Only block if already rendering
-                    log_w("MainCtrl: Already rendering. Ignoring CONFIRM_ACTION for re-render.");
-                } else if (currentLoadedScriptId.isEmpty()) {
-                    log_w("MainCtrl: No script currently loaded. Cannot re-render on CONFIRM_ACTION.");
-                    // If fetching, currentState remains FETCHING_DATA. If IDLE, remains IDLE.
+                log_i("MainCtrl: Confirm action received. Attempting to re-render current script '%s'.", currentLoadedScriptId.c_str());
+                if (!currentLoadedScriptId.isEmpty()) {
+                    triggerScriptRender(currentLoadedScriptId, false, currentState, currentLoadedScriptId); // false for useAsIsState (fresh)
                 } else {
-                    // Re-render the current script
-                    RenderJobData rerenderJobData;
-                    ScriptExecState currentScriptState;
-                    String currentFileId;
-                    String tempContent; // script_content from getScriptForExecution, not strictly needed for queue item
-
-                    if (g_scriptManager->getScriptForExecution(currentLoadedScriptId, currentFileId, tempContent, currentScriptState)) {
-                        rerenderJobData.script_id = currentLoadedScriptId;
-                        rerenderJobData.file_id = currentFileId;
-                        rerenderJobData.initial_state = currentScriptState;
-
-                        if (currentScriptState.state_loaded) {
-                            rerenderJobData.initial_state.counter++;
-                        } else {
-                            // If state wasn't loaded (e.g. first time for this script), start counter at 0.
-                            // getScriptForExecution should initialize counter to 0 if not loaded.
-                            // This ensures counter increments correctly or starts fresh.
-                            rerenderJobData.initial_state.counter = currentScriptState.counter; // Use value from getScriptForExecution
-                            if (!currentScriptState.state_loaded) rerenderJobData.initial_state.counter = 0; // Explicitly 0 if not loaded
-                            else rerenderJobData.initial_state.counter++; // Increment if loaded
-                        }
-                        RTC_Time now_time = g_systemManager->getTime();
-                        rerenderJobData.initial_state.hour = now_time.hour;
-                        rerenderJobData.initial_state.minute = now_time.min;
-                        rerenderJobData.initial_state.second = now_time.sec;
-
-                        log_i("MainCtrl: Queuing re-render job for script '%s', file_id '%s', counter %d",
-                              rerenderJobData.script_id.c_str(), rerenderJobData.file_id.c_str(), rerenderJobData.initial_state.counter);
-                        
-                        RenderJobQueueItem rerenderJobQueueItem;
-                        rerenderJobQueueItem.fromRenderJobData(rerenderJobData);
-
-                        if (xQueueSend(g_renderCommandQueue, &rerenderJobQueueItem, pdMS_TO_TICKS(100)) == pdTRUE) {
-                            currentState = AppState::RENDERING_SCRIPT;
-                        } else {
-                            log_e("MainCtrl: Failed to send re-render job for script '%s'.", currentLoadedScriptId.c_str());
-                            g_displayManager->showMessage("Re-Render Q Fail", 150, 15);
-                            currentState = AppState::IDLE;
-                        }
-                    } else {
-                        log_e("MainCtrl: Failed to get script details for execution for re-render of script '%s'.", currentLoadedScriptId.c_str());
-                        g_displayManager->showMessage("Script Load Fail", 150, 15);
-                        currentState = AppState::IDLE;
-                    }
+                    log_w("MainCtrl: No script currently loaded. Cannot re-render on CONFIRM_ACTION.");
+                    // Attempt to render default if no script is loaded
+                    triggerScriptRender(ScriptManager::DEFAULT_SCRIPT_ID, false, currentState, currentLoadedScriptId);
                 }
             }
-                 // For any other input type, if not fetching or rendering, go to IDLE.
-                 if (currentState != AppState::FETCHING_DATA && currentState != AppState::RENDERING_SCRIPT) {
-                    currentState = AppState::IDLE;
-                 }
+            // For any other input type, or if a render wasn't triggered, manage state.
+            // If a render was triggered, currentState is already RENDERING_SCRIPT.
+            // If not, and we are not fetching, go to IDLE.
+            if (currentState != AppState::FETCHING_DATA && currentState != AppState::RENDERING_SCRIPT) {
+                currentState = AppState::IDLE;
             }
+        } // Closes the 'if (xQueueReceive(g_inputEventQueue...' block.
 
         // Check Render Status Queue (non-blocking)
         if (xQueueReceive(g_renderStatusQueue, &renderResultItem, 0) == pdTRUE) { // Use renderResultItem
@@ -410,19 +435,49 @@ void MainControlTask_Function(void *pvParameters) {
             log_i("MainCtrl: Received render result for '%s'. Success: %s, Interrupted: %s",
                   received_script_id.c_str(), renderResultItem.success ? "Yes":"No", renderResultItem.interrupted ? "Yes":"No");
             
-            if (renderResultItem.success && !renderResultItem.interrupted) {
+            if (renderResultItem.success) {
                 g_scriptManager->saveScriptExecutionState(received_script_id, renderResultItem.final_state);
-            } else if (renderResultItem.interrupted) {
-                g_displayManager->showMessage("Render Interrupted", 300, 15, false, true);
-                vTaskDelay(pdMS_TO_TICKS(1000));
-            } else { // Render failed
-                g_displayManager->showMessage("Render Failed: " + received_script_id, 300, 15, false, true);
-                if (!received_error_message.isEmpty()) {
-                    log_e("Render Error: %s", received_error_message.c_str());
+                if (currentState == AppState::RENDERING_SCRIPT) { // If we were rendering
+                    currentState = AppState::IDLE;
+                    log_i("MainCtrl: Render successful for '%s'. State -> IDLE.", received_script_id.c_str());
                 }
-                vTaskDelay(pdMS_TO_TICKS(2000));
+            } else if (renderResultItem.interrupted) {
+                g_displayManager->showMessage("Render Interrupted", 200, 15, false, false); // Brief, no clear
+                vTaskDelay(pdMS_TO_TICKS(100)); // Short delay
+                if (currentState == AppState::RENDERING_SCRIPT) { // If we were rendering
+                    currentState = AppState::IDLE;
+                    log_i("MainCtrl: Render interrupted for '%s'. State -> IDLE.", received_script_id.c_str());
+                }
+            } else { // Render failed (not success, not interrupted)
+                g_displayManager->showMessage("Render Fail: " + received_script_id, 200, 15, false, false); // Brief, no clear
+                if (!received_error_message.isEmpty()) {
+                    log_e("Render Error for '%s': %s", received_script_id.c_str(), received_error_message.c_str());
+                }
+                vTaskDelay(pdMS_TO_TICKS(100)); // Short delay for message visibility
+
+                String scriptToRetry = "";
+                if (!received_script_id.isEmpty()) {
+                    scriptToRetry = received_script_id;
+                    log_i("MainCtrl: Render failed for '%s'. Re-rendering with saved state.", scriptToRetry.c_str());
+                } else if (!currentLoadedScriptId.isEmpty()) {
+                    scriptToRetry = currentLoadedScriptId;
+                    log_i("MainCtrl: Render failed (unknown script_id in result). Re-rendering current '%s' with saved state.", scriptToRetry.c_str());
+                } else {
+                    log_w("MainCtrl: Render failed, and no script ID available to re-render. Attempting default.");
+                    // scriptToRetry remains empty, triggerScriptRender handles "" as default
+                }
+                
+                bool retryQueued = triggerScriptRender(scriptToRetry, true, currentState, currentLoadedScriptId);
+                
+                if (!retryQueued) {
+                    // Retry was attempted but failed to queue. If we were in RENDERING_SCRIPT state from the failed job, transition to IDLE.
+                    if (currentState == AppState::RENDERING_SCRIPT) {
+                        currentState = AppState::IDLE;
+                        log_w("MainCtrl: Render failed for '%s', and retry also failed to queue. State -> IDLE.", scriptToRetry.c_str());
+                    }
+                }
+                // If retryQueued is true, triggerScriptRender already set currentState = AppState::RENDERING_SCRIPT for the new job.
             }
-            if (currentState == AppState::RENDERING_SCRIPT) currentState = AppState::IDLE;
         }
 
         // Check Fetch Status Queue (non-blocking)
@@ -430,12 +485,22 @@ void MainControlTask_Function(void *pvParameters) {
             lastActivityTime = xTaskGetTickCount();
             
             String fetch_message(fetchResultItem.message); // Construct String from char[]
+            log_i("MainCtrl: Received fetch result. Status: %d, Message: %s", (int)fetchResultItem.status, fetch_message.c_str());
 
-            log_i("MainCtrl: Received fetch result. Status: %d", (int)fetchResultItem.status);
-            g_displayManager->showMessage("Fetch: " + fetch_message, 350, 15, false, true);
-            vTaskDelay(pdMS_TO_TICKS(1500));
+            if (fetchResultItem.status == FetchResultStatus::NO_WIFI) {
+                g_displayManager->showMessage("Fetch: WiFi Fail", 200, 15, false, false); // Brief message
+                // No long delay, immediately attempt re-render
+                if (!currentLoadedScriptId.isEmpty()) {
+                    log_i("MainCtrl: Fetch failed (NO_WIFI). Re-rendering current script '%s' with saved state.", currentLoadedScriptId.c_str());
+                    triggerScriptRender(currentLoadedScriptId, true, currentState, currentLoadedScriptId); // true for useAsIsState
+                } else {
+                    log_w("MainCtrl: Fetch failed (NO_WIFI), but no current script loaded to re-render.");
+                    vTaskDelay(pdMS_TO_TICKS(1000)); // Show message a bit longer if no re-render
+                }
+            } else if (fetchResultItem.status == FetchResultStatus::SUCCESS) {
+                g_displayManager->showMessage("Fetch: " + fetch_message, 350, 15, false, true); // Show success message
+                vTaskDelay(pdMS_TO_TICKS(1000)); // Display success message for a bit
 
-            if (fetchResultItem.status == FetchResultStatus::SUCCESS) {
                 g_systemManager->updateLastFetchTimestamp();
                 if (g_systemManager->isFullRefreshIntended()) {
                     g_systemManager->setFullRefreshIntended(false);
@@ -446,7 +511,7 @@ void MainControlTask_Function(void *pvParameters) {
                     g_displayManager->showMessage("New Scripts!", 400, 15);
                     vTaskDelay(pdMS_TO_TICKS(1000));
                     bool currentStillValid = false;
-                    JsonDocument listDoc;
+                    DynamicJsonDocument listDoc(JSON_DOC_CAPACITY_SCRIPT_LIST);
                     if(g_scriptManager->loadScriptList(listDoc) && listDoc.is<JsonArray>()){
                         for(JsonObject item : listDoc.as<JsonArray>()){
                             if(item["id"].as<String>() == currentLoadedScriptId){
@@ -457,8 +522,10 @@ void MainControlTask_Function(void *pvParameters) {
                     }
                     if(!currentStillValid && !currentLoadedScriptId.isEmpty()){
                         log_i("MainCtrl: Current script '%s' no longer in list after fetch. Rendering first available.", currentLoadedScriptId.c_str());
-                        RenderJobData newJobData; ScriptExecState state; // Use RenderJobData
-                        if(g_scriptManager->getScriptForExecution(newJobData.script_id, newJobData.file_id, newJobData.script_content, state)){
+                        RenderJobData newJobData; // script_content is no longer a member
+                        ScriptExecState state;
+                        // Get script ID, file ID, and state. Content is not loaded here.
+                        if(g_scriptManager->getScriptForExecution(newJobData.script_id, newJobData.file_id, state)){
                             if (newJobData.script_id.isEmpty()) { // script_id is humanId
                                 log_e("MainCtrl: getScriptForExecution (after fetch) returned empty human_id. Aborting render.");
                             } else {
@@ -468,7 +535,7 @@ void MainControlTask_Function(void *pvParameters) {
                                 newJobData.initial_state.hour = now_time.hour; newJobData.initial_state.minute = now_time.min; newJobData.initial_state.second = now_time.sec;
                                 
                                 RenderJobQueueItem newJobQueueItem;
-                                newJobQueueItem.fromRenderJobData(newJobData); // This now copies human_id, file_id, initial_state
+                                newJobQueueItem.fromRenderJobData(newJobData); // Copies human_id, file_id, initial_state
                                 if (xQueueSend(g_renderCommandQueue, &newJobQueueItem, pdMS_TO_TICKS(100)) == pdTRUE) {
                                     currentState = AppState::RENDERING_SCRIPT;
                                     currentLoadedScriptId = newJobData.script_id; // humanId
@@ -477,11 +544,26 @@ void MainControlTask_Function(void *pvParameters) {
                         }
                     }
                 }
+            } else if (fetchResultItem.status == FetchResultStatus::INTERRUPTED_BY_USER) {
+                g_displayManager->showMessage("Fetch Interrupted", 200, 15, false, false);
+                vTaskDelay(pdMS_TO_TICKS(100));
+                // User interrupted, new action likely to follow.
+            } else { // Other non-success, non-NO_WIFI, non-INTERRUPTED statuses (e.g., GENUINE_ERROR)
+                g_displayManager->showMessage("Fetch Err: " + fetch_message, 200, 15, false, false); // Brief, no clear
+                vTaskDelay(pdMS_TO_TICKS(100)); // Short delay for message visibility
+
+                if (!currentLoadedScriptId.isEmpty()) {
+                    log_i("MainCtrl: Fetch failed (Error: %s). Re-rendering current script '%s' with saved state.", fetch_message.c_str(), currentLoadedScriptId.c_str());
+                    triggerScriptRender(currentLoadedScriptId, true, currentState, currentLoadedScriptId);
+                } else {
+                    log_w("MainCtrl: Fetch failed (Error: %s), but no current script loaded. Attempting default render.", fetch_message.c_str());
+                    triggerScriptRender("", true, currentState, currentLoadedScriptId); // "" triggers default
+                }
             }
+
             // If a fetch operation completed:
-            // - If the system was purely in FETCHING_DATA state, transition to IDLE.
-            // - If a RENDER operation was started during the fetch (current state is RENDERING_SCRIPT),
-            //   then keep the state as RENDERING_SCRIPT.
+            // - If the system was purely in FETCHING_DATA state (and no re-render was triggered), transition to IDLE.
+            // - If a RENDER operation was started (current state is RENDERING_SCRIPT), keep that state.
             if (currentState == AppState::FETCHING_DATA) {
                  currentState = AppState::IDLE;
             }
@@ -503,31 +585,29 @@ void MainControlTask_Function(void *pvParameters) {
             // Removed: g_displayManager->showMessage("Awake!", 50, 15, true, true);
             // Removed: vTaskDelay(pdMS_TO_TICKS(500));
 
-            RenderJobData wakeRenderJobData; // Use RenderJobData
-            ScriptExecState wakeScriptState;
-            if (g_scriptManager->getScriptForExecution(wakeRenderJobData.script_id, wakeRenderJobData.file_id, wakeRenderJobData.script_content, wakeScriptState)) {
-                if (wakeRenderJobData.script_id.isEmpty()) { // script_id is humanId
-                    log_e("MainCtrl: getScriptForExecution (after wakeup) returned empty human_id. Aborting render.");
+            String scriptIdAfterWakeup = currentLoadedScriptId; // Default to current
+            if (scriptIdAfterWakeup.isEmpty()) {
+                // If no script was loaded before sleep, try to get the default/first one
+                String tempWakeFileIdUnused; // Not used here
+                ScriptExecState tempWakeState;
+                // Get script ID, file ID (unused), and state. Content not loaded here.
+                if(g_scriptManager->getScriptForExecution(scriptIdAfterWakeup, tempWakeFileIdUnused, tempWakeState)){
+                    // scriptIdAfterWakeup is now set
                 } else {
-                    wakeRenderJobData.initial_state = wakeScriptState;
-                    if (g_systemManager->getWakeupCause() == ESP_SLEEP_WAKEUP_TIMER) {
-                         if (wakeScriptState.state_loaded) wakeRenderJobData.initial_state.counter++;
-                         else wakeRenderJobData.initial_state.counter = 0;
-                    }
-                    RTC_Time now_time = g_systemManager->getTime();
-                    wakeRenderJobData.initial_state.hour = now_time.hour;
-                    wakeRenderJobData.initial_state.minute = now_time.min;
-                    wakeRenderJobData.initial_state.second = now_time.sec;
-
-                    RenderJobQueueItem wakeRenderJobQueueItem;
-                    wakeRenderJobQueueItem.fromRenderJobData(wakeRenderJobData); // This now copies human_id, file_id, initial_state
-                    if (xQueueSend(g_renderCommandQueue, &wakeRenderJobQueueItem, pdMS_TO_TICKS(100)) == pdTRUE) {
-                        currentState = AppState::RENDERING_SCRIPT;
-                        currentLoadedScriptId = wakeRenderJobData.script_id; // humanId
-                    }
+                    scriptIdAfterWakeup = ScriptManager::DEFAULT_SCRIPT_ID;
                 }
             }
 
+            if (!scriptIdAfterWakeup.isEmpty()) {
+                // For timer wakeup, useAsIsState = false (fresh render, increments counter, updates time)
+                // For GPIO wakeup, an InputEvent will be generated and handled, leading to a fresh render.
+                // So, any direct render after wakeup should be 'fresh'.
+                log_i("MainCtrl: Woke up. Triggering render for script '%s'.", scriptIdAfterWakeup.c_str());
+                triggerScriptRender(scriptIdAfterWakeup, false, currentState, currentLoadedScriptId);
+            } else {
+                log_e("MainCtrl: Woke up, but failed to determine a script to render.");
+            }
+            
             // 2. If timer wakeup, check if fetch is due
             if (g_systemManager->getWakeupCause() == ESP_SLEEP_WAKEUP_TIMER) {
                 int ly, lm, ld, lh, lmin;
@@ -593,33 +673,27 @@ void RenderTask_Function(void *pvParameters) {
     for (;;) {
         esp_task_wdt_reset(); // Reset WDT at the start of each loop iteration.
         if (xQueueReceive(g_renderCommandQueue, &jobItem, queueReceiveTimeout) == pdTRUE) {
-            // Construct RenderJobData, loading script content here
-            RenderJobData jobData;
-            jobData.script_id = String(jobItem.human_id); // This is human_id
-            jobData.file_id = String(jobItem.file_id);
-            jobData.initial_state = jobItem.initial_state;
+            // Construct RenderJobData. Script content will be loaded into jobData.script_content.
+            RenderJobData jobDataForRenderCtrl; // This will hold all data for RenderController
+            jobDataForRenderCtrl.script_id = String(jobItem.human_id);
+            jobDataForRenderCtrl.file_id = String(jobItem.file_id);
+            jobDataForRenderCtrl.initial_state = jobItem.initial_state;
+            
+            String script_content_for_parser; // Local string to hold content for parser
 
-            log_i("RenderTask: Received job for human_id: %s, file_id: %s", jobData.script_id.c_str(), jobData.file_id.c_str());
+            log_i("RenderTask: Received job for human_id: %s, file_id: %s", jobDataForRenderCtrl.script_id.c_str(), jobDataForRenderCtrl.file_id.c_str());
 
-            // Check if it's the default script
-            if (jobData.file_id == "default_fallback_script") {
-                log_i("RenderTask: Using built-in default script content for '%s'", jobData.script_id.c_str());
-                // Default script content will be provided by ScriptManager
-                if (!g_scriptManager->loadScriptContent(jobData.file_id, jobData.script_content)) {
-                    // Even if file load fails, we should still have the default content in some cases
-                    if (jobData.script_content.isEmpty()) {
-                        // This shouldn't happen with our changes to getScriptForExecution
-                        log_w("RenderTask: Default script content is empty, attempting to load built-in content");
-                        // Get default content directly from ScriptManager constant
-                        String defaultId, defaultFileId;
-                        ScriptExecState defaultState;
-                        g_scriptManager->getScriptForExecution(defaultId, defaultFileId, jobData.script_content, defaultState);
-                    }
-                }
-            } else if (!g_scriptManager->loadScriptContent(jobData.file_id, jobData.script_content)) {
-                log_e("RenderTask: Failed to load script content for fileId: %s (humanId: %s)", jobData.file_id.c_str(), jobData.script_id.c_str());
+            // Load script content
+            if (jobDataForRenderCtrl.file_id == ScriptManager::DEFAULT_SCRIPT_ID) {
+                log_i("RenderTask: Using built-in default script content for '%s'", jobDataForRenderCtrl.script_id.c_str());
+                // Get default content directly from ScriptManager constant or method
+                // For simplicity, assuming ScriptManager::loadScriptContent handles DEFAULT_SCRIPT_ID correctly by returning built-in content.
+                // Or, we can assign it directly here:
+                script_content_for_parser = ScriptManager::DEFAULT_SCRIPT_CONTENT; // Access public static member
+            } else if (!g_scriptManager->loadScriptContent(jobDataForRenderCtrl.file_id, script_content_for_parser)) {
+                log_e("RenderTask: Failed to load script content for fileId: %s (humanId: %s)", jobDataForRenderCtrl.file_id.c_str(), jobDataForRenderCtrl.script_id.c_str());
                 RenderResultData errorResultData;
-                errorResultData.script_id = jobData.script_id;
+                errorResultData.script_id = jobDataForRenderCtrl.script_id;
                 errorResultData.success = false;
                 errorResultData.interrupted = false;
                 errorResultData.error_message = "RenderTask: Failed to load script content.";
@@ -628,19 +702,46 @@ void RenderTask_Function(void *pvParameters) {
                 RenderResultQueueItem errorResultQueueItem;
                 errorResultQueueItem.fromRenderResultData(errorResultData);
                 if (xQueueSend(g_renderStatusQueue, &errorResultQueueItem, pdMS_TO_TICKS(100)) != pdTRUE) {
-                    log_e("RenderTask: Failed to send error render status for %s", jobData.script_id.c_str());
+                    log_e("RenderTask: Failed to send error render status for %s", jobDataForRenderCtrl.script_id.c_str());
                 }
                 continue; // Skip to next job
             }
-            log_i("RenderTask: Content loaded for script ID: %s", jobData.script_id.c_str());
+            log_i("RenderTask: Content loaded for script ID: %s", jobDataForRenderCtrl.script_id.c_str());
             
             RenderResultData resultData; // To store result from RenderController
+
+            // Create a temporary RenderJobData that includes the script_content for the parser
+            // This is a bit awkward as RenderJobData struct itself doesn't have script_content anymore.
+            // RenderController::renderScript expects a struct with content.
+            // Let's define a temporary struct or pass content separately to renderCtrl.renderScript.
+            // For minimal change to RenderController, we'll pass content separately.
+            // Modifying RenderController::renderScript signature:
+            // RenderResultData renderScript(const String& scriptId, const String& fileId, const String& scriptContent, const ScriptExecState& initialState);
+
+            // Create a temporary struct for RenderController, or adapt RenderController
+            // For now, let's assume RenderController's renderScript method is adapted to take content separately.
+            // Or, we make a local struct for RenderController that *does* include content.
+            // Let's make RenderController::renderScript take content as a separate parameter.
+            // This requires changing RenderController.h and .cpp.
+            // For now, to proceed with this file's changes, we'll assume RenderController is adapted.
+            // The RenderJobData passed to renderCtrl.renderScript will be jobDataForRenderCtrl,
+            // and script_content_for_parser will be passed as an additional argument.
+            // This means RenderController.h/cpp needs:
+            // RenderResultData renderScript(const RenderJobData& job_meta_data, const String& script_content_payload);
 
             if (g_displayManager->lockEPD(pdMS_TO_TICKS(1000))) { // Lock EPD, 1s timeout
                 // Clear any pending interrupt bit before starting
                 xEventGroupClearBits(g_renderTaskEventFlags, RENDER_INTERRUPT_BIT);
                 
-                resultData = renderCtrl.renderScript(jobData); // This will use the canvas and push it
+                // Pass jobDataForRenderCtrl (meta) and script_content_for_parser (payload)
+                // This requires RenderController::renderScript to be updated.
+                // For this commit, we'll assume RenderController is updated.
+                // A struct specifically for RenderController input might be cleaner.
+                // Let's assume RenderController::renderScript is updated to:
+                // renderScript(const String& script_id, const String& script_content, const ScriptExecState& initial_state)
+                // (file_id is not directly needed by parser/runtime if content is provided)
+                
+                resultData = renderCtrl.renderScript(jobDataForRenderCtrl.script_id, script_content_for_parser, jobDataForRenderCtrl.initial_state);
                 
                 // Check if MainControlTask signaled an interrupt during the process
                 EventBits_t uxBits = xEventGroupGetBits(g_renderTaskEventFlags);
@@ -657,26 +758,26 @@ void RenderTask_Function(void *pvParameters) {
                 // Directly call canvas push since mutex is already held by RenderTask.
                 M5EPD_Canvas* canvas = g_displayManager->getCanvas();
                 if (canvas) {
-                    canvas->pushCanvas(0, 0, UPDATE_MODE_GLD16); // Or appropriate mode
+                    canvas->pushCanvas(0, 0, UPDATE_MODE_GC16); // Or appropriate mode
                 } else {
                     log_e("RenderTask: Failed to get canvas from DisplayManager.");
                 }
                 
                 g_displayManager->unlockEPD(); // Unlock EPD
             } else {
-                log_e("RenderTask: Failed to lock EPD for rendering script %s", jobData.script_id.c_str());
-                resultData.script_id = jobData.script_id; // Populate for error reporting
+                log_e("RenderTask: Failed to lock EPD for rendering script %s", jobDataForRenderCtrl.script_id.c_str());
+                resultData.script_id = jobDataForRenderCtrl.script_id; // Populate for error reporting
                 resultData.success = false;
                 resultData.interrupted = false; // Not interrupted by user, but by system issue
                 resultData.error_message = "Failed to acquire display lock for rendering.";
-                // final_state will be default
+                resultData.final_state = jobDataForRenderCtrl.initial_state; // Preserve initial state on this type of error
             }
 
             RenderResultQueueItem resultQueueItem;
             resultQueueItem.fromRenderResultData(resultData); // Convert to char[] based for queue
 
             if (xQueueSend(g_renderStatusQueue, &resultQueueItem, pdMS_TO_TICKS(100)) != pdTRUE) {
-                log_e("RenderTask: Failed to send render status for %s", jobData.script_id.c_str());
+                log_e("RenderTask: Failed to send render status for %s", jobDataForRenderCtrl.script_id.c_str());
             }
         }
     }
@@ -693,8 +794,8 @@ void FetchTask_Function(void *pvParameters) {
     }
 
     FetchJob job; // FetchJob is simple, no Strings, can remain as is
-    JsonDocument serverListDoc; // Use JsonDocument - declare outside loop if reused, or inside if per-job
-    JsonDocument scriptContentDoc; // Use JsonDocument - declare outside loop if reused, or inside if per-job
+    DynamicJsonDocument serverListDoc(JSON_DOC_CAPACITY_SCRIPT_LIST);
+    DynamicJsonDocument scriptContentDoc(SCRIPT_CONTENT_JSON_CAPACITY); // From event_defs.h capacity
     
     // WDT timeout for FetchTask is 120s. We'll use a 60s queue receive timeout.
     const TickType_t queueReceiveTimeout = pdMS_TO_TICKS(60000);

@@ -40,7 +40,7 @@ struct InputEvent {
 struct RenderJobData {
     String script_id; // This is human_id
     String file_id;   // This is the fileId for loading content
-    String script_content;
+    // String script_content; // Removed: RenderTask will load content based on file_id
     ScriptExecState initial_state;
 };
 

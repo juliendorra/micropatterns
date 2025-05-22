@@ -53,17 +53,7 @@ bool DisplayManager::initializeEPD() {
     return false;
 }
 
-void DisplayManager::_drawTextInternal(const String& text, int y_offset, uint16_t color) {
-    // Assumes _canvas is valid and mutex is held
-    _canvas.setTextColor(color);
-    // Calculate text dimensions for background rectangle (optional, for better visibility)
-    // int16_t x1, y1; uint16_t w, h;
-    // _canvas.getTextBounds(text, _canvas.width()/2, y_offset, &x1, &y1, &w, &h);
-    // _canvas.fillRect(x1 - 5, y1 - 5, w + 10, h + 10, (color == 0 ? 15 : 0) ); // Contrast background
-
-    _canvas.drawString(text, _canvas.width() / 2, y_offset);
-    log_i("DisplayManager: Drawing message: %s", text.c_str());
-}
+// _drawTextInternal removed, logic incorporated into showMessage.
 
 void DisplayManager::showMessage(const String& text, int y_offset, uint16_t color, bool full_update, bool clear_first) {
     if (!_isInitialized) {
@@ -73,10 +63,34 @@ void DisplayManager::showMessage(const String& text, int y_offset, uint16_t colo
     if (xSemaphoreTake(_epdMutex, pdMS_TO_TICKS(500)) == pdTRUE) { // Wait up to 500ms
         if (clear_first) {
             _canvas.fillCanvas(0); // White
+        } else {
+            // Draw a small white background rectangle behind the text
+            // Ensure text properties are set as expected by getTextBounds and drawString
+            // Default text size 3 and TC_DATUM are set in initializeEPD.
+            // If other parts of the code change these, they might need to be reset here.
+            // _canvas.setTextDatum(TC_DATUM) is set in initializeEPD.
+            // _canvas.setTextSize(3) is set in initializeEPD.
+            
+            uint16_t text_w = _canvas.textWidth(text);
+            uint16_t text_h = _canvas.fontHeight(); // Using current font height
+
+            // Calculate top-left (x1, y1) of the text based on TC_DATUM
+            // For TC_DATUM, drawString(text, x_center, y_top)
+            // So, x1 = x_center - (text_w / 2)
+            // And y1 = y_top
+            int16_t x1 = (_canvas.width() / 2) - (text_w / 2);
+            int16_t y1 = y_offset;
+            
+            const int16_t padding = 5; // Padding around the text for the background
+            // Draw the white rectangle.
+            _canvas.fillRect(x1 - padding, y1 - padding, text_w + (2 * padding), text_h + (2 * padding), 0 /* WHITE */);
         }
         
-        // Simple text drawing, centered
-        _drawTextInternal(text, y_offset, color);
+        // Draw the actual text
+        _canvas.setTextColor(color); // Set text color
+        // _canvas.setTextDatum(TC_DATUM); // Ensure datum is correct if changed elsewhere
+        _canvas.drawString(text, _canvas.width() / 2, y_offset);
+        log_i("DisplayManager: Drawing message: \"%s\"", text.c_str());
 
         _canvas.pushCanvas(0, 0, full_update ? UPDATE_MODE_GC16 : UPDATE_MODE_DU4);
         

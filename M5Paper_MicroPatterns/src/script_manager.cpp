@@ -494,9 +494,9 @@ bool ScriptManager::loadScriptContent(const String &fileId, String &outContent)
         {
             log_w("loadScriptContent: Path does not exist: %s (for actualFileId: %s, original fileId: %s)", path.c_str(), actualFileId.c_str(), fileId.c_str());
             bool recovered = false;
+            String humanIdForRecovery = ""; // Declare here
 
             // Determine the humanId we are trying to load content for.
-            String humanIdForRecovery = "";
             if (!actualFileId.startsWith("s")) { // If actualFileId was a humanId initially (meaning fileId was humanId)
                 humanIdForRecovery = actualFileId;
             } else { // actualFileId is 's'-style. Find its humanId from listDoc.
@@ -513,14 +513,14 @@ bool ScriptManager::loadScriptContent(const String &fileId, String &outContent)
                         }
                     }
                 }
-            }
+            } // <<<< Corrected missing brace here
 
-            if (humanIdForRecovery.isEmpty()) {
+            if (humanIdForRecovery.isEmpty()) { // This is the if for the else at 520
                 log_w("loadScriptContent: Could not determine humanId for actualFileId '%s'. Cannot recover.", actualFileId.c_str());
-            } else {
+            } else { // This is the else at 520
                 log_i("loadScriptContent: Initial path failed for actualFileId '%s'. Attempting recovery for humanId '%s'.", actualFileId.c_str(), humanIdForRecovery.c_str());
                 // Re-load listDoc to ensure we have the latest version after any ensureUniqueFileIds_nolock calls.
-                JsonDocument freshListDoc;
+                JsonDocument freshListDoc; // Changed from DynamicJsonDocument
                 if (loadScriptList(freshListDoc) && freshListDoc.is<JsonArray>()) { // loadScriptList handles mutex internally
                     for (JsonObjectConst scriptItemConst : freshListDoc.as<JsonArray>()) { // Iterate with JsonObjectConst
                         if (!scriptItemConst["id"].isNull() && scriptItemConst["id"].as<String>() == humanIdForRecovery) {
@@ -965,7 +965,7 @@ bool ScriptManager::loadScriptExecutionState(const String &humanId, ScriptExecSt
             return false;
         }
 
-        JsonDocument statesDoc; // Use JsonDocument
+        DynamicJsonDocument statesDoc(JSON_DOC_CAPACITY_SCRIPT_STATES);
         DeserializationError error = deserializeJson(statesDoc, file);
         file.close();
 
@@ -1167,7 +1167,7 @@ bool ScriptManager::saveScriptExecutionState(const String &humanId, const Script
 
     if (xSemaphoreTake(_spiffsMutex, pdMS_TO_TICKS(500)) == pdTRUE)
     {
-        JsonDocument statesDoc; // Use JsonDocument
+        DynamicJsonDocument statesDoc(JSON_DOC_CAPACITY_SCRIPT_STATES);
 
         File file = SPIFFS.open(SCRIPT_STATES_PATH, FILE_READ);
         if (file && file.size() > 0 && !file.isDirectory())
@@ -1302,14 +1302,14 @@ bool ScriptManager::selectNextScript(bool moveUp, String &outSelectedHumanId, St
     return false;
 }
 
-bool ScriptManager::getScriptForExecution(String &outHumanId, String &outFileId, String &outContent, ScriptExecState &outInitialState)
+bool ScriptManager::getScriptForExecution(String &outHumanId, String &outFileId, ScriptExecState &outInitialState)
 {
     log_i("getScriptForExecution: Starting script selection process");
 
     // Initialize outputs with empty/default values
     outHumanId = "";
     outFileId = "";
-    outContent = "";
+    // outContent = ""; // Content is no longer handled here
     outInitialState = ScriptExecState();
 
     // Step 1: Try to load the current script ID
@@ -1319,7 +1319,7 @@ bool ScriptManager::getScriptForExecution(String &outHumanId, String &outFileId,
           idFound ? "true" : "false", idFound ? humanIdToLoad.c_str() : "null");
 
     // Step 2: Load the script list
-    JsonDocument listDoc;                      // Use JsonDocument
+    DynamicJsonDocument listDoc(JSON_DOC_CAPACITY_SCRIPT_LIST);
     bool listLoaded = loadScriptList(listDoc); // Mutex handled
 
     if (!listLoaded)
@@ -1505,9 +1505,9 @@ bool ScriptManager::getScriptForExecution(String &outHumanId, String &outFileId,
             log_w("getScriptForExecution: No valid scripts in list. Using built-in default script.");
             outHumanId = DEFAULT_SCRIPT_ID;
             outFileId = DEFAULT_SCRIPT_ID;
-            outContent = DEFAULT_SCRIPT_CONTENT;
+            // outContent = DEFAULT_SCRIPT_CONTENT; // Content is no longer handled here
             outInitialState.state_loaded = false;
-            log_i("getScriptForExecution: Returning built-in default script");
+            log_i("getScriptForExecution: Returning built-in default script ID and fileId");
             return true;
         }
     }
@@ -1518,7 +1518,7 @@ bool ScriptManager::getScriptForExecution(String &outHumanId, String &outFileId,
         log_i("getScriptForExecution: Failed to determine valid script. Using built-in default.");
         outHumanId = DEFAULT_SCRIPT_ID;
         outFileId = DEFAULT_SCRIPT_ID;
-        outContent = DEFAULT_SCRIPT_CONTENT;
+        // outContent = DEFAULT_SCRIPT_CONTENT; // Content is no longer handled here
         outInitialState.state_loaded = false;
         return true;
     }
@@ -1529,47 +1529,39 @@ bool ScriptManager::getScriptForExecution(String &outHumanId, String &outFileId,
     // Check if it's the default script ID, if so use built-in content directly
     if (fileIdToLoadContent == DEFAULT_SCRIPT_ID)
     {
-        log_i("getScriptForExecution: Using built-in default script content directly");
+        log_i("getScriptForExecution: Identified as default script ID. RenderTask will use built-in content.");
         outHumanId = DEFAULT_SCRIPT_ID;
         outFileId = DEFAULT_SCRIPT_ID;
-        outContent = DEFAULT_SCRIPT_CONTENT;
-        outInitialState.state_loaded = false;
+        // outContent = DEFAULT_SCRIPT_CONTENT; // Content is no longer handled here
+        outInitialState.state_loaded = false; // Default script always starts fresh for state purposes here
         return true;
     }
 
-    if (loadScriptContent(fileIdToLoadContent, outContent))
+    // For non-default scripts, we don't load content here anymore.
+    // We just confirm the humanId and fileId, and load its state.
+    outHumanId = humanIdToLoad;
+    outFileId = fileIdToLoadContent;
+
+    // Try to load execution state
+    bool stateLoaded = loadScriptExecutionState(outHumanId, outInitialState);
+    if (!stateLoaded)
     {
-        outHumanId = humanIdToLoad;
-        outFileId = fileIdToLoadContent;
-
-        // Try to load execution state
-        bool stateLoaded = loadScriptExecutionState(outHumanId, outInitialState);
-        if (!stateLoaded)
-        {
-            log_i("getScriptForExecution: No saved state for script '%s'. Using defaults.", outHumanId.c_str());
-            outInitialState = ScriptExecState();
-            outInitialState.state_loaded = false;
-        }
-        else
-        {
-            log_i("getScriptForExecution: Loaded execution state for script '%s'", outHumanId.c_str());
-        }
-
-        log_i("getScriptForExecution: Successfully loaded script '%s' (content length: %u bytes)",
-              outHumanId.c_str(), outContent.length());
-        return true;
+        log_i("getScriptForExecution: No saved state for script '%s'. Using defaults.", outHumanId.c_str());
+        outInitialState = ScriptExecState(); // Ensure it's reset
+        outInitialState.state_loaded = false;
     }
     else
     {
-        // Failed to load content - fall back to default
-        log_i("getScriptForExecution: Failed to load content for script '%s' (fileId '%s'). Using default.",
-              humanIdToLoad.c_str(), fileIdToLoadContent.c_str());
-        outHumanId = DEFAULT_SCRIPT_ID;
-        outFileId = DEFAULT_SCRIPT_ID;
-        outContent = DEFAULT_SCRIPT_CONTENT;
-        outInitialState.state_loaded = false;
-        return true;
+        log_i("getScriptForExecution: Loaded execution state for script '%s'", outHumanId.c_str());
     }
+
+    log_i("getScriptForExecution: Successfully determined script '%s' (fileId '%s') for execution.",
+            outHumanId.c_str(), outFileId.c_str());
+    return true;
+    // NOTE: The fallback to default script if loadScriptContent failed is removed,
+    // because loadScriptContent is no longer called here.
+    // RenderTask will handle content loading failures.
+    // If getScriptForExecution reaches this point, it means it found a valid script entry (or decided on default earlier).
 }
 
 void ScriptManager::clearAllScriptData()
@@ -1632,7 +1624,7 @@ void ScriptManager::cleanupOrphanedStates(const JsonArrayConst &validScriptList)
     if (xSemaphoreTake(_spiffsMutex, pdMS_TO_TICKS(500)) == pdTRUE)
     {
         log_i("Cleaning up orphaned script execution states...");
-        JsonDocument currentStatesDoc; // Use JsonDocument
+        DynamicJsonDocument currentStatesDoc(JSON_DOC_CAPACITY_SCRIPT_STATES);
         File statesFile = SPIFFS.open(SCRIPT_STATES_PATH, FILE_READ);
         bool statesLoaded = false;
 

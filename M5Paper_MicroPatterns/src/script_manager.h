@@ -8,13 +8,16 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h" // For mutex
 
+// Define constants for JSON document capacities
+const size_t JSON_DOC_CAPACITY_SCRIPT_LIST = 1024; // For list.json, observed size 378 bytes
+const size_t JSON_DOC_CAPACITY_SCRIPT_STATES = 2048; // For script_states.json, can grow with more scripts
+
 class ScriptManager
 {
 public:
     ScriptManager();
     ~ScriptManager();
-
-    bool initialize(); // Initializes SPIFFS and creates directories
+    bool initialize(); // General initialization for ScriptManager
 
     // Script List Management
     // Loads script list into the provided JsonDocument. Returns true on success.
@@ -40,8 +43,8 @@ public:
 
     // Get Script for Execution
     // Tries to load current script. If not found, tries first script. If none, uses default.
-    // Returns humanId, fileId (for content loading), and content.
-    bool getScriptForExecution(String &outHumanId, String &outFileId, String &outContent, ScriptExecState &outInitialState);
+    // Returns humanId, fileId (for content loading), and initialState. Content is loaded by RenderTask.
+    bool getScriptForExecution(String &outHumanId, String &outFileId, ScriptExecState &outInitialState);
 
     // FileId generation and management
     String generateShortFileId(const String& humanId); // Public method, handles mutex
@@ -61,8 +64,10 @@ private:
     static const char *SCRIPT_STATES_PATH;
 
     // Default script content
+public: // Made DEFAULT_SCRIPT_ID and DEFAULT_SCRIPT_CONTENT public
     static const char *DEFAULT_SCRIPT_CONTENT;
     static const char *DEFAULT_SCRIPT_ID;
+private:
 
     // FileId generation and management
     /**
