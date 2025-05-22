@@ -44,7 +44,7 @@ public:
     bool getScriptForExecution(String &outHumanId, String &outFileId, String &outContent, ScriptExecState &outInitialState);
 
     // FileId generation and management
-    String generateShortFileId(const String& humanId);
+    String generateShortFileId(const String& humanId); // Public method, handles mutex
 
     // Maintenance
     void clearAllScriptData();                                          // Deletes all script files and list.json
@@ -72,14 +72,7 @@ private:
      * Internal version that assumes the mutex is already held.
      */
     void ensureUniqueFileIds_nolock(JsonDocument& listDoc);
-    
-    /**
-     * Scans content files and the script list to find the highest fileId number in use.
-     * This is used to ensure new fileIds are unique and don't overwrite existing content.
-     * Note: This method takes the mutex internally.
-     */
-    int getHighestFileIdNumber();
-    
+
     // Counter for generating new sequential fileIds
     int _nextFileIdCounter = 0;
 
@@ -87,6 +80,8 @@ private:
 
     // Internal helper methods that assume mutex is already taken
     bool saveScriptList_nolock(JsonDocument &listDoc);
+    int _getHighestFileIdNumber_nolock(); // Private helper, assumes mutex is held
+    String _generateShortFileId_nolock(const String& humanId); // Private helper, assumes mutex is held
 };
 
 #endif // SCRIPT_MANAGER_H

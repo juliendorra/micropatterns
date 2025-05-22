@@ -288,7 +288,7 @@ void MainControlTask_Function(void *pvParameters) {
             if (inputEvent.type == InputEventType::NEXT_SCRIPT || inputEvent.type == InputEventType::PREVIOUS_SCRIPT) {
                 String selectedHumanId, selectedName;
                 if (g_scriptManager->selectNextScript(inputEvent.type == InputEventType::PREVIOUS_SCRIPT, selectedHumanId, selectedName)) {
-                    g_displayManager->showMessage("Selected: " + selectedName, 250, 15, true, true);
+                    g_displayManager->showMessage(selectedName, 250, 15, true, true);
                     vTaskDelay(pdMS_TO_TICKS(500)); // Display selection message
 
                     currentLoadedScriptId = selectedHumanId; // Update tracking
@@ -340,21 +340,65 @@ void MainControlTask_Function(void *pvParameters) {
                     }
                 }
             } else if (inputEvent.type == InputEventType::CONFIRM_ACTION) {
-                // PUSH button - current logic does not trigger fetch or re-render.
-                log_i("MainCtrl: Confirm action received.");
-                // If PUSH should re-render, logic would be similar to above.
-                // If PUSH should trigger fetch, a FetchJob would be sent.
-                // For now, no action that changes state or queues jobs.
-                 if (currentState != AppState::FETCHING_DATA && currentState != AppState::RENDERING_SCRIPT) {
-                    currentState = AppState::IDLE;
-                 }
-            } else {
+                log_i("MainCtrl: Confirm action received. Attempting to re-render current script.");
+
+                if (currentState == AppState::RENDERING_SCRIPT) { // Only block if already rendering
+                    log_w("MainCtrl: Already rendering. Ignoring CONFIRM_ACTION for re-render.");
+                } else if (currentLoadedScriptId.isEmpty()) {
+                    log_w("MainCtrl: No script currently loaded. Cannot re-render on CONFIRM_ACTION.");
+                    // If fetching, currentState remains FETCHING_DATA. If IDLE, remains IDLE.
+                } else {
+                    // Re-render the current script
+                    RenderJobData rerenderJobData;
+                    ScriptExecState currentScriptState;
+                    String currentFileId;
+                    String tempContent; // script_content from getScriptForExecution, not strictly needed for queue item
+
+                    if (g_scriptManager->getScriptForExecution(currentLoadedScriptId, currentFileId, tempContent, currentScriptState)) {
+                        rerenderJobData.script_id = currentLoadedScriptId;
+                        rerenderJobData.file_id = currentFileId;
+                        rerenderJobData.initial_state = currentScriptState;
+
+                        if (currentScriptState.state_loaded) {
+                            rerenderJobData.initial_state.counter++;
+                        } else {
+                            // If state wasn't loaded (e.g. first time for this script), start counter at 0.
+                            // getScriptForExecution should initialize counter to 0 if not loaded.
+                            // This ensures counter increments correctly or starts fresh.
+                            rerenderJobData.initial_state.counter = currentScriptState.counter; // Use value from getScriptForExecution
+                            if (!currentScriptState.state_loaded) rerenderJobData.initial_state.counter = 0; // Explicitly 0 if not loaded
+                            else rerenderJobData.initial_state.counter++; // Increment if loaded
+                        }
+                        RTC_Time now_time = g_systemManager->getTime();
+                        rerenderJobData.initial_state.hour = now_time.hour;
+                        rerenderJobData.initial_state.minute = now_time.min;
+                        rerenderJobData.initial_state.second = now_time.sec;
+
+                        log_i("MainCtrl: Queuing re-render job for script '%s', file_id '%s', counter %d",
+                              rerenderJobData.script_id.c_str(), rerenderJobData.file_id.c_str(), rerenderJobData.initial_state.counter);
+                        
+                        RenderJobQueueItem rerenderJobQueueItem;
+                        rerenderJobQueueItem.fromRenderJobData(rerenderJobData);
+
+                        if (xQueueSend(g_renderCommandQueue, &rerenderJobQueueItem, pdMS_TO_TICKS(100)) == pdTRUE) {
+                            currentState = AppState::RENDERING_SCRIPT;
+                        } else {
+                            log_e("MainCtrl: Failed to send re-render job for script '%s'.", currentLoadedScriptId.c_str());
+                            g_displayManager->showMessage("Re-Render Q Fail", 150, 15);
+                            currentState = AppState::IDLE;
+                        }
+                    } else {
+                        log_e("MainCtrl: Failed to get script details for execution for re-render of script '%s'.", currentLoadedScriptId.c_str());
+                        g_displayManager->showMessage("Script Load Fail", 150, 15);
+                        currentState = AppState::IDLE;
+                    }
+                }
+            }
                  // For any other input type, if not fetching or rendering, go to IDLE.
                  if (currentState != AppState::FETCHING_DATA && currentState != AppState::RENDERING_SCRIPT) {
                     currentState = AppState::IDLE;
                  }
             }
-        }
 
         // Check Render Status Queue (non-blocking)
         if (xQueueReceive(g_renderStatusQueue, &renderResultItem, 0) == pdTRUE) { // Use renderResultItem
@@ -434,7 +478,11 @@ void MainControlTask_Function(void *pvParameters) {
                     }
                 }
             }
-            if (currentState == AppState::FETCHING_DATA && currentState != AppState::RENDERING_SCRIPT) {
+            // If a fetch operation completed:
+            // - If the system was purely in FETCHING_DATA state, transition to IDLE.
+            // - If a RENDER operation was started during the fetch (current state is RENDERING_SCRIPT),
+            //   then keep the state as RENDERING_SCRIPT.
+            if (currentState == AppState::FETCHING_DATA) {
                  currentState = AppState::IDLE;
             }
         }
