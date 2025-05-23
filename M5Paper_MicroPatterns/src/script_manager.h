@@ -87,6 +87,13 @@ private:
     bool saveScriptList_nolock(JsonDocument &listDoc);
     int _getHighestFileIdNumber_nolock(); // Private helper, assumes mutex is held
     String _generateShortFileId_nolock(const String& humanId); // Private helper, assumes mutex is held
+    
+    bool loadScriptList_nolock(JsonDocument &outListDoc);
+    bool getCurrentScriptId_nolock(String &outHumanId);
+    bool saveCurrentScriptId_nolock(const String &humanId);
+    bool loadScriptExecutionState_nolock(const String &humanId, ScriptExecState &outState);
+    bool saveScriptContent_nolock(const String &fileId, const String &content);
+    bool loadScriptContent_nolock(const String &fileId, String &outContent);
 };
 
 #endif // SCRIPT_MANAGER_H

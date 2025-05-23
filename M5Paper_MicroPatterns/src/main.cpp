@@ -85,7 +85,8 @@ void setup() {
         // No point trying to display error if display failed.
         while(1) vTaskDelay(portMAX_DELAY); // Halt
     }
-    g_displayManager->showMessage("System Booting...", 100, 15, true, true);
+    // g_displayManager->showMessage("System Booting...", 100, 15, true, true); // Replaced by startup indicator
+    g_displayManager->drawStartupIndicator(); // Draw startup indicator without clearing screen
     esp_task_wdt_reset();
 
     g_systemManager = new SystemManager();
@@ -134,8 +135,8 @@ void setup() {
     }
 
     log_i("Setup complete. Tasks created. Managers initialized.");
-    g_displayManager->showMessage("Setup OK", 200, 15, false, false);
-    vTaskDelay(pdMS_TO_TICKS(1000)); // Show setup message
+    // g_displayManager->showMessage("Setup OK", 200, 15, false, false); // Removed to preserve screen
+    // vTaskDelay(pdMS_TO_TICKS(1000)); // Show setup message - Removed
 
     // Setup task no longer needs WDT monitoring. Tasks will manage their own.
     esp_task_wdt_delete(NULL);
@@ -266,21 +267,18 @@ void MainControlTask_Function(void *pvParameters) {
     // 1. Potentially sync time
     RTC_Time rtcTime = g_systemManager->getTime();
     if (rtcTime.hour == 0 && rtcTime.min == 0 && rtcTime.sec == 0) { // RTC likely not set
-        g_displayManager->showMessage("Syncing Time...", 50, 15, true, true);
+        // log_i("MainCtrl: RTC not set. Attempting NTP sync."); // EPD Message removed
         if (g_systemManager->syncTimeWithNTP(*g_networkManager)) {
-            g_displayManager->showMessage("Time Synced", 100, 15);
-            vTaskDelay(pdMS_TO_TICKS(1000)); // Delay only on success
+            // log_i("MainCtrl: NTP sync successful."); // EPD Message and delay removed
         } else {
-            g_displayManager->showMessage("Time Sync Fail", 100, 15, false, false); // Brief message
+            // log_i("MainCtrl: NTP sync failed."); // EPD Message removed
             // No long delay here, attempt to re-render current script
             if (!currentLoadedScriptId.isEmpty()) {
                 log_i("MainCtrl: NTP sync failed. Re-rendering current script '%s' with saved state.", currentLoadedScriptId.c_str());
                 triggerScriptRender(currentLoadedScriptId, true, currentState, currentLoadedScriptId); // true for useAsIsState
             } else {
                 log_w("MainCtrl: NTP sync failed, but no current script loaded to re-render.");
-                // If no script is loaded, the message "Time Sync Fail" will be shown briefly.
-                // Consider a small delay to ensure message is visible if no re-render happens.
-                vTaskDelay(pdMS_TO_TICKS(500));
+                // Delay removed
             }
         }
     }
@@ -378,6 +376,10 @@ void MainControlTask_Function(void *pvParameters) {
         if (xQueueReceive(g_inputEventQueue, &inputEvent, 0) == pdTRUE) {
             lastActivityTime = xTaskGetTickCount();
             log_i("MainCtrl: Received input event: %d", (int)inputEvent.type);
+            
+            // Draw activity indicator as fast as possible
+            g_displayManager->drawActivityIndicator();
+
             // Stop ongoing render or fetch if significant input
             if (currentState == AppState::RENDERING_SCRIPT) {
                 log_i("MainCtrl: Input received during render. Requesting interrupt.");
@@ -570,19 +572,26 @@ void MainControlTask_Function(void *pvParameters) {
         // Sleep Management
         if (currentState == AppState::IDLE && (xTaskGetTickCount() - lastActivityTime) > pdMS_TO_TICKS(SLEEP_IDLE_THRESHOLD_MS)) {
             log_i("MainCtrl: Idle timeout. Going to light sleep.");
-            // Removed: g_displayManager->showMessage("Sleeping...", 450, 15, false, true);
-            vTaskDelay(pdMS_TO_TICKS(500)); // Delay kept, might be for other purposes or harmless
+            // User requested to not show "Sleeping..." message on EPD.
+            // g_displayManager->showMessage("Sleeping...", 450, 15, false, true); // Removed
+            vTaskDelay(pdMS_TO_TICKS(10)); // Short delay before sleep
             
             esp_task_wdt_delete(NULL);
             g_systemManager->goToLightSleep(SystemManager::DEFAULT_SLEEP_DURATION_S); // Use constant
             esp_task_wdt_init(30, true);
             esp_task_wdt_add(NULL);
 
-            lastActivityTime = xTaskGetTickCount();
+            lastActivityTime = xTaskGetTickCount(); // Reset activity time after waking up
             log_i("MainCtrl: Woke up. Cause: %d", g_systemManager->getWakeupCause());
-            // Removed: g_displayManager->showMessage("Awake!", 50, 15, true, true);
-            // Removed: vTaskDelay(pdMS_TO_TICKS(500));
+            // User requested to not show "Awake!" message on EPD.
+            // g_displayManager->showMessage("Awake!", 50, 15, true, true); // Removed
+            // vTaskDelay(pdMS_TO_TICKS(500)); // Removed delay associated with "Awake!" message
 
+            // Draw activity indicator on wakeup by button press
+            if (g_systemManager->getWakeupCause() == ESP_SLEEP_WAKEUP_GPIO) {
+                g_displayManager->drawActivityIndicator();
+            }
+            
             String scriptIdAfterWakeup = currentLoadedScriptId; // Default to current
             if (scriptIdAfterWakeup.isEmpty()) {
                 // If no script was loaded before sleep, try to get the default/first one

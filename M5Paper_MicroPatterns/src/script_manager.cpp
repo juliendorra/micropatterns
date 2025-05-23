@@ -345,23 +345,46 @@ bool ScriptManager::initializeSPIFFS()
     // Create directories if they don't exist
     if (!SPIFFS.exists("/scripts"))
     {
+        log_i("Directory /scripts does not exist. Creating...");
         if (!SPIFFS.mkdir("/scripts"))
         {
             log_e("Failed to create /scripts directory!");
             return false;
         }
-        log_i("Created /scripts directory");
+        log_i("Successfully created /scripts directory");
+    } else {
+        log_i("Directory /scripts already exists.");
     }
+
     if (!SPIFFS.exists(CONTENT_DIR_PATH))
     {
+        log_i("Directory %s does not exist. Creating...", CONTENT_DIR_PATH);
         if (!SPIFFS.mkdir(CONTENT_DIR_PATH))
         {
             log_e("Failed to create %s directory!", CONTENT_DIR_PATH);
             return false;
         }
-        log_i("Created %s directory", CONTENT_DIR_PATH);
+        log_i("Successfully created %s directory", CONTENT_DIR_PATH);
+    } else {
+        log_i("Directory %s already exists.", CONTENT_DIR_PATH);
     }
     return true;
+}
+
+// Public version of saveScriptList
+bool ScriptManager::saveScriptList(JsonDocument &listDoc)
+{
+    if (xSemaphoreTake(_spiffsMutex, pdMS_TO_TICKS(1000)) == pdTRUE)
+    {
+        // Before saving, ensure fileIds are unique and correct
+        ensureUniqueFileIds_nolock(listDoc); // This is _nolock, mutex is held
+
+        bool success = saveScriptList_nolock(listDoc);
+        xSemaphoreGive(_spiffsMutex);
+        return success;
+    }
+    log_e("saveScriptList: Failed to take mutex after 1000ms");
+    return false;
 }
 
 // Implementation is now using JsonDocument instead of DynamicJsonDocument
@@ -416,530 +439,326 @@ bool ScriptManager::saveScriptList_nolock(JsonDocument &listDoc)
     return success;
 }
 
-
-bool ScriptManager::saveScriptList(JsonDocument &listDoc)
+// _nolock version of loadScriptList
+bool ScriptManager::loadScriptList_nolock(JsonDocument &outListDoc)
 {
-    if (xSemaphoreTake(_spiffsMutex, pdMS_TO_TICKS(3000)) == pdTRUE) { // Increased timeout
-        bool success = saveScriptList_nolock(listDoc);
-        xSemaphoreGive(_spiffsMutex);
-        return success;
-    }
-    log_e("ScriptManager::saveScriptList failed to take mutex after 3000ms");
-    return false;
-}
+    // Clear the output document first to ensure we start fresh
+    outListDoc.clear();
+    log_i("loadScriptList_nolock: Attempting to load script list from %s", LIST_JSON_PATH);
 
-bool ScriptManager::loadScriptContent(const String &fileId, String &outContent)
-{
-    // Reset output content
-    outContent = "";
-    JsonDocument listDoc; // Declare listDoc at the beginning of the function
-
-    if (fileId.isEmpty())
+    if (!SPIFFS.exists(LIST_JSON_PATH))
     {
-        log_e("loadScriptContent: fileId is empty");
+        log_w("loadScriptList_nolock: Script list file %s does not exist", LIST_JSON_PATH);
         return false;
     }
 
-    // Special handling for default script ID - use built-in content directly
-    if (fileId == DEFAULT_SCRIPT_ID)
+    log_d("loadScriptList_nolock: SPIFFS space - Total: %u bytes, Used: %u bytes, Free: %u bytes",
+          SPIFFS.totalBytes(), SPIFFS.usedBytes(), SPIFFS.totalBytes() - SPIFFS.usedBytes());
+
+    File file = SPIFFS.open(LIST_JSON_PATH, FILE_READ);
+    if (!file)
     {
-        log_i("loadScriptContent: Using built-in DEFAULT_SCRIPT_CONTENT for '%s'", fileId.c_str());
+        log_e("loadScriptList_nolock: Failed to open %s (file pointer is null)", LIST_JSON_PATH);
+        return false;
+    }
+    if (file.isDirectory())
+    {
+        log_e("loadScriptList_nolock: %s is a directory, not a file", LIST_JSON_PATH);
+        file.close();
+        return false;
+    }
+    size_t fileSize = file.size();
+    if (fileSize == 0)
+    {
+        log_w("loadScriptList_nolock: File %s exists but is empty (0 bytes)", LIST_JSON_PATH);
+        file.close();
+        return false;
+    }
+    log_d("loadScriptList_nolock: File %s opened, size: %u bytes", LIST_JSON_PATH, fileSize);
+    esp_task_wdt_reset();
+    DeserializationError error = deserializeJson(outListDoc, file);
+    file.close();
+
+    if (error)
+    {
+        log_e("loadScriptList_nolock: JSON parsing error: %s", error.c_str());
+        if (fileSize < 200)
+        {
+            File readFile = SPIFFS.open(LIST_JSON_PATH, FILE_READ);
+            if (readFile)
+            {
+                String content = readFile.readString();
+                log_e("loadScriptList_nolock: File content: %s", content.c_str());
+                readFile.close();
+            }
+        }
+        return false;
+    }
+    if (!outListDoc.is<JsonArray>())
+    {
+        log_e("loadScriptList_nolock: Parsed JSON is not an array. Type: %s",
+              outListDoc.is<JsonObject>() ? "object" : "unknown");
+        return false;
+    }
+    size_t numEntries = outListDoc.as<JsonArray>().size();
+    log_i("loadScriptList_nolock: Successfully loaded script list with %u entries", numEntries);
+    ensureUniqueFileIds_nolock(outListDoc); // This is already _nolock
+    return true;
+}
+
+
+bool ScriptManager::loadScriptContent(const String &fileId, String &outContent)
+{
+// Reset output content first
+outContent = "";
+
+if (fileId.isEmpty()) { // Check before taking mutex
+    log_e("loadScriptContent: fileId is empty");
+    return false;
+}
+
+if (xSemaphoreTake(_spiffsMutex, pdMS_TO_TICKS(1000)) == pdTRUE)
+{
+    bool success = loadScriptContent_nolock(fileId, outContent); // Call the _nolock version
+    xSemaphoreGive(_spiffsMutex);
+    return success;
+}
+log_e("loadScriptContent: Failed to take mutex for fileId %s after 1000ms", fileId.c_str());
+return false; // outContent is already ""
+}
+
+// _nolock version of loadScriptContent
+bool ScriptManager::loadScriptContent_nolock(const String &fileId, String &outContent) {
+    outContent = ""; // Reset output
+
+    if (fileId.isEmpty()) {
+        log_e("loadScriptContent_nolock: fileId is empty");
+        return false;
+    }
+
+    if (fileId == DEFAULT_SCRIPT_ID) {
+        log_i("loadScriptContent_nolock: Using built-in DEFAULT_SCRIPT_CONTENT for '%s'", fileId.c_str());
         outContent = DEFAULT_SCRIPT_CONTENT;
         return true;
     }
 
-    // Use the fileId as-is if it starts with 's' (indicating it's already a short fileId)
-    // Otherwise, it might be a humanId - check if we need to convert it
     String actualFileId = fileId;
-    if (!fileId.startsWith("s") && fileId != DEFAULT_SCRIPT_ID)
-    {
-        // Look up the correct fileId in the script list
-        // JsonDocument listDoc; // Moved to the top of the function
-        if (loadScriptList(listDoc) && listDoc.is<JsonArray>()) // loadScriptList now handles ensureUniqueFileIds_nolock
-        {
+    JsonDocument listDoc; // Use default allocator
+
+    if (!fileId.startsWith("s")) { // If fileId is likely a humanId
+        if (loadScriptList_nolock(listDoc)) { // Use _nolock
             bool idFound = false;
-            for (JsonObject scriptInfo : listDoc.as<JsonArray>())
-            {
-                if (scriptInfo["id"].as<String>() == fileId)
-                {
-                    // Found matching humanId, check for valid fileId
-                    if (!scriptInfo["fileId"].isNull() && scriptInfo["fileId"].is<const char *>())
-                    {
+            for (JsonObject scriptInfo : listDoc.as<JsonArray>()) {
+                if (scriptInfo["id"].as<String>() == fileId) {
+                    if (!scriptInfo["fileId"].isNull() && scriptInfo["fileId"].is<const char*>()) {
                         String storedFileId = scriptInfo["fileId"].as<String>();
-                        if (!storedFileId.isEmpty() && storedFileId != "null" && storedFileId.startsWith("s"))
-                        {
+                        if (!storedFileId.isEmpty() && storedFileId != "null" && storedFileId.startsWith("s")) {
                             actualFileId = storedFileId;
                             idFound = true;
-                            log_i("loadScriptContent: Mapped humanId '%s' to fileId '%s'", fileId.c_str(), actualFileId.c_str());
+                            log_i("loadScriptContent_nolock: Mapped humanId '%s' to fileId '%s'", fileId.c_str(), actualFileId.c_str());
                             break;
                         }
                     }
                 }
             }
-
-            if (!idFound)
-            {
-                log_w("loadScriptContent: Could not map humanId '%s' to a short fileId from list.", fileId.c_str());
-            }
+            if (!idFound) log_w("loadScriptContent_nolock: Could not map humanId '%s' to a short fileId from list.", fileId.c_str());
+        } else {
+            log_w("loadScriptContent_nolock: Failed to load script list for humanId to fileId mapping.");
         }
     }
 
     String path = String(CONTENT_DIR_PATH) + "/" + actualFileId;
-    log_i("loadScriptContent: Attempting to load script content from %s", path.c_str());
+    log_i("loadScriptContent_nolock: Attempting to load script content from %s", path.c_str());
 
-    if (xSemaphoreTake(_spiffsMutex, pdMS_TO_TICKS(1000)) == pdTRUE)
-    {
-        // Check if the exact path exists first
-        if (!SPIFFS.exists(path.c_str()))
-        {
-            log_w("loadScriptContent: Path does not exist: %s (for actualFileId: %s, original fileId: %s)", path.c_str(), actualFileId.c_str(), fileId.c_str());
-            bool recovered = false;
-            String humanIdForRecovery = ""; // Declare here
-
-            // Determine the humanId we are trying to load content for.
-            if (!actualFileId.startsWith("s")) { // If actualFileId was a humanId initially (meaning fileId was humanId)
-                humanIdForRecovery = actualFileId;
-            } else { // actualFileId is 's'-style. Find its humanId from listDoc.
-                     // listDoc was passed by the caller (getScriptForExecution) or loaded if called directly.
-                     // For this recovery, we need a fresh load of listDoc to ensure we have the latest mappings.
-                JsonDocument currentListDoc;
-                if (loadScriptList(currentListDoc) && currentListDoc.is<JsonArray>()) { // loadScriptList handles mutex internally
-                    for (JsonObjectConst scriptItem : currentListDoc.as<JsonArray>()) {
-                        if (!scriptItem["fileId"].isNull() && scriptItem["fileId"].as<String>() == actualFileId) {
-                            if(!scriptItem["id"].isNull()) {
-                                humanIdForRecovery = scriptItem["id"].as<String>();
-                                break;
-                            }
-                        }
+    if (!SPIFFS.exists(path.c_str())) {
+        log_w("loadScriptContent_nolock: Path does not exist: %s (for actualFileId: %s, original fileId: %s)", path.c_str(), actualFileId.c_str(), fileId.c_str());
+        // Recovery attempt
+        bool recovered = false;
+        String humanIdForRecovery = (!actualFileId.startsWith("s")) ? actualFileId : "";
+        if (actualFileId.startsWith("s") && humanIdForRecovery.isEmpty()) { // If actualFileId was 's'-style, find its humanId
+            // listDoc might already be loaded if we came from the humanId mapping path.
+            // If not, load it again.
+            if (listDoc.isNull() || !listDoc.is<JsonArray>()) { // Check if listDoc is already populated
+                 loadScriptList_nolock(listDoc); // Use _nolock
+            }
+            if (listDoc.is<JsonArray>()) {
+                for (JsonObjectConst scriptItem : listDoc.as<JsonArray>()) {
+                    if (!scriptItem["fileId"].isNull() && scriptItem["fileId"].as<String>() == actualFileId) {
+                        if(!scriptItem["id"].isNull()) humanIdForRecovery = scriptItem["id"].as<String>();
+                        break;
                     }
                 }
-            } // <<<< Corrected missing brace here
+            }
+        }
 
-            if (humanIdForRecovery.isEmpty()) { // This is the if for the else at 520
-                log_w("loadScriptContent: Could not determine humanId for actualFileId '%s'. Cannot recover.", actualFileId.c_str());
-            } else { // This is the else at 520
-                log_i("loadScriptContent: Initial path failed for actualFileId '%s'. Attempting recovery for humanId '%s'.", actualFileId.c_str(), humanIdForRecovery.c_str());
-                // Re-load listDoc to ensure we have the latest version after any ensureUniqueFileIds_nolock calls.
-                JsonDocument freshListDoc; // Changed from DynamicJsonDocument
-                if (loadScriptList(freshListDoc) && freshListDoc.is<JsonArray>()) { // loadScriptList handles mutex internally
-                    for (JsonObjectConst scriptItemConst : freshListDoc.as<JsonArray>()) { // Iterate with JsonObjectConst
-                        if (!scriptItemConst["id"].isNull() && scriptItemConst["id"].as<String>() == humanIdForRecovery) {
-                            if (!scriptItemConst["fileId"].isNull()) {
-                                String fileIdFromList = scriptItemConst["fileId"].as<String>();
-                                if (!fileIdFromList.isEmpty() && fileIdFromList.startsWith("s")) {
-                                    String pathFromList = String(CONTENT_DIR_PATH) + "/" + fileIdFromList;
-                                    log_i("loadScriptContent: For humanId '%s', list.json points to fileId '%s'. Checking path: %s", humanIdForRecovery.c_str(), fileIdFromList.c_str(), pathFromList.c_str());
-                                    if (SPIFFS.exists(pathFromList.c_str())) {
-                                        File recoveryFile = SPIFFS.open(pathFromList.c_str(), FILE_READ);
-                                        if (recoveryFile && !recoveryFile.isDirectory() && recoveryFile.size() > 0) {
-                                            outContent = recoveryFile.readString();
-                                            log_i("loadScriptContent: Recovery successful. Loaded %u bytes for humanId '%s' from '%s'.", outContent.length(), humanIdForRecovery.c_str(), pathFromList.c_str());
-                                            recovered = true;
-                                        } else {
-                                            log_w("loadScriptContent: Recovery file '%s' exists but is empty or unreadable.", pathFromList.c_str());
-                                        }
-                                        if (recoveryFile) recoveryFile.close();
-                                    } else {
-                                        log_w("loadScriptContent: Path '%s' (from list.json for humanId '%s') also does not exist.", pathFromList.c_str(), humanIdForRecovery.c_str());
-                                    }
-                                } else {
-                                     log_w("loadScriptContent: fileId for humanId '%s' in list.json is invalid or empty: '%s'", humanIdForRecovery.c_str(), fileIdFromList.c_str());
-                                }
-                            } else {
-                                log_w("loadScriptContent: humanId '%s' in list.json has no fileId field.", humanIdForRecovery.c_str());
-                            }
-                            break; // Found the humanId in the list
-                        }
+        if (humanIdForRecovery.isEmpty()) {
+            log_w("loadScriptContent_nolock: Could not determine humanId for actualFileId '%s'. Cannot recover.", actualFileId.c_str());
+        } else {
+            log_i("loadScriptContent_nolock: Initial path failed. Attempting recovery for humanId '%s'.", humanIdForRecovery.c_str());
+            // listDoc should be loaded here if it wasn't before
+            if (listDoc.isNull() || !listDoc.is<JsonArray>()) {
+                 loadScriptList_nolock(listDoc); // Use _nolock
+            }
+            if (listDoc.is<JsonArray>()) {
+                for (JsonObjectConst scriptItemConst : listDoc.as<JsonArray>()) {
+                    if (!scriptItemConst["id"].isNull() && scriptItemConst["id"].as<String>() == humanIdForRecovery) {
+                        if (!scriptItemConst["fileId"].isNull()) {
+                            String fileIdFromList = scriptItemConst["fileId"].as<String>();
+                            if (!fileIdFromList.isEmpty() && fileIdFromList.startsWith("s")) {
+                                String pathFromList = String(CONTENT_DIR_PATH) + "/" + fileIdFromList;
+                                log_i("loadScriptContent_nolock: For humanId '%s', list.json points to fileId '%s'. Checking path: %s", humanIdForRecovery.c_str(), fileIdFromList.c_str(), pathFromList.c_str());
+                                if (SPIFFS.exists(pathFromList.c_str())) {
+                                    File recoveryFile = SPIFFS.open(pathFromList.c_str(), FILE_READ);
+                                    if (recoveryFile && !recoveryFile.isDirectory() && recoveryFile.size() > 0) {
+                                        outContent = recoveryFile.readString();
+                                        log_i("loadScriptContent_nolock: Recovery successful. Loaded %u bytes for humanId '%s' from '%s'.", outContent.length(), humanIdForRecovery.c_str(), pathFromList.c_str());
+                                        recovered = true;
+                                    } else { log_w("loadScriptContent_nolock: Recovery file '%s' exists but is empty/unreadable.", pathFromList.c_str()); }
+                                    if (recoveryFile) recoveryFile.close();
+                                } else { log_w("loadScriptContent_nolock: Path '%s' (from list.json for humanId '%s') also does not exist.", pathFromList.c_str(), humanIdForRecovery.c_str()); }
+                            } else { log_w("loadScriptContent_nolock: fileId for humanId '%s' in list.json is invalid: '%s'", humanIdForRecovery.c_str(), fileIdFromList.c_str()); }
+                        } else { log_w("loadScriptContent_nolock: humanId '%s' in list.json has no fileId field.", humanIdForRecovery.c_str()); }
+                        break;
                     }
-                } else {
-                    log_w("loadScriptContent: Failed to load list.json for recovery attempt.");
                 }
-            }
-
-            if (!recovered) {
-                log_w("loadScriptContent: Recovery failed for actualFileId '%s'.", actualFileId.c_str());
-                xSemaphoreGive(_spiffsMutex);
-                return false;
-            }
-            // If recovered, outContent is populated. Proceed to return true at the end.
-            // The 'path' variable is not updated here, but outContent is directly set.
-            // The original file opening logic below will be skipped if recovered.
-            // To use the original logic, we'd update 'path' and 'actualFileId' and not return early.
-            // For simplicity, if recovered, we return true now.
-            xSemaphoreGive(_spiffsMutex);
-            return true;
+            } else { log_w("loadScriptContent_nolock: Failed to load list.json for recovery attempt."); }
         }
-
-        // This part executes if the original path existed, or if recovery updated 'path' and we didn't return early.
-        // Given the recovery logic now returns true directly, this part is only for the initial successful SPIFFS.exists(path.c_str())
-        log_d("loadScriptContent: Opening file %s for reading", path.c_str());
-        File file = SPIFFS.open(path.c_str(), FILE_READ);
-
-        if (!file)
-        {
-            log_e("loadScriptContent: Failed to open file (null pointer returned)");
-            xSemaphoreGive(_spiffsMutex);
+        if (!recovered) {
+            log_w("loadScriptContent_nolock: Recovery failed for actualFileId '%s'.", actualFileId.c_str());
             return false;
         }
-
-        if (file.isDirectory())
-        {
-            log_e("loadScriptContent: Path is a directory, not a file");
-            file.close();
-            xSemaphoreGive(_spiffsMutex);
-            return false;
-        }
-
-        // Get file size
-        size_t fileSize = file.size();
-
-        if (fileSize == 0)
-        {
-            log_w("loadScriptContent: File is empty (0 bytes)");
-            file.close();
-            xSemaphoreGive(_spiffsMutex);
-            return false;
-        }
-
-        log_d("loadScriptContent: File opened successfully, size: %u bytes", fileSize);
-
-        // Reset watchdog before potentially time-consuming read
-        esp_task_wdt_reset();
-
-        // Read file content - consider streaming or chunking for very large files
-        if (fileSize > 5000)
-        {
-            log_w("loadScriptContent: Large file detected (%u bytes) - this may cause memory issues", fileSize);
-        }
-
-        // Attempt to read the entire file
-        outContent = file.readString();
-        size_t readLength = outContent.length();
-        file.close();
-
-        // Validate read operation
-        if (readLength == 0)
-        {
-            log_e("loadScriptContent: readString() returned empty string despite file size %u", fileSize);
-            xSemaphoreGive(_spiffsMutex);
-            return false;
-        }
-
-        if (readLength != fileSize)
-        {
-            log_w("loadScriptContent: Read %u bytes but file size is %u bytes", readLength, fileSize);
-            // Continue anyway, we got some content
-        }
-
-        xSemaphoreGive(_spiffsMutex);
-        log_i("loadScriptContent: Successfully loaded %u bytes for fileId '%s'", readLength, fileId.c_str());
-        return true;
+        return true; // Recovered content
     }
 
-    log_e("loadScriptContent: Failed to take mutex for fileId %s after 1000ms", fileId.c_str());
-    return false;
+    log_d("loadScriptContent_nolock: Opening file %s for reading", path.c_str());
+    File file = SPIFFS.open(path.c_str(), FILE_READ);
+    if (!file) { log_e("loadScriptContent_nolock: Failed to open file (null pointer returned)"); return false; }
+    if (file.isDirectory()) { log_e("loadScriptContent_nolock: Path is a directory, not a file"); file.close(); return false; }
+    size_t fileSize = file.size();
+    if (fileSize == 0) { log_w("loadScriptContent_nolock: File is empty (0 bytes)"); file.close(); return false; }
+    log_d("loadScriptContent_nolock: File opened successfully, size: %u bytes", fileSize);
+    esp_task_wdt_reset();
+    if (fileSize > 5000) log_w("loadScriptContent_nolock: Large file detected (%u bytes)", fileSize);
+    outContent = file.readString();
+    size_t readLength = outContent.length();
+    file.close();
+    if (readLength == 0) { log_e("loadScriptContent_nolock: readString() returned empty string despite file size %u", fileSize); return false; }
+    if (readLength != fileSize) log_w("loadScriptContent_nolock: Read %u bytes but file size is %u bytes", readLength, fileSize);
+    log_i("loadScriptContent_nolock: Successfully loaded %u bytes for fileId '%s'", readLength, actualFileId.c_str()); // Use actualFileId for logging
+    return true;
+}
+
+// _nolock version of saveScriptContent
+bool ScriptManager::saveScriptContent_nolock(const String &fileId, const String &content) {
+    if (fileId.isEmpty()) {
+        log_e("saveScriptContent_nolock: fileId is empty");
+        return false;
+    }
+    if (content.isEmpty()) {
+        log_e("saveScriptContent_nolock: content is empty for fileId '%s'", fileId.c_str());
+        return false;
+    }
+
+    String actualFileId = fileId;
+    JsonDocument listDoc; // Use default allocator
+
+    if (!fileId.startsWith("s") && fileId != DEFAULT_SCRIPT_ID) {
+        if (loadScriptList_nolock(listDoc)) { // Use _nolock
+            bool idFound = false;
+            for (JsonObject scriptInfo : listDoc.as<JsonArray>()) {
+                if (scriptInfo["id"].as<String>() == fileId) {
+                    if (!scriptInfo["fileId"].isNull() && scriptInfo["fileId"].is<const char*>()) {
+                        String storedFileId = scriptInfo["fileId"].as<String>();
+                        if (!storedFileId.isEmpty() && storedFileId != "null" && storedFileId.startsWith("s")) {
+                            actualFileId = storedFileId;
+                            idFound = true;
+                            log_i("saveScriptContent_nolock: Mapped humanId '%s' to fileId '%s'", fileId.c_str(), actualFileId.c_str());
+                            break;
+                        }
+                    }
+                }
+            }
+            if (!idFound) {
+                actualFileId = _generateShortFileId_nolock(fileId); // Use _nolock
+                log_w("saveScriptContent_nolock: Generated new fileId '%s' for humanId '%s'", actualFileId.c_str(), fileId.c_str());
+                // Note: The listDoc is not updated here with the new fileId. This should be handled by ensureUniqueFileIds or similar.
+            }
+        } else {
+             log_w("saveScriptContent_nolock: Failed to load script list for humanId to fileId mapping. Generating new fileId.");
+             actualFileId = _generateShortFileId_nolock(fileId); // Use _nolock
+        }
+    }
+
+    String path = String(CONTENT_DIR_PATH) + "/" + actualFileId;
+    log_i("saveScriptContent_nolock: Attempting to save %u bytes to %s", content.length(), path.c_str());
+
+    if (content.length() > 10000) {
+        log_w("saveScriptContent_nolock: Large content detected (%u bytes)", content.length());
+    }
+
+    if (!SPIFFS.exists(CONTENT_DIR_PATH)) {
+        log_w("saveScriptContent_nolock: Directory %s does not exist, creating...", CONTENT_DIR_PATH);
+        if (!SPIFFS.mkdir(CONTENT_DIR_PATH)) {
+            log_e("saveScriptContent_nolock: Failed to create directory %s", CONTENT_DIR_PATH);
+            return false;
+        }
+    }
+
+    size_t freeSpace = SPIFFS.totalBytes() - SPIFFS.usedBytes();
+    if (content.length() + 100 > freeSpace) {
+        log_e("saveScriptContent_nolock: Not enough space. Content: %u bytes, Free: %u bytes", content.length(), freeSpace);
+        return false;
+    }
+
+    if (SPIFFS.exists(path.c_str())) {
+        log_d("saveScriptContent_nolock: Deleting existing file before writing new content");
+        SPIFFS.remove(path.c_str());
+    }
+
+    log_d("saveScriptContent_nolock: Opening file for writing");
+    File file = SPIFFS.open(path.c_str(), FILE_WRITE);
+    if (!file) {
+        log_e("saveScriptContent_nolock: Failed to open %s for writing", path.c_str());
+        return false;
+    }
+
+    esp_task_wdt_reset();
+    size_t bytesWritten = file.print(content);
+    esp_task_wdt_reset();
+    bool success = (bytesWritten == content.length());
+
+    if (success) log_i("saveScriptContent_nolock: Successfully wrote %u bytes to file", bytesWritten);
+    else log_e("saveScriptContent_nolock: Write incomplete. Wrote %u of %u bytes", bytesWritten, content.length());
+    file.close();
+
+    if (success) { // Verification
+        File verifyFile = SPIFFS.open(path.c_str(), FILE_READ);
+        if (verifyFile) {
+            if (verifyFile.size() != content.length()) log_w("saveScriptContent_nolock: Verification size mismatch");
+            verifyFile.close();
+        } else { log_e("saveScriptContent_nolock: Failed to open file for verification"); }
+    }
+    return success;
 }
 
 bool ScriptManager::saveScriptContent(const String &fileId, const String &content)
 {
-    if (fileId.isEmpty())
-    {
+    if (fileId.isEmpty()) { // Check before taking mutex
         log_e("saveScriptContent: fileId is empty");
         return false;
     }
-
-    if (content.isEmpty())
-    {
+    if (content.isEmpty()) { // Check before taking mutex
         log_e("saveScriptContent: content is empty for fileId '%s'", fileId.c_str());
         return false;
     }
 
-    // Ensure we're using a short fileId for storage
-    String actualFileId = fileId;
-    if (!fileId.startsWith("s") && fileId != DEFAULT_SCRIPT_ID)
-    {
-        // Look up the correct fileId in the script list
-        JsonDocument listDoc;
-        if (loadScriptList(listDoc) && listDoc.is<JsonArray>())
-        {
-            bool idFound = false;
-            for (JsonObject scriptInfo : listDoc.as<JsonArray>())
-            {
-                if (scriptInfo["id"].as<String>() == fileId)
-                {
-                    // Found matching humanId, check for valid fileId
-                    if (!scriptInfo["fileId"].isNull() && scriptInfo["fileId"].is<const char *>())
-                    {
-                        String storedFileId = scriptInfo["fileId"].as<String>();
-                        if (!storedFileId.isEmpty() && storedFileId != "null" && storedFileId.startsWith("s"))
-                        {
-                            actualFileId = storedFileId;
-                            idFound = true;
-                            log_i("saveScriptContent: Mapped humanId '%s' to fileId '%s'", fileId.c_str(), actualFileId.c_str());
-                            break;
-                        }
-                    }
-                }
-            }
-
-            if (!idFound)
-            {
-                // If we still don't have a valid fileId, generate one
-                if (fileId != DEFAULT_SCRIPT_ID)
-                {
-                    // Call _nolock version as saveScriptContent will acquire the mutex.
-                    // However, saveScriptContent takes mutex *after* this block.
-                    // This implies generateShortFileId (public) should be called here,
-                    // or this logic moved after mutex acquisition.
-                    // For now, assume public generateShortFileId is called, which is safe.
-                    // Let's correct this: saveScriptContent takes mutex LATER.
-                    // This call to generateShortFileId must be the public one.
-                    // OR, this entire block of logic needs to be inside the mutex lock.
-                    // The current structure is:
-                    // saveScriptContent()
-                    //   actualFileId = fileId;
-                    //   if (!fileId.startsWith("s")) { loadScriptList(); ... actualFileId = ...; if (!idFound) actualFileId = generateShortFileId(); } <--- Problem here, loadScriptList takes mutex, generateShortFileId takes mutex.
-                    //   xSemaphoreTake(_spiffsMutex)
-                    // This is complex. The fileId generation/lookup needs to happen under a single mutex lock.
-                    // The simplest fix for *this specific line* is to ensure it's the public generateShortFileId.
-                    // However, the overall structure of saveScriptContent needs review for mutex safety.
-                    // For this targeted fix, we assume the public generateShortFileId is intended here if this block is outside the main mutex.
-                    // Let's assume the intent is that this `generateShortFileId` call is for cases where `saveScriptContent` is called with a humanId
-                    // and it needs to derive/create a fileId *before* the main save operation.
-                    // The problem is if `loadScriptList` is also called outside the main mutex.
-                    // `loadScriptList` takes its own mutex.
-                    // This function is indeed problematic.
-                    //
-                    // To fix the immediate call to generateShortFileId within saveScriptContent,
-                    // assuming it's part of a larger operation that should be atomic:
-                    // The call to _generateShortFileId_nolock should happen *inside* the mutex block of saveScriptContent.
-                    // The current code calls generateShortFileId *before* taking the mutex for the file write.
-                    // This is a structural issue.
-                    //
-                    // Let's focus on the change if this line was *inside* the mutex block:
-                    // It would become: actualFileId = _generateShortFileId_nolock(fileId);
-                    //
-                    // Given the current structure, this line is *outside* the main mutex of saveScriptContent.
-                    // So it *must* call the public `generateShortFileId`. No change needed for *this specific line*
-                    // based on the _nolock refactor, as it's correctly calling the public version.
-                    // The issue is the broader atomicity.
-                    //
-                    // Re-evaluating: The request is to change calls to `generateShortFileId` to `_nolock` version
-                    // if the context is already holding the mutex.
-                    // In `saveScriptContent`, the main file operations are under mutex.
-                    // The file ID lookup/generation part:
-                    //   if (!fileId.startsWith("s")) {
-                    //     loadScriptList(...) // Takes mutex
-                    //     ...
-                    //     if (!idFound) actualFileId = generateShortFileId(fileId); // Takes mutex
-                    //   }
-                    // This sequence of taking mutex multiple times is the problem.
-                    //
-                    // A minimal change to make `generateShortFileId` call safe if it were inside the main lock:
-                    // actualFileId = _generateShortFileId_nolock(fileId);
-                    //
-                    // Since the goal is to fix the internal calls, let's assume this part of logic
-                    // *should* be under the main mutex of saveScriptContent.
-                    // The provided code for saveScriptContent is:
-                    // String actualFileId = fileId;
-                    // if (!fileId.startsWith("s") && fileId != DEFAULT_SCRIPT_ID) { ... loadScriptList ... if (!idFound) actualFileId = generateShortFileId(fileId); ... }
-                    // String path = ...
-                    // if (xSemaphoreTake(_spiffsMutex, ...)) { ... SPIFFS.mkdir ... file.print(content); ... }
-                    // The `generateShortFileId` call is *before* `xSemaphoreTake`.
-                    // So, it *must* be the public `generateShortFileId`. No change to this line from the _nolock refactor.
-                    // The deadlock is `loadScriptList` then `generateShortFileId` both taking mutex.
-                    //
-                    // Let's stick to the defined changes: only update calls that are *already inside a mutex block*.
-                    // This line in `saveScriptContent` is NOT inside its main mutex block. So, no change here.
-                    // The problem is deeper: `saveScriptContent` should take mutex earlier.
-                    //
-                    // Let's assume the user wants to fix the calls that *would* cause deadlock if `generateShortFileId` was called from within a locked section.
-                    // The other identified places are `ensureUniqueFileIds_nolock` (fixed) and `getScriptForExecution`.
-                    // `saveScriptContent`'s current call to `generateShortFileId` is not inside its *own* primary lock.
-                    // This means the current refactor doesn't change this specific line.
-                    // This highlights that the refactor of `generateShortFileId` alone isn't enough for `saveScriptContent`.
-                    //
-                    // For the purpose of this exercise, I will only change the calls that are clearly inside an existing lock of the *calling function*.
-                    // `ensureUniqueFileIds_nolock` is one.
-                    // `getScriptForExecution` is another.
-                    // `saveScriptContent` is more complex. I will leave its call to public `generateShortFileId` as is,
-                    // because it's not inside the `saveScriptContent`'s own explicit SPIFFS lock for writing.
-                    // The issue in `saveScriptContent` is that `loadScriptList()` and `generateShortFileId()` are called sequentially,
-                    // each taking the mutex. This is a different type of problem than re-entrancy.
-                    //
-                    // So, no change to this specific line in `saveScriptContent` from *this* refactor.
-                    actualFileId = generateShortFileId(fileId); // Stays as public call
-                    log_w("saveScriptContent: Generated new fileId '%s' for humanId '%s'", actualFileId.c_str(), fileId.c_str());
-
-                    // TODO: We should update the script list, but that's handled elsewhere
-                }
-            }
-        }
-    }
-
-    String path = String(CONTENT_DIR_PATH) + "/" + actualFileId;
-    log_i("saveScriptContent: Attempting to save %u bytes to %s", content.length(), path.c_str());
-
-    // Check if content is reasonably sized
-    if (content.length() > 10000)
-    {
-        log_w("saveScriptContent: Large content detected (%u bytes) - this may impact memory", content.length());
-    }
-
     if (xSemaphoreTake(_spiffsMutex, pdMS_TO_TICKS(1000)) == pdTRUE)
-    { // Increased timeout
-        // Ensure directory exists
-        if (!SPIFFS.exists(CONTENT_DIR_PATH))
-        {
-            log_w("saveScriptContent: Directory %s does not exist, creating...", CONTENT_DIR_PATH);
-            if (!SPIFFS.mkdir(CONTENT_DIR_PATH))
-            {
-                log_e("saveScriptContent: Failed to create directory %s", CONTENT_DIR_PATH);
-                xSemaphoreGive(_spiffsMutex);
-                return false;
-            }
-        }
-
-        // Check available space
-        size_t freeSpace = SPIFFS.totalBytes() - SPIFFS.usedBytes();
-        if (content.length() + 100 > freeSpace)
-        { // Add buffer for filesystem overhead
-            log_e("saveScriptContent: Not enough space. Content: %u bytes, Free: %u bytes",
-                  content.length(), freeSpace);
-            xSemaphoreGive(_spiffsMutex);
-            return false;
-        }
-
-        // Delete any existing file first (optional, but can help with fragmentation)
-        if (SPIFFS.exists(path.c_str()))
-        {
-            log_d("saveScriptContent: Deleting existing file before writing new content");
-            SPIFFS.remove(path.c_str());
-        }
-
-        log_d("saveScriptContent: Opening file for writing");
-        File file = SPIFFS.open(path.c_str(), FILE_WRITE);
-        if (!file)
-        {
-            log_e("saveScriptContent: Failed to open %s for writing", path.c_str());
-            xSemaphoreGive(_spiffsMutex);
-            return false;
-        }
-
-        // Reset watchdog before potentially lengthy operation
-        esp_task_wdt_reset();
-
-        // Write content
-        size_t bytesWritten = file.print(content); // print() returns bytes written
-        esp_task_wdt_reset(); // Reset WDT after potentially lengthy write
-        bool success = (bytesWritten == content.length());
-
-        if (success)
-        {
-            log_i("saveScriptContent: Successfully wrote %u bytes to file", bytesWritten);
-        }
-        else
-        {
-            log_e("saveScriptContent: Write incomplete. Wrote %u of %u bytes",
-                  bytesWritten, content.length());
-        }
-
-        file.close();
-
-        // Verify file was written correctly
-        if (success)
-        {
-            File verifyFile = SPIFFS.open(path.c_str(), FILE_READ);
-            if (verifyFile)
-            {
-                size_t fileSize = verifyFile.size();
-                if (fileSize != content.length())
-                {
-                    log_w("saveScriptContent: Verification shows file size (%u) != content length (%u)",
-                          fileSize, content.length());
-                    // Don't fail just due to size mismatch - file system overhead might affect this
-                }
-                verifyFile.close();
-            }
-            else
-            {
-                log_e("saveScriptContent: Failed to open file for verification");
-                // Still consider it a success since we wrote the bytes
-            }
-        }
-
+    {
+        bool success_local = saveScriptContent_nolock(fileId, content);
         xSemaphoreGive(_spiffsMutex);
-        return success;
+        return success_local;
     }
-
     log_e("saveScriptContent: Failed to take mutex for fileId %s after 1000ms", fileId.c_str());
-    return false;
-}
-
-bool ScriptManager::getCurrentScriptId(String &outHumanId)
-{
-    if (xSemaphoreTake(_spiffsMutex, pdMS_TO_TICKS(500)) == pdTRUE)
-    {
-        File file = SPIFFS.open(CURRENT_SCRIPT_ID_PATH, FILE_READ);
-        if (!file || file.isDirectory())
-        {
-            log_w("Failed to open %s for reading or it's a directory.", CURRENT_SCRIPT_ID_PATH);
-            if (file)
-                file.close();
-            outHumanId = "";
-            xSemaphoreGive(_spiffsMutex);
-            return false;
-        }
-        outHumanId = file.readString();
-        file.close();
-        xSemaphoreGive(_spiffsMutex);
-
-        if (outHumanId.length() > 0)
-        {
-            log_i("Current script humanId '%s' loaded from %s.", outHumanId.c_str(), CURRENT_SCRIPT_ID_PATH);
-            return true;
-        }
-        else
-        {
-            log_w("%s is empty or read failed.", CURRENT_SCRIPT_ID_PATH);
-            return false;
-        }
-    }
-    log_e("ScriptManager::getCurrentScriptId failed to take mutex.");
-    return false;
-}
-
-bool ScriptManager::saveCurrentScriptId(const String &humanId)
-{
-    if (humanId.isEmpty())
-    {
-        log_e("saveCurrentScriptId: humanId is empty.");
-        return false;
-    }
-    if (xSemaphoreTake(_spiffsMutex, pdMS_TO_TICKS(500)) == pdTRUE)
-    {
-        File file = SPIFFS.open(CURRENT_SCRIPT_ID_PATH, FILE_WRITE);
-        if (!file)
-        {
-            log_e("Failed to open %s for writing", CURRENT_SCRIPT_ID_PATH);
-            xSemaphoreGive(_spiffsMutex);
-            return false;
-        }
-        bool success = false;
-        if (file.print(humanId))
-        {
-            log_i("Current script humanId '%s' saved to %s.", humanId.c_str(), CURRENT_SCRIPT_ID_PATH);
-            success = true;
-        }
-        else
-        {
-            log_e("Failed to write current script humanId '%s' to %s.", humanId.c_str(), CURRENT_SCRIPT_ID_PATH);
-        }
-        file.close();
-        xSemaphoreGive(_spiffsMutex);
-        return success;
-    }
-    log_e("ScriptManager::saveCurrentScriptId failed to take mutex for humanId %s", humanId.c_str());
     return false;
 }
 
@@ -964,8 +783,8 @@ bool ScriptManager::loadScriptExecutionState(const String &humanId, ScriptExecSt
             outState.state_loaded = false;
             return false;
         }
-
-        DynamicJsonDocument statesDoc(JSON_DOC_CAPACITY_SCRIPT_STATES);
+    
+        JsonDocument statesDoc; // Use default allocator
         DeserializationError error = deserializeJson(statesDoc, file);
         file.close();
 
@@ -1047,105 +866,167 @@ bool ScriptManager::loadScriptExecutionState(const String &humanId, ScriptExecSt
 
 bool ScriptManager::loadScriptList(JsonDocument &outListDoc)
 {
-    // Clear the output document first to ensure we start fresh
-    outListDoc.clear();
-
-    log_i("loadScriptList: Attempting to load script list from %s", LIST_JSON_PATH);
-
-    // memoryUsage() is deprecated for JsonDocument and returns 0.
-    // log_d("loadScriptList: Document memory usage: %u bytes", outListDoc.memoryUsage());
-
     if (xSemaphoreTake(_spiffsMutex, pdMS_TO_TICKS(1000)) == pdTRUE)
-    { // Increased timeout
-        // First check if the file exists without opening it
-        if (!SPIFFS.exists(LIST_JSON_PATH))
-        {
-            log_w("loadScriptList: Script list file %s does not exist", LIST_JSON_PATH);
-            xSemaphoreGive(_spiffsMutex);
-            return false;
-        }
-
-        // Check SPIFFS status
-        log_d("loadScriptList: SPIFFS space - Total: %u bytes, Used: %u bytes, Free: %u bytes",
-              SPIFFS.totalBytes(), SPIFFS.usedBytes(), SPIFFS.totalBytes() - SPIFFS.usedBytes());
-
-        File file = SPIFFS.open(LIST_JSON_PATH, FILE_READ);
-
-        if (!file)
-        {
-            log_e("loadScriptList: Failed to open %s (file pointer is null)", LIST_JSON_PATH);
-            xSemaphoreGive(_spiffsMutex);
-            return false;
-        }
-
-        if (file.isDirectory())
-        {
-            log_e("loadScriptList: %s is a directory, not a file", LIST_JSON_PATH);
-            file.close();
-            xSemaphoreGive(_spiffsMutex);
-            return false;
-        }
-
-        size_t fileSize = file.size();
-        if (fileSize == 0)
-        {
-            log_w("loadScriptList: File %s exists but is empty (0 bytes)", LIST_JSON_PATH);
-            file.close();
-            xSemaphoreGive(_spiffsMutex);
-            return false;
-        }
-
-        log_d("loadScriptList: File %s opened, size: %u bytes", LIST_JSON_PATH, fileSize);
-
-        // Reset watchdog before potentially time-consuming operation
-        esp_task_wdt_reset();
-
-        // Use ArduinoJson's stream parsing
-        DeserializationError error = deserializeJson(outListDoc, file);
-        file.close();
-
-        if (error)
-        {
-            log_e("loadScriptList: JSON parsing error: %s", error.c_str());
-
-            // Try to log the file content for debugging if it's small enough
-            if (fileSize < 200)
-            {
-                File readFile = SPIFFS.open(LIST_JSON_PATH, FILE_READ);
-                if (readFile)
-                {
-                    String content = readFile.readString();
-                    log_e("loadScriptList: File content: %s", content.c_str());
-                    readFile.close();
-                }
-            }
-
-            xSemaphoreGive(_spiffsMutex);
-            return false;
-        }
-
-        // Validate document structure
-        if (!outListDoc.is<JsonArray>())
-        {
-            log_e("loadScriptList: Parsed JSON is not an array. Type: %s",
-                  outListDoc.is<JsonObject>() ? "object" : "unknown");
-            xSemaphoreGive(_spiffsMutex);
-            return false;
-        }
-
-        size_t numEntries = outListDoc.as<JsonArray>().size();
-        log_i("loadScriptList: Successfully loaded script list with %u entries", numEntries);
-
-        // Ensure all scripts have valid, unique fileIds before returning
-        // This might also save the list if modifications were made.
-        ensureUniqueFileIds_nolock(outListDoc);
-
+    {
+        bool success = loadScriptList_nolock(outListDoc);
         xSemaphoreGive(_spiffsMutex);
-        return true;
+        return success;
     }
-
     log_e("loadScriptList: Failed to take mutex after 1000ms");
     return false;
+}
+
+// _nolock version of getCurrentScriptId
+bool ScriptManager::getCurrentScriptId_nolock(String &outHumanId)
+{
+    File file = SPIFFS.open(CURRENT_SCRIPT_ID_PATH, FILE_READ);
+    if (!file || file.isDirectory())
+    {
+        log_w("getCurrentScriptId_nolock: Failed to open %s for reading or it's a directory.", CURRENT_SCRIPT_ID_PATH);
+        if (file) file.close();
+        outHumanId = "";
+        return false;
+    }
+    outHumanId = file.readString();
+    file.close();
+
+    if (outHumanId.length() > 0)
+    {
+        log_i("getCurrentScriptId_nolock: Current script humanId '%s' loaded from %s.", outHumanId.c_str(), CURRENT_SCRIPT_ID_PATH);
+        return true;
+    }
+    else
+    {
+        log_w("getCurrentScriptId_nolock: %s is empty or read failed.", CURRENT_SCRIPT_ID_PATH);
+        return false;
+    }
+}
+
+bool ScriptManager::getCurrentScriptId(String &outHumanId)
+{
+    if (xSemaphoreTake(_spiffsMutex, pdMS_TO_TICKS(500)) == pdTRUE)
+    {
+        bool success = getCurrentScriptId_nolock(outHumanId);
+        xSemaphoreGive(_spiffsMutex);
+        return success;
+    }
+    log_e("ScriptManager::getCurrentScriptId failed to take mutex.");
+    return false;
+}
+
+// _nolock version of saveCurrentScriptId
+bool ScriptManager::saveCurrentScriptId_nolock(const String &humanId)
+{
+    if (humanId.isEmpty())
+    {
+        log_e("saveCurrentScriptId_nolock: humanId is empty.");
+        return false;
+    }
+    File file = SPIFFS.open(CURRENT_SCRIPT_ID_PATH, FILE_WRITE);
+    if (!file)
+    {
+        log_e("saveCurrentScriptId_nolock: Failed to open %s for writing", CURRENT_SCRIPT_ID_PATH);
+        return false;
+    }
+    bool success = false;
+    if (file.print(humanId))
+    {
+        log_i("saveCurrentScriptId_nolock: Current script humanId '%s' saved to %s.", humanId.c_str(), CURRENT_SCRIPT_ID_PATH);
+        success = true;
+    }
+    else
+    {
+        log_e("saveCurrentScriptId_nolock: Failed to write current script humanId '%s' to %s.", humanId.c_str(), CURRENT_SCRIPT_ID_PATH);
+    }
+    file.close();
+    return success;
+}
+
+bool ScriptManager::saveCurrentScriptId(const String &humanId)
+{
+    if (humanId.isEmpty()) { // Check before taking mutex
+        log_e("saveCurrentScriptId: humanId is empty.");
+        return false;
+    }
+    if (xSemaphoreTake(_spiffsMutex, pdMS_TO_TICKS(500)) == pdTRUE)
+    {
+        bool success = saveCurrentScriptId_nolock(humanId);
+        xSemaphoreGive(_spiffsMutex);
+        return success;
+    }
+    log_e("ScriptManager::saveCurrentScriptId failed to take mutex for humanId %s", humanId.c_str());
+    return false;
+}
+
+// _nolock version of loadScriptExecutionState
+bool ScriptManager::loadScriptExecutionState_nolock(const String &humanId, ScriptExecState &outState)
+{
+    if (humanId.isEmpty())
+    {
+        log_e("loadScriptExecutionState_nolock: humanId is null or empty.");
+        outState.state_loaded = false;
+        return false;
+    }
+    outState = ScriptExecState(); // Reset to default
+
+    File file = SPIFFS.open(SCRIPT_STATES_PATH, FILE_READ);
+    if (!file || file.isDirectory() || file.size() == 0)
+    {
+        if (file) file.close();
+        outState.state_loaded = false;
+        return false;
+    }
+
+    JsonDocument statesDoc; // Use default allocator
+    DeserializationError error = deserializeJson(statesDoc, file);
+    file.close();
+
+    if (error)
+    {
+        log_e("loadScriptExecutionState_nolock: Failed to parse %s: %s.", SCRIPT_STATES_PATH, error.c_str());
+        outState.state_loaded = false;
+        return false;
+    }
+    if (!statesDoc.is<JsonObject>())
+    {
+        log_e("loadScriptExecutionState_nolock: %s content is not a JSON object.", SCRIPT_STATES_PATH);
+        outState.state_loaded = false;
+        return false;
+    }
+
+    JsonObject root = statesDoc.as<JsonObject>();
+    JsonVariantConst scriptVariant = root[humanId.c_str()];
+
+    if (scriptVariant.isNull())
+    {
+        outState.state_loaded = false;
+        return false;
+    }
+    if (!scriptVariant.is<JsonObjectConst>())
+    {
+        log_e("loadScriptExecutionState_nolock: State for script ID '%s' is not a JSON object.", humanId.c_str());
+        outState.state_loaded = false;
+        return false;
+    }
+
+    JsonObjectConst scriptStateObj = scriptVariant.as<JsonObjectConst>();
+    if (!scriptStateObj["counter"].is<int>() || !scriptStateObj["hour"].is<int>() ||
+        !scriptStateObj["minute"].is<int>() || !scriptStateObj["second"].is<int>())
+    {
+        log_e("loadScriptExecutionState_nolock: Incomplete state for script ID '%s' in %s.", humanId.c_str(), SCRIPT_STATES_PATH);
+        outState.state_loaded = false;
+        return false;
+    }
+
+    outState.counter = scriptStateObj["counter"].as<int>();
+    outState.hour = scriptStateObj["hour"].as<int>();
+    outState.minute = scriptStateObj["minute"].as<int>();
+    outState.second = scriptStateObj["second"].as<int>();
+    outState.state_loaded = true;
+
+    log_i("loadScriptExecutionState_nolock: Script execution state loaded for ID '%s': Counter=%d, Time=%02d:%02d:%02d",
+          humanId.c_str(), outState.counter, outState.hour, outState.minute, outState.second);
+    return true;
 }
 
 bool ScriptManager::saveScriptExecutionState(const String &humanId, const ScriptExecState &state)
@@ -1159,15 +1040,17 @@ bool ScriptManager::saveScriptExecutionState(const String &humanId, const Script
         return false;
     }
 
-    if (localHumanId.isEmpty())
-    { // This check is redundant due to the one above, but kept from original for structure.
-        log_e("saveScriptExecutionState: localHumanId (from humanId) is null or empty.");
-        return false;
-    }
+    // Redundant check, already covered above.
+    // if (localHumanId.isEmpty())
+    // {
+    //     log_e("saveScriptExecutionState: localHumanId (from humanId) is null or empty.");
+    //     return false;
+    // }
 
     if (xSemaphoreTake(_spiffsMutex, pdMS_TO_TICKS(500)) == pdTRUE)
     {
-        DynamicJsonDocument statesDoc(JSON_DOC_CAPACITY_SCRIPT_STATES);
+        bool success = false; // Declare success variable
+        JsonDocument statesDoc; // Use default allocator
 
         File file = SPIFFS.open(SCRIPT_STATES_PATH, FILE_READ);
         if (file && file.size() > 0 && !file.isDirectory())
@@ -1176,23 +1059,18 @@ bool ScriptManager::saveScriptExecutionState(const String &humanId, const Script
             if (error)
             {
                 log_w("saveScriptExecutionState: Failed to parse existing %s: %s. Will overwrite.", SCRIPT_STATES_PATH, error.c_str());
-                statesDoc.clear();
+                statesDoc.clear(); // Clear to ensure it's a fresh object if parsing failed
             }
         }
-        if (file)
-            file.close();
+        if (file) file.close(); // Ensure file is closed
 
-        if (!statesDoc.is<JsonObject>())
-        {
+        // Ensure statesDoc is an object, even if file didn't exist or was unparsable
+        if (!statesDoc.is<JsonObject>()) {
             statesDoc.to<JsonObject>();
         }
         JsonObject root = statesDoc.as<JsonObject>();
-
-        // Create or get the object for this script ID using to<JsonObject>()
-        // This will create the object if it doesn't exist, or return it if it does.
-        // If the key exists but is not an object, it will be replaced.
+        
         JsonObject scriptStateObj = root[localHumanId.c_str()].to<JsonObject>();
-
         scriptStateObj["counter"] = state.counter;
         scriptStateObj["hour"] = state.hour;
         scriptStateObj["minute"] = state.minute;
@@ -1205,363 +1083,250 @@ bool ScriptManager::saveScriptExecutionState(const String &humanId, const Script
             xSemaphoreGive(_spiffsMutex);
             return false;
         }
-
-        bool success = false;
-        if (serializeJson(statesDoc, file) == 0)
-        {
-            log_e("saveScriptExecutionState: Failed to write to %s.", SCRIPT_STATES_PATH);
-        }
-        else
-        {
+    
+        // Serialize the modified statesDoc to the file
+        size_t bytesWritten = serializeJson(statesDoc, file);
+        if (bytesWritten == 0) {
+            log_e("saveScriptExecutionState: Failed to write to %s (serializeJson returned 0).", SCRIPT_STATES_PATH);
+        } else {
+            log_d("saveScriptExecutionState: Wrote %u bytes to %s", bytesWritten, SCRIPT_STATES_PATH);
             success = true;
         }
-        file.close();
+        file.close(); // Close file after writing
+
         xSemaphoreGive(_spiffsMutex);
 
-        if (success)
+        if (success) {
             log_i("Script state for ID '%s' (C:%d, T:%02d:%02d:%02d) saved to %s.", localHumanId.c_str(), state.counter, state.hour, state.minute, state.second, SCRIPT_STATES_PATH);
+        }
         return success;
     }
-    log_e("ScriptManager::saveScriptExecutionState failed to take mutex for humanId %s", localHumanId.c_str());
-    return false;
+    else // This else corresponds to if (xSemaphoreTake...
+    {
+        log_e("ScriptManager::saveScriptExecutionState failed to take mutex for humanId %s", localHumanId.c_str());
+        return false;
+    }
 }
 
 bool ScriptManager::selectNextScript(bool moveUp, String &outSelectedHumanId, String &outSelectedName)
 {
-    JsonDocument listDoc; // Use JsonDocument
-    if (!loadScriptList(listDoc))
-    { // loadScriptList handles mutex
-        log_e("Cannot select next script, failed to load script list.");
-        return false;
-    }
-    if (!listDoc.is<JsonArray>() || listDoc.as<JsonArray>().size() == 0)
-    {
-        log_w("Cannot select next script, list is empty or not an array.");
-        outSelectedHumanId = DEFAULT_SCRIPT_ID; // Fallback
-        outSelectedName = "Default";
-        saveCurrentScriptId(DEFAULT_SCRIPT_ID); // Attempt to save default
-        return false;                           // Indicate that selection from list failed
-    }
-
-    JsonArray scriptList = listDoc.as<JsonArray>();
-    String currentHumanId;
-    getCurrentScriptId(currentHumanId); // getCurrentScriptId handles mutex
-
-    int currentIndex = -1;
-    for (int i = 0; i < scriptList.size(); i++)
-    {
-        JsonObject scriptInfo = scriptList[i];
-        const char *idJson = scriptInfo["id"];
-        if (idJson && currentHumanId == idJson)
+    if (xSemaphoreTake(_spiffsMutex, pdMS_TO_TICKS(1000)) == pdTRUE) { // Increased timeout for multiple operations
+        JsonDocument listDoc; // Use default allocator
+        if (!loadScriptList_nolock(listDoc))
         {
-            currentIndex = i;
-            break;
+            log_e("selectNextScript: Cannot select next script, failed to load script list.");
+            xSemaphoreGive(_spiffsMutex);
+            return false;
         }
-    }
-
-    int nextIndex = 0;
-    if (scriptList.size() > 0)
-    {
-        if (currentIndex != -1)
+        if (!listDoc.is<JsonArray>() || listDoc.as<JsonArray>().size() == 0)
         {
-            int delta = moveUp ? -1 : 1;
-            nextIndex = (currentIndex + delta + scriptList.size()) % scriptList.size();
+            log_w("selectNextScript: Cannot select next script, list is empty or not an array.");
+            outSelectedHumanId = DEFAULT_SCRIPT_ID;
+            outSelectedName = "Default";
+            saveCurrentScriptId_nolock(DEFAULT_SCRIPT_ID);
+            xSemaphoreGive(_spiffsMutex);
+            return false;
         }
-        else
-        {
-            nextIndex = moveUp ? scriptList.size() - 1 : 0; // Default to last or first
-        }
-        JsonObject nextScriptInfo = scriptList[nextIndex];
-        const char *nextId = nextScriptInfo["id"];
-        const char *nextName = nextScriptInfo["name"];
 
-        if (nextId)
+        JsonArray scriptList = listDoc.as<JsonArray>();
+        String currentHumanId;
+        getCurrentScriptId_nolock(currentHumanId);
+
+        int currentIndex = -1;
+        for (int i = 0; i < scriptList.size(); i++)
         {
-            outSelectedHumanId = nextId;
-            outSelectedName = nextName ? nextName : nextId;
-            log_i("Selected script index: %d, ID: %s, Name: %s", nextIndex, outSelectedHumanId.c_str(), outSelectedName.c_str());
-            if (saveCurrentScriptId(outSelectedHumanId))
-            { // saveCurrentScriptId handles mutex
-                return true;
+            JsonObject scriptInfo = scriptList[i];
+            const char *idJson = scriptInfo["id"];
+            if (idJson && currentHumanId == idJson)
+            {
+                currentIndex = i;
+                break;
+            }
+        }
+
+        int nextIndex = 0;
+        if (scriptList.size() > 0)
+        {
+            if (currentIndex != -1)
+            {
+                int delta = moveUp ? -1 : 1;
+                nextIndex = (currentIndex + delta + scriptList.size()) % scriptList.size();
             }
             else
             {
-                log_e("Failed to save the new current script ID: %s", outSelectedHumanId.c_str());
-                return false;
+                nextIndex = moveUp ? scriptList.size() - 1 : 0;
+            }
+            JsonObject nextScriptInfo = scriptList[nextIndex];
+            const char *nextId = nextScriptInfo["id"];
+            const char *nextName = nextScriptInfo["name"];
+
+            if (nextId)
+            {
+                outSelectedHumanId = nextId;
+                outSelectedName = nextName ? nextName : nextId;
+                log_i("selectNextScript: Selected script index: %d, ID: %s, Name: %s", nextIndex, outSelectedHumanId.c_str(), outSelectedName.c_str());
+                if (saveCurrentScriptId_nolock(outSelectedHumanId))
+                {
+                    xSemaphoreGive(_spiffsMutex);
+                    return true;
+                }
+                else
+                {
+                    log_e("selectNextScript: Failed to save the new current script ID: %s", outSelectedHumanId.c_str());
+                }
+            }
+            else
+            {
+                log_e("selectNextScript: Script at index %d has no ID.", nextIndex);
             }
         }
-        else
-        {
-            log_e("Script at index %d has no ID.", nextIndex);
-        }
+        // Fallback
+        outSelectedHumanId = DEFAULT_SCRIPT_ID;
+        outSelectedName = "Default";
+        saveCurrentScriptId_nolock(DEFAULT_SCRIPT_ID);
+        xSemaphoreGive(_spiffsMutex);
+        return false;
     }
-    // Fallback if something went wrong or list was empty after all
-    outSelectedHumanId = DEFAULT_SCRIPT_ID;
-    outSelectedName = "Default";
-    saveCurrentScriptId(DEFAULT_SCRIPT_ID);
+    log_e("selectNextScript: Failed to take mutex.");
     return false;
 }
 
 bool ScriptManager::getScriptForExecution(String &outHumanId, String &outFileId, ScriptExecState &outInitialState)
 {
     log_i("getScriptForExecution: Starting script selection process");
-
-    // Initialize outputs with empty/default values
     outHumanId = "";
     outFileId = "";
-    // outContent = ""; // Content is no longer handled here
     outInitialState = ScriptExecState();
 
-    // Step 1: Try to load the current script ID
-    String humanIdToLoad;
-    bool idFound = getCurrentScriptId(humanIdToLoad); // Mutex handled
-    log_d("getScriptForExecution: getCurrentScriptId returned: found=%s, id='%s'",
-          idFound ? "true" : "false", idFound ? humanIdToLoad.c_str() : "null");
+    if (xSemaphoreTake(_spiffsMutex, pdMS_TO_TICKS(2000)) == pdTRUE) { // Increased timeout
+        String humanIdToLoad;
+        bool idFound = getCurrentScriptId_nolock(humanIdToLoad);
+        log_d("getScriptForExecution: getCurrentScriptId_nolock returned: found=%s, id='%s'",
+              idFound ? "true" : "false", idFound ? humanIdToLoad.c_str() : "null");
 
-    // Step 2: Load the script list
-    DynamicJsonDocument listDoc(JSON_DOC_CAPACITY_SCRIPT_LIST);
-    bool listLoaded = loadScriptList(listDoc); // Mutex handled
+        JsonDocument listDoc; // Use default allocator
+        bool listLoaded = loadScriptList_nolock(listDoc);
 
-    if (!listLoaded)
-    {
-        log_w("getScriptForExecution: Failed to load script list, will try to use cached current script or default");
-    }
-    else
-    {
-        log_d("getScriptForExecution: Script list loaded successfully");
-    }
+        if (!listLoaded) log_w("getScriptForExecution: Failed to load script list, will try to use cached current script or default");
+        else log_d("getScriptForExecution: Script list loaded successfully");
 
-    // Get script list as a mutable array view if possible, as we might modify it
-    JsonArray scriptList; // Default empty JsonArray
-    if (listLoaded && listDoc.is<JsonArray>())
-    {
-        scriptList = listDoc.as<JsonArray>(); // Get a mutable view
-        log_d("getScriptForExecution: Script list contains %u items", scriptList.size());
-    }
-    else if (listLoaded)
-    {
-        log_e("getScriptForExecution: Loaded document is not a JsonArray");
-    }
-
-    String fileIdToLoadContent = "";
-
-    // Step 3: Handle case where we found an ID but it's empty
-    if (idFound && humanIdToLoad.isEmpty())
-    {
-        log_w("getScriptForExecution: Current script ID loaded but was empty. Will try first script or default.");
-        idFound = false;
-    }
-
-    // Step 4: If we have a valid current script ID, try to find its details in the list
-    if (idFound && !humanIdToLoad.isEmpty())
-    {
-        log_i("getScriptForExecution: Looking for script '%s' in the list", humanIdToLoad.c_str());
-        bool foundInList = false;
-
-        if (listLoaded && !scriptList.isNull() && scriptList.size() > 0)
-        {
-            int index = 0;
-            for (JsonVariant item : scriptList)
-            { // Iterate with mutable JsonVariant
-                if (item.is<JsonObject>())
-                {                                                  // Check if it can be viewed as JsonObject
-                    JsonObject scriptInfo = item.as<JsonObject>(); // Get mutable JsonObject
-
-                    // Check if the item has an "id" field
-                    if (!scriptInfo["id"].isNull() && scriptInfo["id"].is<const char *>())
-                    {
-                        String scriptId = scriptInfo["id"].as<String>();
-
-                        if (humanIdToLoad == scriptId)
-                        {
-                            log_i("getScriptForExecution: Found matching script at index %d", index);
-
-                            // Check for fileId field - ensure we have a valid short fileId
-                            if (!scriptInfo["fileId"].isNull() && scriptInfo["fileId"].is<const char *>())
-                            {
-                                fileIdToLoadContent = scriptInfo["fileId"].as<String>();
-                                // Check if fileId is empty, "null", or doesn't follow our format
-                                if (fileIdToLoadContent.isEmpty() || fileIdToLoadContent == "null" || !fileIdToLoadContent.startsWith("s"))
-                                {
-                                    log_w("getScriptForExecution: Script '%s' has invalid fileId '%s', generating new one",
-                                          scriptId.c_str(), fileIdToLoadContent.c_str());
-
-                                    fileIdToLoadContent = _generateShortFileId_nolock(scriptId); // Call _nolock
-
-                                    // Update the fileId in the list document so it persists
-                                    scriptInfo["fileId"] = fileIdToLoadContent; // This is now valid
-
-                                    // Flag that we need to save the updated list
-                                    bool saveResult = saveScriptList(listDoc);
-                                    log_i("getScriptForExecution: Updated script list with new fileId '%s' for '%s'. Save result: %s",
-                                          fileIdToLoadContent.c_str(), scriptId.c_str(), saveResult ? "success" : "failed");
-                                }
-                            }
-                            else
-                            {
-                                log_w("getScriptForExecution: Script '%s' missing 'fileId' field or it's not a string. Generating new one.", scriptId.c_str());
-
-                                fileIdToLoadContent = _generateShortFileId_nolock(scriptId); // Call _nolock
-
-                                // Add the fileId to the script info
-                                scriptInfo["fileId"] = fileIdToLoadContent; // This is now valid
-
-                                // Save the updated list
-                                bool saveResult = saveScriptList(listDoc);
-                                log_i("getScriptForExecution: Added new fileId '%s' to script '%s'. Save result: %s",
-                                      fileIdToLoadContent.c_str(), scriptId.c_str(), saveResult ? "success" : "failed");
-                            }
-                            foundInList = true;
-                            break;
-                        }
-                    }
-                    else
-                    {
-                        log_w("getScriptForExecution: Script at index %d has no valid 'id' field", index);
-                    }
-                }
-                else
-                {
-                    log_w("getScriptForExecution: Item at index %d is not a JSON object", index);
-                }
-                index++;
-            }
+        JsonArray scriptList;
+        if (listLoaded && listDoc.is<JsonArray>()) {
+            scriptList = listDoc.as<JsonArray>();
+            log_d("getScriptForExecution: Script list contains %u items", scriptList.size());
+        } else if (listLoaded) {
+            log_e("getScriptForExecution: Loaded document is not a JsonArray");
         }
 
-        if (!foundInList)
-        {
-            log_w("getScriptForExecution: Script ID '%s' not found in list. Will try first script.", humanIdToLoad.c_str());
+        String fileIdToLoadContent = "";
+        if (idFound && humanIdToLoad.isEmpty()) {
+            log_w("getScriptForExecution: Current script ID loaded but was empty. Will try first script or default.");
             idFound = false;
-            humanIdToLoad = "";
-            fileIdToLoadContent = "";
         }
-    }
 
-    // Step 5: If no current ID or it wasn't found in the list, try using the first script from the list
-    if (!idFound || humanIdToLoad.isEmpty() || fileIdToLoadContent.isEmpty())
-    {
-        log_i("getScriptForExecution: Attempting to use the first script in the list");
+        if (idFound && !humanIdToLoad.isEmpty()) {
+            log_i("getScriptForExecution: Looking for script '%s' in the list", humanIdToLoad.c_str());
+            bool foundInList = false;
+            if (listLoaded && !scriptList.isNull() && scriptList.size() > 0) {
+                int index = 0;
+                for (JsonVariant item : scriptList) {
+                    if (item.is<JsonObject>()) {
+                        JsonObject scriptInfo = item.as<JsonObject>();
+                        if (!scriptInfo["id"].isNull() && scriptInfo["id"].is<const char*>()) {
+                            String scriptId = scriptInfo["id"].as<String>();
+                            if (humanIdToLoad == scriptId) {
+                                log_i("getScriptForExecution: Found matching script at index %d", index);
+                                if (!scriptInfo["fileId"].isNull() && scriptInfo["fileId"].is<const char*>()) {
+                                    fileIdToLoadContent = scriptInfo["fileId"].as<String>();
+                                    if (fileIdToLoadContent.isEmpty() || fileIdToLoadContent == "null" || !fileIdToLoadContent.startsWith("s")) {
+                                        log_w("getScriptForExecution: Script '%s' has invalid fileId '%s', generating new one", scriptId.c_str(), fileIdToLoadContent.c_str());
+                                        fileIdToLoadContent = _generateShortFileId_nolock(scriptId);
+                                        scriptInfo["fileId"] = fileIdToLoadContent;
+                                        saveScriptList_nolock(listDoc); // Use _nolock
+                                    }
+                                } else {
+                                    log_w("getScriptForExecution: Script '%s' missing 'fileId'. Generating new one.", scriptId.c_str());
+                                    fileIdToLoadContent = _generateShortFileId_nolock(scriptId);
+                                    scriptInfo["fileId"] = fileIdToLoadContent;
+                                    saveScriptList_nolock(listDoc); // Use _nolock
+                                }
+                                foundInList = true;
+                                break;
+                            }
+                        } else { log_w("getScriptForExecution: Script at index %d has no valid 'id'", index); }
+                    } else { log_w("getScriptForExecution: Item at index %d not an object", index); }
+                    index++;
+                }
+            }
+            if (!foundInList) {
+                log_w("getScriptForExecution: Script ID '%s' not found in list. Will try first script.", humanIdToLoad.c_str());
+                idFound = false; humanIdToLoad = ""; fileIdToLoadContent = "";
+            }
+        }
 
-        if (listLoaded && !scriptList.isNull() && scriptList.size() > 0)
-        {
-            JsonVariant firstItem = scriptList[0]; // Get mutable JsonVariant
-
-            if (firstItem.is<JsonObject>())
-            {                                                        // Check if it can be viewed as JsonObject
-                JsonObject firstScript = firstItem.as<JsonObject>(); // Get mutable JsonObject
-
-                // Check if first item has valid id
-                if (!firstScript["id"].isNull() && firstScript["id"].is<const char *>())
-                {
-                    humanIdToLoad = firstScript["id"].as<String>();
-
-                    // Check for fileId - standardize handling of null/empty/literal "null" values
-                    if (!firstScript["fileId"].isNull() && firstScript["fileId"].is<const char *>())
-                    {
-                        fileIdToLoadContent = firstScript["fileId"].as<String>();
-                        // Check if fileId is empty or the literal string "null"
-                        if (fileIdToLoadContent.isEmpty() || fileIdToLoadContent == "null" || !fileIdToLoadContent.startsWith("s"))
-                        {
-                            log_w("getScriptForExecution: First script '%s' has invalid or empty/null fileId '%s', generating new one", humanIdToLoad.c_str(), fileIdToLoadContent.c_str());
-                            fileIdToLoadContent = _generateShortFileId_nolock(humanIdToLoad); // Call _nolock
-                            firstScript["fileId"] = fileIdToLoadContent; // Update in list
-                            saveScriptList(listDoc);                     // Save updated list
+        if (!idFound || humanIdToLoad.isEmpty() || fileIdToLoadContent.isEmpty()) {
+            log_i("getScriptForExecution: Attempting to use the first script in the list");
+            if (listLoaded && !scriptList.isNull() && scriptList.size() > 0) {
+                JsonVariant firstItem = scriptList[0];
+                if (firstItem.is<JsonObject>()) {
+                    JsonObject firstScript = firstItem.as<JsonObject>();
+                    if (!firstScript["id"].isNull() && firstScript["id"].is<const char*>()) {
+                        humanIdToLoad = firstScript["id"].as<String>();
+                        if (!firstScript["fileId"].isNull() && firstScript["fileId"].is<const char*>()) {
+                            fileIdToLoadContent = firstScript["fileId"].as<String>();
+                            if (fileIdToLoadContent.isEmpty() || fileIdToLoadContent == "null" || !fileIdToLoadContent.startsWith("s")) {
+                                log_w("getScriptForExecution: First script '%s' invalid fileId '%s', generating.", humanIdToLoad.c_str(), fileIdToLoadContent.c_str());
+                                fileIdToLoadContent = _generateShortFileId_nolock(humanIdToLoad);
+                                firstScript["fileId"] = fileIdToLoadContent;
+                                saveScriptList_nolock(listDoc); // Use _nolock
+                            }
+                        } else {
+                            log_w("getScriptForExecution: First script '%s' missing 'fileId'. Generating.", humanIdToLoad.c_str());
+                            fileIdToLoadContent = _generateShortFileId_nolock(humanIdToLoad);
+                            firstScript["fileId"] = fileIdToLoadContent;
+                            saveScriptList_nolock(listDoc); // Use _nolock
                         }
-                    }
-                    else
-                    {
-                        log_w("getScriptForExecution: First script '%s' missing 'fileId' field or it's not a string. Generating new one.", humanIdToLoad.c_str());
-                        fileIdToLoadContent = _generateShortFileId_nolock(humanIdToLoad); // Call _nolock
-                        firstScript["fileId"] = fileIdToLoadContent; // Update in list
-                        saveScriptList(listDoc);                     // Save updated list
-                    }
-
-                    log_i("getScriptForExecution: Using first script: ID '%s', fileId '%s'",
-                          humanIdToLoad.c_str(), fileIdToLoadContent.c_str());
-
-                    // Save this as the new current script
-                    if (!saveCurrentScriptId(humanIdToLoad))
-                    {
-                        log_w("getScriptForExecution: Failed to save new current script ID");
-                    }
-                }
-                else
-                {
-                    log_e("getScriptForExecution: First script has no valid 'id' field");
-                    humanIdToLoad = "";
-                    fileIdToLoadContent = "";
-                }
-            }
-            else
-            {
-                log_e("getScriptForExecution: First item in list is not a JSON object");
-                humanIdToLoad = "";
-                fileIdToLoadContent = "";
+                        log_i("getScriptForExecution: Using first script: ID '%s', fileId '%s'", humanIdToLoad.c_str(), fileIdToLoadContent.c_str());
+                        if (!saveCurrentScriptId_nolock(humanIdToLoad)) log_w("getScriptForExecution: Failed to save new current script ID");
+                    } else { log_e("getScriptForExecution: First script has no valid 'id'"); humanIdToLoad = ""; fileIdToLoadContent = ""; }
+                } else { log_e("getScriptForExecution: First item not an object"); humanIdToLoad = ""; fileIdToLoadContent = ""; }
+            } else {
+                log_w("getScriptForExecution: No valid scripts in list. Using built-in default script.");
+                outHumanId = DEFAULT_SCRIPT_ID; outFileId = DEFAULT_SCRIPT_ID; outInitialState.state_loaded = false;
+                xSemaphoreGive(_spiffsMutex);
+                return true;
             }
         }
-        else
-        {
-            // No valid list or it's empty - use default script
-            log_w("getScriptForExecution: No valid scripts in list. Using built-in default script.");
-            outHumanId = DEFAULT_SCRIPT_ID;
-            outFileId = DEFAULT_SCRIPT_ID;
-            // outContent = DEFAULT_SCRIPT_CONTENT; // Content is no longer handled here
-            outInitialState.state_loaded = false;
-            log_i("getScriptForExecution: Returning built-in default script ID and fileId");
+
+        if (fileIdToLoadContent.isEmpty() || humanIdToLoad.isEmpty()) {
+            log_i("getScriptForExecution: Failed to determine valid script. Using built-in default.");
+            outHumanId = DEFAULT_SCRIPT_ID; outFileId = DEFAULT_SCRIPT_ID; outInitialState.state_loaded = false;
+            xSemaphoreGive(_spiffsMutex);
             return true;
         }
-    }
 
-    // Step 6: Final validation before trying to load content
-    if (fileIdToLoadContent.isEmpty() || humanIdToLoad.isEmpty())
-    {
-        log_i("getScriptForExecution: Failed to determine valid script. Using built-in default.");
-        outHumanId = DEFAULT_SCRIPT_ID;
-        outFileId = DEFAULT_SCRIPT_ID;
-        // outContent = DEFAULT_SCRIPT_CONTENT; // Content is no longer handled here
-        outInitialState.state_loaded = false;
+        if (fileIdToLoadContent == DEFAULT_SCRIPT_ID) {
+            log_i("getScriptForExecution: Identified as default script ID. RenderTask will use built-in content.");
+            outHumanId = DEFAULT_SCRIPT_ID; outFileId = DEFAULT_SCRIPT_ID; outInitialState.state_loaded = false;
+            xSemaphoreGive(_spiffsMutex);
+            return true;
+        }
+
+        outHumanId = humanIdToLoad; outFileId = fileIdToLoadContent;
+        bool stateLoaded = loadScriptExecutionState_nolock(outHumanId, outInitialState);
+        if (!stateLoaded) {
+            log_i("getScriptForExecution: No saved state for script '%s'. Using defaults.", outHumanId.c_str());
+            outInitialState = ScriptExecState(); outInitialState.state_loaded = false;
+        } else {
+            log_i("getScriptForExecution: Loaded execution state for script '%s'", outHumanId.c_str());
+        }
+        log_i("getScriptForExecution: Successfully determined script '%s' (fileId '%s') for execution.", outHumanId.c_str(), outFileId.c_str());
+        xSemaphoreGive(_spiffsMutex);
         return true;
     }
-
-    // Step 7: Try to load the actual script content
-    log_i("getScriptForExecution: Loading content for fileId '%s'", fileIdToLoadContent.c_str());
-
-    // Check if it's the default script ID, if so use built-in content directly
-    if (fileIdToLoadContent == DEFAULT_SCRIPT_ID)
-    {
-        log_i("getScriptForExecution: Identified as default script ID. RenderTask will use built-in content.");
-        outHumanId = DEFAULT_SCRIPT_ID;
-        outFileId = DEFAULT_SCRIPT_ID;
-        // outContent = DEFAULT_SCRIPT_CONTENT; // Content is no longer handled here
-        outInitialState.state_loaded = false; // Default script always starts fresh for state purposes here
-        return true;
-    }
-
-    // For non-default scripts, we don't load content here anymore.
-    // We just confirm the humanId and fileId, and load its state.
-    outHumanId = humanIdToLoad;
-    outFileId = fileIdToLoadContent;
-
-    // Try to load execution state
-    bool stateLoaded = loadScriptExecutionState(outHumanId, outInitialState);
-    if (!stateLoaded)
-    {
-        log_i("getScriptForExecution: No saved state for script '%s'. Using defaults.", outHumanId.c_str());
-        outInitialState = ScriptExecState(); // Ensure it's reset
-        outInitialState.state_loaded = false;
-    }
-    else
-    {
-        log_i("getScriptForExecution: Loaded execution state for script '%s'", outHumanId.c_str());
-    }
-
-    log_i("getScriptForExecution: Successfully determined script '%s' (fileId '%s') for execution.",
-            outHumanId.c_str(), outFileId.c_str());
-    return true;
-    // NOTE: The fallback to default script if loadScriptContent failed is removed,
-    // because loadScriptContent is no longer called here.
-    // RenderTask will handle content loading failures.
-    // If getScriptForExecution reaches this point, it means it found a valid script entry (or decided on default earlier).
+    log_e("getScriptForExecution: Failed to take mutex.");
+    outHumanId = DEFAULT_SCRIPT_ID; outFileId = DEFAULT_SCRIPT_ID; outInitialState.state_loaded = false; // Fallback
+    return false;
 }
 
 void ScriptManager::clearAllScriptData()
@@ -1582,33 +1347,29 @@ void ScriptManager::clearAllScriptData()
                 File entry = root.openNextFile();
                 while (entry)
                 {
-                    esp_task_wdt_reset(); // Reset WDT during file iteration
+                    esp_task_wdt_reset();
                     if (!entry.isDirectory())
                     {
-                        String baseName = entry.name(); // This seems to return basename e.g. "s1"
-                        // entry.path() might be more reliable if available and returns full path.
-                        // For now, construct path based on observed behavior of entry.name().
+                        String baseName = entry.name();
                         String fullPath = String(CONTENT_DIR_PATH) + "/" + baseName;
                         log_i("Deleting content file: %s (derived from base: %s)", fullPath.c_str(), baseName.c_str());
                         if (!SPIFFS.remove(fullPath.c_str())) {
                             log_e("Failed to remove %s", fullPath.c_str());
                         }
                     }
-                    entry.close(); // Close file handle
+                    entry.close();
                     entry = root.openNextFile();
                 }
             }
-            root.close(); // Close directory handle
+            root.close();
         }
         else
         {
             log_w("Could not open %s directory for clearing.", CONTENT_DIR_PATH);
         }
-        // Attempt to remove the content directory itself if it's empty
-        // This might fail if not empty, which is fine.
+        
         SPIFFS.rmdir(CONTENT_DIR_PATH);
-        // Recreate directory structure
-        initializeSPIFFS(); // This will recreate dirs if they were removed or ensure they exist
+        initializeSPIFFS();
 
         xSemaphoreGive(_spiffsMutex);
         log_i("Script data clearing completed.");
@@ -1624,7 +1385,7 @@ void ScriptManager::cleanupOrphanedStates(const JsonArrayConst &validScriptList)
     if (xSemaphoreTake(_spiffsMutex, pdMS_TO_TICKS(500)) == pdTRUE)
     {
         log_i("Cleaning up orphaned script execution states...");
-        DynamicJsonDocument currentStatesDoc(JSON_DOC_CAPACITY_SCRIPT_STATES);
+        JsonDocument currentStatesDoc; // Use default allocator
         File statesFile = SPIFFS.open(SCRIPT_STATES_PATH, FILE_READ);
         bool statesLoaded = false;
 
@@ -1662,7 +1423,7 @@ void ScriptManager::cleanupOrphanedStates(const JsonArrayConst &validScriptList)
                     log_w("Cleanup: Item in validScriptList is not an object, skipping.");
                     continue;
                 }
-                JsonObjectConst item_obj = item.as<JsonObjectConst>(); // Corrected
+                JsonObjectConst item_obj = item.as<JsonObjectConst>();
                 const char *humanId = item_obj["id"].as<const char *>();
                 if (humanId)
                     validHumanIds.insert(String(humanId));
@@ -1672,7 +1433,6 @@ void ScriptManager::cleanupOrphanedStates(const JsonArrayConst &validScriptList)
             bool statesModified = false;
             std::vector<String> keysToRemove;
 
-            // Collect keys to remove first
             for (auto kv : statesRoot)
             {
                 String scriptIdKey = kv.key().c_str();
@@ -1699,7 +1459,7 @@ void ScriptManager::cleanupOrphanedStates(const JsonArrayConst &validScriptList)
                 }
                 else
                 {
-                    esp_task_wdt_reset(); // Reset WDT before writing states file
+                    esp_task_wdt_reset();
                     if (serializeJson(currentStatesDoc, statesFile) > 0)
                     {
                         log_i("Successfully saved cleaned-up script states to %s.", SCRIPT_STATES_PATH);
@@ -1739,7 +1499,6 @@ void ScriptManager::cleanupOrphanedContent(const JsonArrayConst &validScriptList
             }
             JsonObjectConst item_obj = item.as<JsonObjectConst>();
 
-            // Get humanId first as fallback
             String humanId;
             if (!item_obj["id"].isNull() && item_obj["id"].is<const char *>())
             {
@@ -1751,25 +1510,27 @@ void ScriptManager::cleanupOrphanedContent(const JsonArrayConst &validScriptList
                 continue;
             }
 
-            // Get fileId with standardized null/empty handling
             String fileId;
             if (!item_obj["fileId"].isNull() && item_obj["fileId"].is<const char *>())
             {
                 fileId = item_obj["fileId"].as<String>();
-                // Check if fileId is empty or the literal string "null"
                 if (fileId.isEmpty() || fileId == "null")
                 {
                     log_d("Cleanup Content: Script '%s' has empty or 'null' fileId, using humanId instead", humanId.c_str());
-                    fileId = humanId;
+                    fileId = humanId; // This case should not happen if ensureUniqueFileIds is working
                 }
             }
             else
             {
                 log_d("Cleanup Content: Script '%s' missing 'fileId' field or it's not a string. Using humanId.", humanId.c_str());
-                fileId = humanId;
+                fileId = humanId; // This case should not happen if ensureUniqueFileIds is working
             }
-
-            validFileIds.insert(fileId);
+            // Only add valid 's' prefixed fileIds or the default script ID
+            if (fileId.startsWith("s") || fileId == DEFAULT_SCRIPT_ID) {
+                 validFileIds.insert(fileId);
+            } else {
+                log_w("Cleanup Content: Script '%s' has an invalid fileId '%s' that is not 's'-prefixed or default. Skipping for cleanup consideration.", humanId.c_str(), fileId.c_str());
+            }
         }
 
         File root = SPIFFS.open(CONTENT_DIR_PATH);
@@ -1778,11 +1539,10 @@ void ScriptManager::cleanupOrphanedContent(const JsonArrayConst &validScriptList
             File entry = root.openNextFile();
             while (entry)
             {
-                esp_task_wdt_reset(); // Reset WDT during file iteration
+                esp_task_wdt_reset();
                 if (!entry.isDirectory())
                 {
-                    String entryName = entry.name(); // This should be just the filename e.g. "s0", "s1"
-                    // Construct fileId from entryName. If entryName includes path, extract filename part.
+                    String entryName = entry.name();
                     String fileIdFromPath = entryName.substring(entryName.lastIndexOf('/') + 1);
 
                     if (validFileIds.find(fileIdFromPath) == validFileIds.end())

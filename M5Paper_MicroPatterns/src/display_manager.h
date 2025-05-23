@@ -32,6 +32,10 @@ public:
     bool lockEPD(TickType_t timeout = portMAX_DELAY);
     void unlockEPD();
 
+    // Methods for specific UI indicators
+    void drawStartupIndicator();
+    void drawActivityIndicator();
+
 private:
     M5EPD_Canvas _canvas;
     SemaphoreHandle_t _epdMutex; // Mutex to protect EPD hardware access and canvas object
