@@ -322,7 +322,9 @@ void MainControlTask_Function(void *pvParameters) {
             g_systemManager->resetFreshStartCounter(); // Reset counter after threshold
             g_systemManager->incrementFreshStartCounter(); // Set to 1 for next cycle
         }
-        g_systemManager->saveSettings(); // Persist counter and intent
+        if (!g_systemManager->saveSettings()) { // Persist counter and intent
+            log_e("MainCtrl: Failed to save settings after fresh start counter update!");
+        }
     }
     esp_task_wdt_reset();
 
@@ -488,15 +490,9 @@ void MainControlTask_Function(void *pvParameters) {
             log_i("MainCtrl: Received fetch result. Status: %d, Message: %s", (int)fetchResultItem.status, fetch_message.c_str());
 
             if (fetchResultItem.status == FetchResultStatus::NO_WIFI) {
-                g_displayManager->showMessage("Fetch: WiFi Fail", 200, 15, false, false); // Brief message
-                // No long delay, immediately attempt re-render
-                if (!currentLoadedScriptId.isEmpty()) {
-                    log_i("MainCtrl: Fetch failed (NO_WIFI). Re-rendering current script '%s' with saved state.", currentLoadedScriptId.c_str());
-                    triggerScriptRender(currentLoadedScriptId, true, currentState, currentLoadedScriptId); // true for useAsIsState
-                } else {
-                    log_w("MainCtrl: Fetch failed (NO_WIFI), but no current script loaded to re-render.");
-                    vTaskDelay(pdMS_TO_TICKS(1000)); // Show message a bit longer if no re-render
-                }
+                log_w("MainCtrl: Fetch failed (NO_WIFI). Silently skipping. No EPD message, no re-render.");
+                // User requested to not show message on EPD and not re-render script.
+                // Logging to console is maintained.
             } else if (fetchResultItem.status == FetchResultStatus::SUCCESS) {
                 g_displayManager->showMessage("Fetch: " + fetch_message, 350, 15, false, true); // Show success message
                 vTaskDelay(pdMS_TO_TICKS(1000)); // Display success message for a bit
@@ -505,7 +501,9 @@ void MainControlTask_Function(void *pvParameters) {
                 if (g_systemManager->isFullRefreshIntended()) {
                     g_systemManager->setFullRefreshIntended(false);
                 }
-                g_systemManager->saveSettings();
+                if (!g_systemManager->saveSettings()) {
+                    log_e("MainCtrl: Failed to save settings after successful fetch!");
+                }
 
                 if (fetchResultItem.new_scripts_available) {
                     g_displayManager->showMessage("New Scripts!", 400, 15);
