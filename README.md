@@ -175,7 +175,7 @@ MicroPatterns is a mini-language designed for creating generative pixel art, pri
    ```micropatterns
    ROTATE DEGREES=d
    ```
-   *   Sets the *absolute* rotation angle around the current origin. `d` is an integer (0-359, wraps around). Uses integer math internally (e.g., precomputed sin/cos tables). Replaces any previous rotation.
+   *   Applies an additional rotation of `d` degrees *cumulatively* to the current transformation state, around the current origin. `d` is an integer (0-359, wraps around). Uses integer math internally (e.g., precomputed sin/cos tables).
 
 *   **Scale:**
    ```micropatterns
