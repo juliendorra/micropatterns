@@ -1,10 +1,13 @@
-# MicroPatterns Project
+# Micropatterns Project
 
-This project defines and implements the **MicroPatterns DSL**, a mini-language designed for creating generative pixel art, targeting monochrome e-ink displays on devices like the ESP32-based M5Paper and Watchy clones.
+Micropatterns is a small tech design experiment: a generative art web app and an ESP32 firmware for e-paper devices working together to put generative art in your pocket
+
+This project defines and implements the **Micropatterns language**, a mini-language designed for creating generative pixel art, targeting monochrome e-ink displays on devices like the ESP32-based M5Paper and Watchy clones.
 
 It includes:
-*   The MicroPatterns DSL Specification (see below).
+*   The Micropatterns DSL Specification (see below).
 *   A JavaScript-based emulator (`micropatterns_emulator/`) for testing and developing scripts in a web browser.
+  
 *   An ESP32 C++/Arduino runtime for M5Paper, including:
     *   Parsing and execution of the DSL.
     *   SPIFFS storage for multiple scripts.
@@ -13,13 +16,10 @@ It includes:
     *   Graceful handling of unavailable WiFi - skips fetch entirely if WiFi is unavailable.
     *   Non-blocking fetch operations that never prevent device operation.
     *   Light sleep support for power saving.
-    *   Graceful handling of unavailable WiFi - skips fetch entirely if WiFi is unavailable.
-    *   Non-blocking fetch operations that never prevent device operation.
-    *   Light sleep support for power saving.
 
-## MicroPatterns DSL Overview
+## Micropatterns Language Overview
 
-MicroPatterns allows you to define simple rules and use environment variables (time, counter) to generate evolving abstract or representational pixel art. Its key features include:
+Micropatterns allows you to define simple rules and use environment variables (time, counter) to generate evolving abstract or representational pixel art. Its key features include:
 
 *   **Simplicity:** Easy-to-understand keywords and syntax.
 *   **Integer Math:** Optimized for resource-constrained devices.
@@ -33,14 +33,14 @@ MicroPatterns allows you to define simple rules and use environment variables (t
 
 ---
 
-## MicroPatterns DSL Specification v1.3 
+## Micropatterns Language Specification v1.3 
 
 1.2 FILL_PIXEL
 1.3 Remove TIMES from REPEAT
 
 ### Overview
 
-MicroPatterns is a mini-language designed for creating generative pixel art, primarily targeting resource-constrained devices like ESP32-based e-ink displays (e.g., Watchy). It generates static images based on environment variables (time, counter) and user-defined patterns.
+Micropatterns is a mini-language designed for creating generative pixel art, primarily targeting resource-constrained devices like ESP32-based e-ink displays (e.g., Watchy). It generates static images based on environment variables (time, counter) and user-defined patterns.
 
 ### Core Concepts
 
@@ -64,7 +64,7 @@ MicroPatterns is a mini-language designed for creating generative pixel art, pri
 
 ### Syntax
 
-*   **Comments:** Start with `#` and continue to the end of the line. Comments must be on their own line, end of line comments are not valid.
+*   **Comments:** Start with `#` and continue to the end of the line. Comments must be on their own line. End of line comments are not allowed and are invalid.
 *   **Commands:** One command per line.
 *   **Parameters:** `NAME=value` format. Order generally doesn't matter unless specified. Values can be integer literals, string literals (in double quotes), variable references (`$variable_name` - case-insensitive), or environment variables (`$HOUR`, etc. - case-insensitive).
 
@@ -91,7 +91,7 @@ MicroPatterns is a mini-language designed for creating generative pixel art, pri
    *   **Expressions:** Limited to integer math: `value [+-*/%] value ...`
        *   `value` can be an integer literal, `$variable` (case-insensitive), or an environment variable (`$HOUR`, etc. - case-insensitive). Variables used in the expression must have been previously declared (either by `VAR` earlier in the script or standard environment variables).
        *   Operations are performed with standard precedence (`*`, `/`, `%` before `+`, `-`) and left-to-right associativity for equal precedence.
-       *   Parentheses are **NOT** supported.
+       *   Parentheses are **NOT** supported. Split your expressions into several VAR if you need specific precedence
        *   Division `/` is integer division (truncates towards zero).
        *   Modulo `%` gives the remainder. Division/Modulo by zero is a runtime error.
    *   Example (declaration only): `VAR $offset` (initializes $offset to 0)
@@ -106,6 +106,7 @@ MicroPatterns is a mini-language designed for creating generative pixel art, pri
    *   Use `LET` to change the value of a variable after its initial declaration.
    *   Expression rules are the same as for `VAR` initialization.
    *   Example: `LET $offset = $offset + 1`
+   *   Parentheses are **NOT** supported. Split your expressions into several VAR if you need specific precedence
 
 ### Pattern Definition
 
