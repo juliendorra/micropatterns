@@ -406,21 +406,25 @@ export class MicroPatternsDrawing {
             return { minX: 0, minY: 0, maxX: 0, maxY: 0, isOffScreen: true };
         }
 
-        const scaledAssetWidth = assetDefinition.width * currentScaleFactor;
-        const scaledAssetHeight = assetDefinition.height * currentScaleFactor;
+        // Helper to consistently transform logical points to screen space:
+        // 1. Scale logical coordinates by currentScaleFactor.
+        // 2. Transform scaled logical coordinates by currentTransformMatrix.
+        const _transformPointInternal = (lx, ly) => {
+            const scaled_lx = lx * currentScaleFactor;
+            const scaled_ly = ly * currentScaleFactor;
+            return currentTransformMatrix.transformPoint({ x: scaled_lx, y: scaled_ly });
+        };
 
-        // Define corners in the logical space, using assetLogicalX,Y as the origin for the SCALED asset.
-        // These points (assetLogicalX, assetLogicalY) are NOT themselves scaled by currentScaleFactor yet.
-        const p_local_tl = { x: assetLogicalX, y: assetLogicalY };
-        const p_local_tr = { x: assetLogicalX + scaledAssetWidth, y: assetLogicalY };
-        const p_local_br = { x: assetLogicalX + scaledAssetWidth, y: assetLogicalY + scaledAssetHeight };
-        const p_local_bl = { x: assetLogicalX, y: assetLogicalY + scaledAssetHeight };
+        const W = assetDefinition.width;
+        const H = assetDefinition.height;
 
-        // Transform these points using the provided matrix.
-        const s_tl = currentTransformMatrix.transformPoint(p_local_tl);
-        const s_tr = currentTransformMatrix.transformPoint(p_local_tr);
-        const s_br = currentTransformMatrix.transformPoint(p_local_br);
-        const s_bl = currentTransformMatrix.transformPoint(p_local_bl);
+        // Transform the four corners of the asset's logical bounding box.
+        // (assetLogicalX, assetLogicalY) is the logical top-left of the asset.
+        // W, H are the logical width and height of the asset.
+        const s_tl = _transformPointInternal(assetLogicalX, assetLogicalY);
+        const s_tr = _transformPointInternal(assetLogicalX + W, assetLogicalY);
+        const s_br = _transformPointInternal(assetLogicalX + W, assetLogicalY + H);
+        const s_bl = _transformPointInternal(assetLogicalX, assetLogicalY + H);
 
         let minX = Math.min(s_tl.x, s_tr.x, s_br.x, s_bl.x);
         let minY = Math.min(s_tl.y, s_tr.y, s_br.y, s_bl.y);
