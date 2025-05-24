@@ -165,35 +165,46 @@ void DisplayManager::drawStartupIndicator()
     if (xSemaphoreTake(_epdMutex, pdMS_TO_TICKS(500)) == pdTRUE)
     {
         // Define indicator properties
-        int32_t main_canvas_centerX = _canvas.width() / 2;
-        int32_t main_canvas_centerY = 0;         // On the top edge
-        int32_t outer_radius = 64;               // Diameter 128px
-        int32_t inner_radius = outer_radius - 8; // 8px thick outline
+        const int32_t indicator_width = 128;
+        const int32_t indicator_height = 64;
+        const int32_t outline_thickness = 12;
 
-        // 1. Draw on main _canvas for consistency
-        _canvas.fillCircle(main_canvas_centerX, main_canvas_centerY, outer_radius, 15); // BLACK (outline)
-        _canvas.fillCircle(main_canvas_centerX, main_canvas_centerY, inner_radius, 0);  // WHITE (inside)
-
-        // 2. Define region for the small canvas push
-        int32_t region_w = 2 * outer_radius;
-        int32_t region_h = outer_radius; // Height is radius for a half-circle at the top
-        int32_t region_screen_x = main_canvas_centerX - outer_radius;
+        // 1. Define region for the canvas push (this is the visible part of the indicator)
+        int32_t region_w = indicator_width;
+        int32_t region_h = indicator_height;
+        int32_t region_screen_x = _canvas.width() / 2 - region_w / 2;
         int32_t region_screen_y = 0; // Top edge
 
-        // 3. Create a temporary canvas for the indicator region and push it
-        M5EPD_Canvas indicatorCanvas(&M5.EPD);
-        if (indicatorCanvas.createCanvas(region_w, region_h))
+        // 2. Draw on main _canvas for consistency (used as fallback)
+        // Outer black rectangle
+        _canvas.fillRect(region_screen_x, region_screen_y, region_w, region_h, 15); // BLACK
+        // Inner white rectangle (flush with top edge)
+        _canvas.fillRect(region_screen_x + outline_thickness,
+                         region_screen_y, // Flush with top
+                         region_w - (2 * outline_thickness),
+                         region_h - outline_thickness,
+                         0); // WHITE
+
+        // 3. Create a temporary canvas for the indicator region and push it for partial update
+        M5EPD_Canvas tempIndicatorCanvas(&M5.EPD);
+        if (tempIndicatorCanvas.createCanvas(region_w, region_h))
         {
             // Draw on the temporary canvas (coordinates relative to this small canvas)
-            indicatorCanvas.fillCircle(region_w / 2, 0, outer_radius, 15); // BLACK outline
-            indicatorCanvas.fillCircle(region_w / 2, 0, inner_radius, 0);  // WHITE inside
-            indicatorCanvas.pushCanvas(region_screen_x, region_screen_y, UPDATE_MODE_DU4);
-            indicatorCanvas.deleteCanvas();
-            log_i("DisplayManager: Drew startup indicator using temporary canvas for partial update.");
+            // Outer black rectangle
+            tempIndicatorCanvas.fillRect(0, 0, region_w, region_h, 15); // BLACK
+            // Inner white rectangle (flush with top edge of temp canvas)
+            tempIndicatorCanvas.fillRect(outline_thickness,
+                                         0, // Flush with top
+                                         region_w - (2 * outline_thickness),
+                                         region_h - outline_thickness,
+                                         0); // WHITE
+            tempIndicatorCanvas.pushCanvas(region_screen_x, region_screen_y, UPDATE_MODE_DU4);
+            tempIndicatorCanvas.deleteCanvas();
+            log_i("DisplayManager: Drew startup indicator rectangle using temporary canvas for partial update.");
         }
         else
         {
-            log_e("DisplayManager: Failed to create temporary canvas for startup indicator. Pushing full canvas.");
+            log_e("DisplayManager: Failed to create temporary canvas for startup indicator rectangle. Pushing full canvas.");
             // Fallback: push the main canvas (which has the indicator drawn on it)
             _canvas.pushCanvas(0, 0, UPDATE_MODE_DU4);
         }
@@ -206,7 +217,7 @@ void DisplayManager::drawStartupIndicator()
     }
 }
 
-void DisplayManager::drawActivityIndicator()
+void DisplayManager::drawActivityIndicator(ActivityIndicatorType type)
 {
     if (!_isInitialized)
     {
@@ -215,39 +226,99 @@ void DisplayManager::drawActivityIndicator()
     }
     if (xSemaphoreTake(_epdMutex, pdMS_TO_TICKS(500)) == pdTRUE)
     {
-        // Define indicator properties
-        // Full circle center for drawing on main_canvas (pops out from right edge)
-        int32_t circle_center_x_on_main_canvas = _canvas.width();
-        int32_t circle_center_y_on_main_canvas = _canvas.height() / 2;
-        int32_t outer_radius = 64;               // Diameter 128px
-        int32_t inner_radius = outer_radius - 8; // 8px thick outline
+        // Define indicator properties - EASY TO EDIT
+        const int32_t indicator_visible_width = 64; // Width of the rectangle on screen
+        const int32_t indicator_height = 256;       // Total height of the rectangle
+        const int32_t outline_thickness = 12;
+        log_d("drawActivityIndicator: Type: %d", type);
+        log_d("  Properties: vis_width=%d, height=%d, outline=%d", indicator_visible_width, indicator_height, outline_thickness);
 
-        // 1. Draw directly on main _canvas for consistency
-        // This draws the full circle, half of which is off-screen to the right.
-        _canvas.fillCircle(circle_center_x_on_main_canvas, circle_center_y_on_main_canvas, outer_radius, 15); // BLACK (outline)
-        _canvas.fillCircle(circle_center_x_on_main_canvas, circle_center_y_on_main_canvas, inner_radius, 0);  // WHITE (inside)
+        // Position calculation variables - EASY TO EDIT
+        const int32_t screen_width = _canvas.width();
+        const int32_t screen_height = _canvas.height();
+        const int32_t screen_center_y = screen_height / 2;
+        const int32_t half_indicator_height = indicator_height / 2;
+        log_d("  Screen: width=%d, height=%d, center_y=%d", screen_width, screen_height, screen_center_y);
+        log_d("  Indicator derived: half_height=%d", half_indicator_height);
 
-        // 2. Define the region on screen that shows the visible half of the circle
-        int32_t region_screen_x = _canvas.width() - outer_radius;                // Left edge of the visible part
-        int32_t region_screen_y = circle_center_y_on_main_canvas - outer_radius; // Top edge of the visible part
-        int32_t region_w = outer_radius;                                         // Width of the visible part is one radius
-        int32_t region_h = 2 * outer_radius;                                     // Height of the visible part is diameter
+        // Step 1: Determine the top Y of an indicator if it were centered on the screen.
+        // (Its center would be screen_center_y, so its top is screen_center_y - half_indicator_height)
 
-        // 3. Create a temporary canvas for the indicator region and push it
-        M5EPD_Canvas indicatorCanvas(&M5.EPD);
-        if (indicatorCanvas.createCanvas(region_w, region_h))
+        const int32_t centered_indicator_top_y = screen_center_y - half_indicator_height;
+
+        log_d("  Calculated: centered_indicator_top_y=%d (screen_center_y %d - half_indicator_height %d)", centered_indicator_top_y, screen_center_y, half_indicator_height);
+
+        // Step 2: Define the "PUSH" position.
+        const int32_t push_case_top_y = centered_indicator_top_y;
+
+        log_d("  Calculated: push_case_top_y=%d (centered_indicator_top_y %d - half_indicator_height %d)", push_case_top_y, centered_indicator_top_y, 0);
+
+        int32_t current_indicator_top_y;
+        switch (type)
         {
-            // Draw on the temporary canvas (coordinates relative to this small canvas)
-            // For a circle emerging from the right, its center on the small canvas is (region_w, region_h / 2)
-            indicatorCanvas.fillCircle(region_w, region_h / 2, outer_radius, 15); // BLACK outline
-            indicatorCanvas.fillCircle(region_w, region_h / 2, inner_radius, 0);  // WHITE inside
-            indicatorCanvas.pushCanvas(region_screen_x, region_screen_y, UPDATE_MODE_DU4);
-            indicatorCanvas.deleteCanvas();
-            log_i("DisplayManager: Drew activity indicator using temporary canvas for partial update.");
+        case ACTIVITY_PUSH:
+            // PUSH is at push_case_top_y.
+            current_indicator_top_y = push_case_top_y;
+            log_d("  Activity Type PUSH: current_indicator_top_y=%d", current_indicator_top_y);
+            break;
+        case ACTIVITY_UP:
+            // Requirement: "UP, the rectangle should be higher than PUSH by the size of the rectangle".
+            // So, UP_top_Y = push_case_top_y - indicator_height.
+            current_indicator_top_y = push_case_top_y - indicator_height;
+            log_d("  Activity Type UP: current_indicator_top_y=%d (push_case_top_y %d - indicator_height %d)", current_indicator_top_y, push_case_top_y, indicator_height);
+            break;
+        case ACTIVITY_DOWN:
+            // Requirement: "DOWN, the rectangle should lower than PUSH by the size of the rectangle".
+            // So, DOWN_top_Y = push_case_top_y + indicator_height.
+            current_indicator_top_y = push_case_top_y + indicator_height;
+            log_d("  Activity Type DOWN: current_indicator_top_y=%d (push_case_top_y %d + indicator_height %d)", current_indicator_top_y, push_case_top_y, indicator_height);
+            break;
+        default:
+            // Fallback to PUSH position if type is somehow invalid
+            log_w("DisplayManager: Unknown ActivityIndicatorType %d, defaulting to PUSH position.", type);
+            current_indicator_top_y = push_case_top_y;
+            log_d("  Activity Type UNKNOWN (default PUSH): current_indicator_top_y=%d", current_indicator_top_y);
+            break;
+        }
+
+        // 1. Define region for the canvas push (this is the visible part of the indicator)
+        // The region uses the full indicator_height for drawing.
+        int32_t region_w = indicator_visible_width;
+        int32_t region_h = indicator_height;
+        int32_t region_screen_x = screen_width - region_w; // Align to right screen edge
+        int32_t region_screen_y = current_indicator_top_y; // Use the calculated top Y for the current type
+        log_d("  Final Region: w=%d, h=%d, screen_x=%d, screen_y=%d", region_w, region_h, region_screen_x, region_screen_y);
+
+        // 2. Draw on main _canvas for consistency (used as fallback)
+        // Outer black rectangle part
+        _canvas.fillRect(region_screen_x, region_screen_y, region_w, region_h, 15); // BLACK
+        // Inner white rectangle part (flush with right screen edge, black border on LEFT)
+        _canvas.fillRect(region_screen_x + outline_thickness, // Black border on LEFT
+                         region_screen_y + outline_thickness,
+                         region_w - outline_thickness, // Width of white area, leaves black on right edge of main rect
+                         region_h - (2 * outline_thickness),
+                         0); // WHITE
+
+        // 3. Create a temporary canvas for the indicator region and push it for partial update
+        M5EPD_Canvas tempIndicatorCanvas(&M5.EPD);
+        if (tempIndicatorCanvas.createCanvas(region_w, region_h))
+        {
+            // Draw on the temporary canvas (coordinates relative to this small canvas, so top-left is 0,0)
+            // Outer black rectangle part
+            tempIndicatorCanvas.fillRect(0, 0, region_w, region_h, 15); // BLACK
+            // Inner white rectangle part (black border on LEFT side of this temp canvas)
+            tempIndicatorCanvas.fillRect(outline_thickness, // Black border on LEFT
+                                         outline_thickness,
+                                         region_w - outline_thickness, // Width of white area
+                                         region_h - (2 * outline_thickness),
+                                         0); // WHITE
+            tempIndicatorCanvas.pushCanvas(region_screen_x, region_screen_y, UPDATE_MODE_DU4);
+            tempIndicatorCanvas.deleteCanvas();
+            log_i("DisplayManager: Drew activity indicator rectangle (type %d at Y:%d) using temporary canvas for partial update.", type, region_screen_y);
         }
         else
         {
-            log_e("DisplayManager: Failed to create temporary canvas for activity indicator. Pushing full canvas.");
+            log_e("DisplayManager: Failed to create temporary canvas for activity indicator rectangle. Pushing full canvas.");
             // Fallback: push the main canvas (which has the indicator drawn on it)
             _canvas.pushCanvas(0, 0, UPDATE_MODE_DU4);
         }
