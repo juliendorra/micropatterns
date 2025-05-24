@@ -1,7 +1,7 @@
 #include "display_manager.h"
 #include "esp32-hal-log.h"
 
-DisplayManager::DisplayManager() : _canvas(&M5.EPD), _isInitialized(false)
+DisplayManager::DisplayManager() : _canvas(&M5.EPD), _indicatorCanvas(&M5.EPD), _isInitialized(false)
 {
     _epdMutex = xSemaphoreCreateMutex();
     if (_epdMutex == NULL)
@@ -183,23 +183,23 @@ void DisplayManager::drawStartupIndicator()
                          region_screen_y, // Flush with top
                          region_w - (2 * outline_thickness),
                          region_h - outline_thickness,
-                         0); // WHITE
+                          0); // WHITE
 
         // 3. Create a temporary canvas for the indicator region and push it for partial update
-        M5EPD_Canvas tempIndicatorCanvas(&M5.EPD);
-        if (tempIndicatorCanvas.createCanvas(region_w, region_h))
+        // M5EPD_Canvas tempIndicatorCanvas(&M5.EPD); // Replaced with member _indicatorCanvas
+        if (_indicatorCanvas.createCanvas(region_w, region_h))
         {
             // Draw on the temporary canvas (coordinates relative to this small canvas)
             // Outer black rectangle
-            tempIndicatorCanvas.fillRect(0, 0, region_w, region_h, 15); // BLACK
+            _indicatorCanvas.fillRect(0, 0, region_w, region_h, 15); // BLACK
             // Inner white rectangle (flush with top edge of temp canvas)
-            tempIndicatorCanvas.fillRect(outline_thickness,
+            _indicatorCanvas.fillRect(outline_thickness,
                                          0, // Flush with top
                                          region_w - (2 * outline_thickness),
                                          region_h - outline_thickness,
                                          0); // WHITE
-            tempIndicatorCanvas.pushCanvas(region_screen_x, region_screen_y, UPDATE_MODE_DU4);
-            tempIndicatorCanvas.deleteCanvas();
+            _indicatorCanvas.pushCanvas(region_screen_x, region_screen_y, UPDATE_MODE_DU4);
+            _indicatorCanvas.deleteCanvas();
             log_i("DisplayManager: Drew startup indicator rectangle using temporary canvas for partial update.");
         }
         else
@@ -300,20 +300,20 @@ void DisplayManager::drawActivityIndicator(ActivityIndicatorType type)
                          0); // WHITE
 
         // 3. Create a temporary canvas for the indicator region and push it for partial update
-        M5EPD_Canvas tempIndicatorCanvas(&M5.EPD);
-        if (tempIndicatorCanvas.createCanvas(region_w, region_h))
+        // M5EPD_Canvas tempIndicatorCanvas(&M5.EPD); // Replaced with member _indicatorCanvas
+        if (_indicatorCanvas.createCanvas(region_w, region_h))
         {
             // Draw on the temporary canvas (coordinates relative to this small canvas, so top-left is 0,0)
             // Outer black rectangle part
-            tempIndicatorCanvas.fillRect(0, 0, region_w, region_h, 15); // BLACK
+            _indicatorCanvas.fillRect(0, 0, region_w, region_h, 15); // BLACK
             // Inner white rectangle part (black border on LEFT side of this temp canvas)
-            tempIndicatorCanvas.fillRect(outline_thickness, // Black border on LEFT
+            _indicatorCanvas.fillRect(outline_thickness, // Black border on LEFT
                                          outline_thickness,
                                          region_w - outline_thickness, // Width of white area
                                          region_h - (2 * outline_thickness),
                                          0); // WHITE
-            tempIndicatorCanvas.pushCanvas(region_screen_x, region_screen_y, UPDATE_MODE_DU4);
-            tempIndicatorCanvas.deleteCanvas();
+            _indicatorCanvas.pushCanvas(region_screen_x, region_screen_y, UPDATE_MODE_DU4);
+            _indicatorCanvas.deleteCanvas();
             log_i("DisplayManager: Drew activity indicator rectangle (type %d at Y:%d) using temporary canvas for partial update.", type, region_screen_y);
         }
         else

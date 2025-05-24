@@ -6,6 +6,12 @@
 #include "freertos/semphr.h" // For mutex
 // #include "event_defs.h" // No direct dependency found in this header, but if added later, path would need adjustment.
 
+enum ActivityIndicatorType {
+    ACTIVITY_PUSH,
+    ACTIVITY_UP,
+    ACTIVITY_DOWN
+};
+
 class DisplayManager {
 public:
     DisplayManager();
@@ -34,10 +40,11 @@ public:
 
     // Methods for specific UI indicators
     void drawStartupIndicator();
-    void drawActivityIndicator();
+    void drawActivityIndicator(ActivityIndicatorType type = ACTIVITY_PUSH);
 
 private:
     M5EPD_Canvas _canvas;
+    M5EPD_Canvas _indicatorCanvas; // Canvas for temporary indicators (startup, activity)
     SemaphoreHandle_t _epdMutex; // Mutex to protect EPD hardware access and canvas object
 
     bool _isInitialized;

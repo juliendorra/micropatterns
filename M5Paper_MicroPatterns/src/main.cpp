@@ -377,8 +377,7 @@ void MainControlTask_Function(void *pvParameters) {
             lastActivityTime = xTaskGetTickCount();
             log_i("MainCtrl: Received input event: %d", (int)inputEvent.type);
             
-            // Draw activity indicator as fast as possible
-            g_displayManager->drawActivityIndicator();
+            // Activity indicator is now drawn by InputManager::taskFunction with specific type
 
             // Stop ongoing render or fetch if significant input
             if (currentState == AppState::RENDERING_SCRIPT) {

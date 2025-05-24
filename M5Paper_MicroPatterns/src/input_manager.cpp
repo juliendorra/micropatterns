@@ -2,6 +2,7 @@
 #include "esp32-hal-log.h"
 // driver/gpio.h is included via input_manager.h
 #include "esp_task_wdt.h" // For esp_task_wdt_reset
+#include "main.h"         // For g_displayManager and ActivityIndicatorType (via display_manager.h)
 
 // Declare the global queue handle that the ISR will use.
 // This handle is defined in main.cpp and initialized by InputManager's constructor.
@@ -110,6 +111,22 @@ void InputManager::taskFunction() {
                 // Pin is still LOW: Confirmed press
                 log_d("InputTask: GPIO %d confirmed LOW after %ums debounce.", raw_gpio_num, ISR_EVENT_DEBOUNCE_DELAY_MS);
                 _pin_processing_state[raw_gpio_num] = PinProcessingState::CONFIRMED_PRESS_ISR_DISABLED;
+
+                // Draw activity indicator immediately with the correct type
+                ActivityIndicatorType indicatorType = ACTIVITY_PUSH; // Default for safety
+                if (raw_gpio_num == BUTTON_UP_PIN) {
+                    indicatorType = ACTIVITY_UP;
+                } else if (raw_gpio_num == BUTTON_DOWN_PIN) {
+                    indicatorType = ACTIVITY_DOWN;
+                } else if (raw_gpio_num == BUTTON_PUSH_PIN) {
+                    indicatorType = ACTIVITY_PUSH;
+                }
+
+                if (g_displayManager) {
+                    g_displayManager->drawActivityIndicator(indicatorType);
+                } else {
+                    log_e("InputTask: g_displayManager is NULL, cannot draw activity indicator.");
+                }
 
                 // Check if enough time has passed since the last logical event for this pin
                 if ((current_time - _lastSentEventTime[raw_gpio_num]) >= LOGICAL_EVENT_MIN_INTERVAL_MS || current_time < _lastSentEventTime[raw_gpio_num] /* overflow */) {
