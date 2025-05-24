@@ -165,7 +165,7 @@ void DisplayManager::drawStartupIndicator()
     if (xSemaphoreTake(_epdMutex, pdMS_TO_TICKS(500)) == pdTRUE)
     {
         // Define indicator properties
-        const int32_t indicator_width = 128;
+        const int32_t indicator_width = 384;
         const int32_t indicator_height = 64;
         const int32_t outline_thickness = 12;
 
@@ -183,7 +183,7 @@ void DisplayManager::drawStartupIndicator()
                          region_screen_y, // Flush with top
                          region_w - (2 * outline_thickness),
                          region_h - outline_thickness,
-                          0); // WHITE
+                         0); // WHITE
 
         // 3. Create a temporary canvas for the indicator region and push it for partial update
         // M5EPD_Canvas tempIndicatorCanvas(&M5.EPD); // Replaced with member _indicatorCanvas
@@ -194,11 +194,11 @@ void DisplayManager::drawStartupIndicator()
             _indicatorCanvas.fillRect(0, 0, region_w, region_h, 15); // BLACK
             // Inner white rectangle (flush with top edge of temp canvas)
             _indicatorCanvas.fillRect(outline_thickness,
-                                         0, // Flush with top
-                                         region_w - (2 * outline_thickness),
-                                         region_h - outline_thickness,
-                                         0); // WHITE
-            _indicatorCanvas.pushCanvas(region_screen_x, region_screen_y, UPDATE_MODE_DU4);
+                                      0, // Flush with top
+                                      region_w - (2 * outline_thickness),
+                                      region_h - outline_thickness,
+                                      0); // WHITE
+            _indicatorCanvas.pushCanvas(region_screen_x, region_screen_y, UPDATE_MODE_GC16);
             _indicatorCanvas.deleteCanvas();
             log_i("DisplayManager: Drew startup indicator rectangle using temporary canvas for partial update.");
         }
@@ -206,7 +206,7 @@ void DisplayManager::drawStartupIndicator()
         {
             log_e("DisplayManager: Failed to create temporary canvas for startup indicator rectangle. Pushing full canvas.");
             // Fallback: push the main canvas (which has the indicator drawn on it)
-            _canvas.pushCanvas(0, 0, UPDATE_MODE_DU4);
+            _canvas.pushCanvas(0, 0, UPDATE_MODE_GC16);
         }
 
         xSemaphoreGive(_epdMutex);
@@ -226,14 +226,14 @@ void DisplayManager::drawActivityIndicator(ActivityIndicatorType type)
     }
     if (xSemaphoreTake(_epdMutex, pdMS_TO_TICKS(500)) == pdTRUE)
     {
-        // Define indicator properties - EASY TO EDIT
+        // Define indicator properties
         const int32_t indicator_visible_width = 64; // Width of the rectangle on screen
         const int32_t indicator_height = 256;       // Total height of the rectangle
         const int32_t outline_thickness = 12;
         log_d("drawActivityIndicator: Type: %d", type);
         log_d("  Properties: vis_width=%d, height=%d, outline=%d", indicator_visible_width, indicator_height, outline_thickness);
 
-        // Position calculation variables - EASY TO EDIT
+        // Position calculation variables
         const int32_t screen_width = _canvas.width();
         const int32_t screen_height = _canvas.height();
         const int32_t screen_center_y = screen_height / 2;
@@ -242,9 +242,10 @@ void DisplayManager::drawActivityIndicator(ActivityIndicatorType type)
         log_d("  Indicator derived: half_height=%d", half_indicator_height);
 
         // Step 1: Determine the top Y of an indicator if it were centered on the screen.
-        // (Its center would be screen_center_y, so its top is screen_center_y - half_indicator_height)
+        // Its center would be screen_center_y with an offset to account
+        // for the button centered based on the case, not the screen
 
-        const int32_t centered_indicator_top_y = screen_center_y - half_indicator_height;
+        const int32_t centered_indicator_top_y = screen_center_y - half_indicator_height + 25;
 
         log_d("  Calculated: centered_indicator_top_y=%d (screen_center_y %d - half_indicator_height %d)", centered_indicator_top_y, screen_center_y, half_indicator_height);
 
@@ -308,10 +309,10 @@ void DisplayManager::drawActivityIndicator(ActivityIndicatorType type)
             _indicatorCanvas.fillRect(0, 0, region_w, region_h, 15); // BLACK
             // Inner white rectangle part (black border on LEFT side of this temp canvas)
             _indicatorCanvas.fillRect(outline_thickness, // Black border on LEFT
-                                         outline_thickness,
-                                         region_w - outline_thickness, // Width of white area
-                                         region_h - (2 * outline_thickness),
-                                         0); // WHITE
+                                      outline_thickness,
+                                      region_w - outline_thickness, // Width of white area
+                                      region_h - (2 * outline_thickness),
+                                      0); // WHITE
             _indicatorCanvas.pushCanvas(region_screen_x, region_screen_y, UPDATE_MODE_DU4);
             _indicatorCanvas.deleteCanvas();
             log_i("DisplayManager: Drew activity indicator rectangle (type %d at Y:%d) using temporary canvas for partial update.", type, region_screen_y);
