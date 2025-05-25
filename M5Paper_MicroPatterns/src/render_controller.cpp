@@ -86,11 +86,19 @@ RenderResultData RenderController::renderScript(const String& script_id, const S
     // Check for interrupt again (renderer might also check it)
     if (checkInterrupt()) { // Check our flag, renderer might have set it via callback
         result.interrupted = true;
+        // result.success will be handled below
         result.error_message = "Rendering process interrupted.";
         log_i("RenderController: %s for script '%s'", result.error_message.c_str(), script_id.c_str());
     } else {
         log_i("RenderController: Display list rendering for '%s' took %lu ms.", script_id.c_str(), renderDuration);
-        result.success = true; // If not interrupted and no other errors reported by renderer (future)
+        // result.success will be set based on result.interrupted below
+    }
+
+    // Final success/interrupted status determination
+    if (result.interrupted) { // If interrupted at any stage (runtime or renderer)
+        result.success = false;
+    } else {
+        result.success = true; // Not interrupted, assume success unless other errors occurred
     }
     
     // Final state from runtime (variables might have changed during display list generation)

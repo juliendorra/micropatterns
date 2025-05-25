@@ -162,7 +162,7 @@ void DisplayManager::drawStartupIndicator()
         log_e("DisplayManager not initialized, cannot draw startup indicator.");
         return;
     }
-    if (xSemaphoreTake(_epdMutex, pdMS_TO_TICKS(500)) == pdTRUE)
+    if (xSemaphoreTake(_epdMutex, pdMS_TO_TICKS(20)) == pdTRUE) // Reduced timeout
     {
         // Define indicator properties
         const int32_t indicator_width = 384;
@@ -224,7 +224,8 @@ void DisplayManager::drawActivityIndicator(ActivityIndicatorType type)
         log_e("DisplayManager not initialized, cannot draw activity indicator.");
         return;
     }
-    if (xSemaphoreTake(_epdMutex, pdMS_TO_TICKS(500)) == pdTRUE)
+    // Increased timeout from 20ms to 100ms
+    if (xSemaphoreTake(_epdMutex, pdMS_TO_TICKS(100)) == pdTRUE)
     {
         // Define indicator properties
         const int32_t indicator_visible_width = 64; // Width of the rectangle on screen
