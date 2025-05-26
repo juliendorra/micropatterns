@@ -1,0 +1,58 @@
+{
+    // Used extension: actboy168.tasks
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Debug",
+            "type": "shell",
+            "command": "resources/tools/other/tasks/taskerDebug.sh",
+            "icon": {
+                "id": "chip",
+            },
+            "options": {
+                "statusbar": {
+                    "color": "#ff0000"
+                }
+            }
+        },
+        {
+            "label": "Resources / Filesystem",
+            "type": "shell",
+            "command": "resources/tools/other/tasks/taskerResources.sh",
+            "icon": {
+                "id": "folder-library",
+            },
+            "options": {
+                "statusbar": {
+                    "color": "#15ff00"
+                }
+            }
+        },
+        {
+            "label": "Other",
+            "type": "shell",
+            "command": "resources/tools/other/tasks/taskerOther.sh",
+            "icon": {
+                "id": "star-empty",
+            },
+            "options": {
+                "statusbar": {
+                    "color": "#00c8ff"
+                }
+            }
+        },
+        {
+            "label": "Compile",
+            "type": "shell",
+            "command": "resources/tools/other/tasks/taskerCompile.sh",
+            "icon": {
+                "id": "run-below",
+            },
+            "options": {
+                "statusbar": {
+                    "color": "#cc00ff"
+                }
+            }
+        },
+    ]
+}
