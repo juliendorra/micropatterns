@@ -32,6 +32,8 @@ public:
     void drawPixel(int16_t x, int16_t y, uint16_t color) override;
     void fillRect(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t color) override;
     void drawLine(int16_t x0, int16_t y0, int16_t x1, int16_t y1, uint16_t color) override;
+    void drawCircle(int16_t x0, int16_t y0, int16_t r, uint16_t color) override;
+    void fillCircle(int16_t x0, int16_t y0, int16_t r, uint16_t color) override;
 
     // Bitmap Drawing
     void drawBitmap(int16_t x, int16_t y, const uint8_t *bitmap, int16_t w, int16_t h, uint16_t color) override;

@@ -53,6 +53,14 @@ void WatchyDrawingHAL::drawLine(int16_t x0, int16_t y0, int16_t x1, int16_t y1, 
     _display.drawLine(x0, y0, x1, y1, mapHalColorToGx(color));
 }
 
+void WatchyDrawingHAL::drawCircle(int16_t x0, int16_t y0, int16_t r, uint16_t color) {
+    _display.drawCircle(x0, y0, r, mapHalColorToGx(color));
+}
+
+void WatchyDrawingHAL::fillCircle(int16_t x0, int16_t y0, int16_t r, uint16_t color) {
+    _display.fillCircle(x0, y0, r, mapHalColorToGx(color));
+}
+
 void WatchyDrawingHAL::drawBitmap(int16_t x, int16_t y, const uint8_t *bitmap, int16_t w, int16_t h, uint16_t color) {
     // GxEPD2 drawBitmap expects color to be GxEPD_BLACK or GxEPD_WHITE.
     // This HAL version assumes the bitmap is monochrome and 'color' is the foreground color.

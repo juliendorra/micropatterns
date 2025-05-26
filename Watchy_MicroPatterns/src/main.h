@@ -1,35 +1,42 @@
-#ifndef MAIN_H
-#define MAIN_H
+#pragma once
 
-#include <Watchy.h>
-#include "display_manager.h"
-#include "render_controller.h"
-#include "script_manager.h"
-#include "network_manager.h"
-#include "system_manager.h"
-#include "global_setting.h" // For button pins, though Watchy.h also provides them.
-#include "event_defs.h"
+#include <Arduino.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/queue.h"
+#include "freertos/event_groups.h"
+#include "event_defs.h" // Should exist from M5Paper
 
-class WatchyMicroPatterns : public Watchy {
-public:
-    DisplayManager displayManager;
-    RenderController renderController;
-    ScriptManager scriptManager;
-    NetworkManager networkManager;
-    SystemManager systemManager;
+// --- Task Stack Sizes & Priorities (example values, adjust as needed) ---
+#define MAIN_CONTROL_TASK_STACK_SIZE 4096
+#define INPUT_TASK_STACK_SIZE        3072
+#define RENDER_TASK_STACK_SIZE       8192 // Rendering can be stack intensive
+#define FETCH_TASK_STACK_SIZE        4096
 
-    bool managersInitialized;
-    String currentScriptHumanId;
-    String currentScriptName;
+#define MAIN_CONTROL_TASK_PRIORITY (tskIDLE_PRIORITY + 2)
+#define INPUT_TASK_PRIORITY        (tskIDLE_PRIORITY + 3) // Higher for responsiveness
+#define RENDER_TASK_PRIORITY       (tskIDLE_PRIORITY + 1)
+#define FETCH_TASK_PRIORITY        (tskIDLE_PRIORITY + 1)
 
-public:
-    WatchyMicroPatterns();
-    void drawWatchFace() override; // Main function to draw the watch face
-    void handleButtonPress() override; // Handle button inputs
+// --- Global Handles (declared here, defined in main.cpp) ---
+// Task Handles
+extern TaskHandle_t g_mainControlTaskHandle;
+extern TaskHandle_t g_inputTaskHandle;
+extern TaskHandle_t g_renderTaskHandle;
+extern TaskHandle_t g_fetchTaskHandle; // Optional
 
-private:
-    void initializeManagers(); // Helper to initialize all managers
-    void renderCurrentScript(); // Helper to load and render the script
-};
+// Queue Handles
+extern QueueHandle_t g_inputEventQueue;    // For InputEvent
+extern QueueHandle_t g_renderCommandQueue; // For RenderJobQueueItem
+extern QueueHandle_t g_renderStatusQueue;  // For RenderResultQueueItem
+extern QueueHandle_t g_fetchCommandQueue;  // For FetchJob (Optional)
+extern QueueHandle_t g_fetchStatusQueue;   // For FetchResultQueueItem (Optional)
 
-#endif // MAIN_H
+// Event Group Handles
+extern EventGroupHandle_t g_renderTaskEventFlags; // For render interrupts
+
+// Forward declarations for task functions
+void MainControlTask_Function(void *pvParameters);
+void InputTask_Function(void *pvParameters);
+void RenderTask_Function(void *pvParameters);
+void FetchTask_Function(void *pvParameters); // Optional

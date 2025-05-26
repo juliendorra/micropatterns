@@ -21,8 +21,8 @@ public:
     virtual void drawPixel(int16_t x, int16_t y, uint16_t color) = 0;
     virtual void fillRect(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t color) = 0;
     virtual void drawLine(int16_t x0, int16_t y0, int16_t x1, int16_t y1, uint16_t color) = 0;
-    // virtual void drawCircle(int16_t x0, int16_t y0, int16_t r, uint16_t color) = 0; // Optional
-    // virtual void fillCircle(int16_t x0, int16_t y0, int16_t r, uint16_t color) = 0; // Optional
+    virtual void drawCircle(int16_t x0, int16_t y0, int16_t r, uint16_t color) = 0; // Optional -> Now mandatory
+    virtual void fillCircle(int16_t x0, int16_t y0, int16_t r, uint16_t color) = 0; // Optional -> Now mandatory
 
     // Bitmap Drawing
     // virtual void drawBitmap(int16_t x, int16_t y, const uint8_t bitmap[], int16_t w, int16_t h, uint16_t color, uint16_t bg) = 0; // GFX style
