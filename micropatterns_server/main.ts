@@ -1,5 +1,6 @@
 import { serve } from "std/http/server.ts";
 import * as s3 from "./s3.ts";
+import { generatePublishId } from "./utils.ts"; // Added for publish endpoint
 
 const PORT = 8000; // Default Deno Deploy port
 
@@ -13,7 +14,7 @@ async function handler(req: Request): Promise<Response> {
     // CORS Headers - Adjust origin as needed for security
     const corsHeaders = {
         "Access-Control-Allow-Origin": "*", // Allow requests from any origin (emulator)
-        "Access-Control-Allow-Methods": "GET, PUT, OPTIONS",
+        "Access-Control-Allow-Methods": "GET, PUT, POST, OPTIONS", // Added POST
         "Access-Control-Allow-Headers": "Content-Type",
     };
 
@@ -131,7 +132,8 @@ async function handler(req: Request): Promise<Response> {
                 id: scriptId, // The scriptId from the path is the canonical one
                 name: requestBody.name,
                 content: requestBody.content,
-                lastModified: new Date().toISOString(),
+                lastModified: new Date().toISOString(), // Will be updated by s3.saveScript again, but good to have here
+                publishID: requestBody.publishID // Pass through publishID if provided
             };
 
             const scriptSaveSuccess = await s3.saveScript(userId, scriptId, scriptData);
@@ -162,6 +164,105 @@ async function handler(req: Request): Promise<Response> {
                 status: 200,
                 headers: { ...corsHeaders, "Content-Type": "application/json" },
             });
+        }
+
+        // POST /api/scripts/:userID/:scriptID/publish - Publish a script
+        const publishMatch = path.match(/^\/api\/scripts\/([a-zA-Z0-9-_]{1,50})\/([a-zA-Z0-9-_]+)\/publish$/);
+        if (publishMatch && method === "POST") {
+            const userId = publishMatch[1];
+            const scriptId = publishMatch[2];
+
+            const scriptData = await s3.getScript(userId, scriptId);
+            if (!scriptData) {
+                return new Response(JSON.stringify({ error: "Script not found to publish" }), {
+                    status: 404,
+                    headers: { ...corsHeaders, "Content-Type": "application/json" },
+                });
+            }
+
+            // If not already published, generate a new publishID.
+            // If already published, this effectively re-publishes/updates content with the existing publishID.
+            if (!scriptData.publishID) {
+                scriptData.publishID = generatePublishId();
+            }
+            // s3.saveScript will handle saving the main script and the published version
+            const saveSuccess = await s3.saveScript(userId, scriptId, scriptData);
+
+            if (saveSuccess) {
+                return new Response(JSON.stringify({ success: true, publishID: scriptData.publishID }), {
+                    status: 200,
+                    headers: { ...corsHeaders, "Content-Type": "application/json" },
+                });
+            } else {
+                return new Response(JSON.stringify({ error: "Failed to publish script" }), {
+                    status: 500,
+                    headers: { ...corsHeaders, "Content-Type": "application/json" },
+                });
+            }
+        }
+
+        // POST /api/scripts/:userID/:scriptID/unpublish - Unpublish a script
+        const unpublishMatch = path.match(/^\/api\/scripts\/([a-zA-Z0-9-_]{1,50})\/([a-zA-Z0-9-_]+)\/unpublish$/);
+        if (unpublishMatch && method === "POST") {
+            const userId = unpublishMatch[1];
+            const scriptId = unpublishMatch[2];
+
+            const scriptData = await s3.getScript(userId, scriptId);
+            if (!scriptData) {
+                return new Response(JSON.stringify({ error: "Script not found to unpublish" }), {
+                    status: 404,
+                    headers: { ...corsHeaders, "Content-Type": "application/json" },
+                });
+            }
+
+            if (!scriptData.publishID) {
+                return new Response(JSON.stringify({ error: "Script is not published" }), {
+                    status: 400, // Bad request, as it's not published
+                    headers: { ...corsHeaders, "Content-Type": "application/json" },
+                });
+            }
+
+            const oldPublishID = scriptData.publishID;
+            scriptData.publishID = null; // Or delete scriptData.publishID;
+
+            const saveSuccess = await s3.saveScript(userId, scriptId, scriptData);
+            if (!saveSuccess) {
+                return new Response(JSON.stringify({ error: "Failed to update script metadata during unpublish" }), {
+                    status: 500,
+                    headers: { ...corsHeaders, "Content-Type": "application/json" },
+                });
+            }
+
+            // If metadata saved successfully, delete the published script from its dedicated S3 location
+            const deleteSuccess = await s3.deletePublishedScript(oldPublishID);
+            if (!deleteSuccess) {
+                // Log this error, but main unpublish operation (removing publishID from script) succeeded
+                console.error(`[Server] Script ${scriptId} for user ${userId} unpublished, but failed to delete published content for ${oldPublishID}.`);
+            }
+
+            return new Response(JSON.stringify({ success: true }), {
+                status: 200,
+                headers: { ...corsHeaders, "Content-Type": "application/json" },
+            });
+        }
+
+        // GET /api/view/:publishID - View a published script
+        const viewMatch = path.match(/^\/api\/view\/([a-zA-Z0-9-_]{21})$/); // Assuming 21 char nanoid for publishID
+        if (viewMatch && method === "GET") {
+            const publishId = viewMatch[1];
+            const publishedScript = await s3.getPublishedScript(publishId);
+
+            if (publishedScript) {
+                return new Response(JSON.stringify(publishedScript), {
+                    status: 200,
+                    headers: { ...corsHeaders, "Content-Type": "application/json" },
+                });
+            } else {
+                return new Response(JSON.stringify({ error: "Published script not found" }), {
+                    status: 404,
+                    headers: { ...corsHeaders, "Content-Type": "application/json" },
+                });
+            }
         }
 
         // --- Default Route ---

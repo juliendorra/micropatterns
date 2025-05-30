@@ -1,5 +1,5 @@
 {
-  "version": "3",
+  "version": "5",
   "redirects": {
     "https://deno.land/std/fs/ensure_dir.ts": "https://deno.land/std@0.224.0/fs/ensure_dir.ts",
     "https://deno.land/std/fs/mod.ts": "https://deno.land/std@0.224.0/fs/mod.ts",
@@ -119,6 +119,7 @@
     "https://deno.land/x/s3_lite_client@0.6.2/object-uploader.ts": "b4bad0d771d79b2bb23b8cab0e6f7be85a2390e18957c612fd5cda11c39f55b0",
     "https://deno.land/x/s3_lite_client@0.6.2/signing.ts": "2ba77aac07a7c94267e83d285bbd33fdb3253dfa32b035df62479d6b224bb748",
     "https://deno.land/x/s3_lite_client@0.6.2/transform-chunk-sizes.ts": "cecc1167ba366d086a13c754be6ed86717d6b0b27c779c4c766621435a697045",
-    "https://deno.land/x/s3_lite_client@0.6.2/xml-parser.ts": "de925493369718cab6f26413fbbada18eec74aa6eaf0598d77c7296f5fdfd8a9"
+    "https://deno.land/x/s3_lite_client@0.6.2/xml-parser.ts": "de925493369718cab6f26413fbbada18eec74aa6eaf0598d77c7296f5fdfd8a9",
+    "https://esm.sh/nanoid@5.1.5/es2022/nanoid.mjs": "0bfde56482deb6aa878fe2d59a9657666a5dd72e902b88e186e71a3f37023381"
   }
 }

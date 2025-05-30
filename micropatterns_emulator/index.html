@@ -15,7 +15,7 @@
 
 <body>
     <div class="column">
-        <h2>MicroPatterns Script</h2>
+        <h2 id="editorTitle">MicroPatterns Script</h2>
         <!-- Container for the toggle and label -->
 
         <div class="inline-flex-center">
@@ -171,6 +171,14 @@ ENDREPEAT
 
         </div>
         <canvas id="displayCanvas" width="540" height="960"></canvas> <!-- Default to M5Paper actual size for buffer -->
+
+        <div class="controls-group" id="publishControls">
+            <h3>Publishing</h3>
+            <div id="publishStatusContainer">
+                <!-- Status and buttons will be dynamically inserted here by JS -->
+                <p>Load or save a script to see publishing options.</p>
+            </div>
+        </div>
 
         <div class="controls-group">
             <h3>Environment</h3>

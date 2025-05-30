@@ -6,6 +6,9 @@ import { DisplayListGenerator } from './display_list_generator.js';
 import { DisplayListRenderer } from './display_list_renderer.js';
 
 document.addEventListener('DOMContentLoaded', async () => {
+    const urlParams = new URLSearchParams(window.location.search);
+    const viewPublishID = urlParams.get('view');
+    const isViewMode = !!viewPublishID;
 
     let executionPath = 'displayList'; // 'interpreter', 'compiler', or 'displayList'
     // let USE_COMPILER = true; // This will be replaced by executionPath logic
@@ -39,6 +42,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const displaySizeSelect = document.getElementById('displaySizeSelect');
     const displayInfoSpan = document.getElementById('displayInfoSpan');
     const zoomToggleButton = document.getElementById('zoomToggleButton');
+    const editorTitleElement = document.getElementById('editorTitle'); // Added for view mode
 
     // Theme Switcher UI
     const themeStylesheet = document.getElementById('themeStylesheet');
@@ -84,6 +88,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     const userIdInput = document.getElementById('userId'); // Added User ID input
     const scriptListSelect = document.getElementById('scriptList'); // Added: Get reference to script list select
     const loadScriptButton = document.getElementById('loadScriptButton'); // Added: Get reference to load script button
+    const publishStatusContainer = document.getElementById('publishStatusContainer'); // Added: For publishing UI
+
 
     // Global configuration object
     const globalConfig = {
@@ -121,8 +127,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     const LOCAL_STORAGE_THEME_KEY = 'micropatterns_theme_preference';
     const LOCAL_STORAGE_USER_ID_KEY = 'micropatterns_user_id'; // Added User ID key
 
-    // --- User ID State ---
+    // --- Script State ---
     let currentUserId = '';
+    let currentScriptID = null;
+    let currentPublishID = null;
+    // Constants for local storage keys
+    const LS_UNSAVED_CONTENT_KEY = 'micropatterns_editor_unsaved_content';
+    const LS_UNSAVED_NAME_KEY = 'micropatterns_editor_unsaved_name'; // If you want to store unsaved name too
+    const LS_SCRIPT_PREFIX = 'micropattern_script_';
+
 
     // --- Configuration ---
     // Assume server runs on localhost:8000 during development
@@ -232,37 +245,60 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     console.log("CodeMirror editor initialized:", codeMirrorEditor); // Check if editor object exists
 
-    // --- Load from Local Storage ---
-    const savedScriptContent = localStorage.getItem(LOCAL_STORAGE_SCRIPT_CONTENT_KEY);
-    if (savedScriptContent !== null) {
-        codeMirrorEditor.setValue(savedScriptContent);
-        console.log("Loaded script content from local storage.");
-    } else {
-        console.log("No script content found in local storage, using default from textarea.");
+    // --- Local Storage & Editor Title Update Functions ---
+    function updateEditorTitle() {
+        if (isViewMode || !editorTitleElement) return; // View mode title handled by setupViewModeUI
+
+        const scriptName = scriptNameInput.value.trim();
+        if (scriptName && currentScriptID) { // Script is named and saved
+            editorTitleElement.textContent = `MICROPATTERNS ${scriptName}`;
+        } else if (scriptName) { // Script has a name but maybe not saved yet / no ID
+            editorTitleElement.textContent = `MICROPATTERNS ${scriptName} (unsaved)`;
+        } else {
+            editorTitleElement.textContent = 'MICROPATTERNS SCRIPT';
+        }
     }
 
-    const savedScriptName = localStorage.getItem(LOCAL_STORAGE_SCRIPT_NAME_KEY);
-    if (savedScriptName !== null && scriptNameInput) {
-        scriptNameInput.value = savedScriptName;
-        console.log("Loaded script name from local storage.");
-    } else {
-        console.log("No script name found in local storage.");
+    function saveContentToLocalStorage(scriptId, name, content, publishId) {
+        if (scriptId) { // Named script
+            const scriptData = {
+                id: scriptId,
+                name: name,
+                content: content,
+                publishID: publishId, // Make sure to include this
+                lastModified: new Date().toISOString()
+            };
+            localStorage.setItem(LS_SCRIPT_PREFIX + scriptId, JSON.stringify(scriptData));
+            // Optionally clear the generic unsaved content if a named script is explicitly saved
+            // localStorage.removeItem(LS_UNSAVED_CONTENT_KEY);
+            // localStorage.removeItem(LS_UNSAVED_NAME_KEY);
+            console.log(`Saved named script ${scriptId} to local storage.`);
+        } else { // Unnamed script
+            localStorage.setItem(LS_UNSAVED_CONTENT_KEY, content);
+            if (name) localStorage.setItem(LS_UNSAVED_NAME_KEY, name); else localStorage.removeItem(LS_UNSAVED_NAME_KEY);
+            console.log("Saved unnamed script content to local storage.");
+        }
     }
 
-    // --- Save to Local Storage on Change ---
+    // Auto-save unsaved work (generic)
     if (codeMirrorEditor) {
         codeMirrorEditor.on('change', () => {
-            localStorage.setItem(LOCAL_STORAGE_SCRIPT_CONTENT_KEY, codeMirrorEditor.getValue());
-            // console.log("Saved script content to local storage."); // Can be noisy
+            if (!isViewMode && !currentScriptID) { // Only save to generic if no currentScriptID (i.e. it's an "unsaved" new script)
+                 saveContentToLocalStorage(null, scriptNameInput.value, codeMirrorEditor.getValue(), null);
+            }
+            // If currentScriptID exists, saving to its specific key happens on explicit saveScript()
         });
     }
-
     if (scriptNameInput) {
-        scriptNameInput.addEventListener('input', () => {
-            localStorage.setItem(LOCAL_STORAGE_SCRIPT_NAME_KEY, scriptNameInput.value);
-            // console.log("Saved script name to local storage."); // Can be noisy
+         scriptNameInput.addEventListener('input', () => {
+            updateEditorTitle();
+            if (!isViewMode && !currentScriptID) { // Also save name if it's an "unsaved" script
+                 saveContentToLocalStorage(null, scriptNameInput.value, codeMirrorEditor.getValue(), null);
+            }
         });
     }
+    // --- End Local Storage & Title ---
+
 
     // --- User ID Initialization and Handling ---
     function initializeUserId() {
@@ -293,10 +329,242 @@ document.addEventListener('DOMContentLoaded', async () => {
             // Optionally, re-fetch script list if user ID changes significantly
             // For now, user needs to manually click load/save after changing ID.
             fetchScriptList(); // Re-fetch script list for the new user ID
+            updatePublishControls(); // User ID changed, script context is effectively reset
         });
     }
     // --- End User ID Initialization ---
 
+    // --- API Helper ---
+    async function fetchAPI(url, options = {}) {
+        const defaultHeaders = {
+            'Content-Type': 'application/json',
+        };
+        const config = {
+            ...options,
+            headers: {
+                ...defaultHeaders,
+                ...(options.headers || {}),
+            },
+        };
+
+        try {
+            const response = await fetch(url, config);
+            if (!response.ok) {
+                const errorData = await response.json().catch(() => ({ error: `HTTP error ${response.status}` }));
+                throw new Error(errorData.error || `HTTP error ${response.status}`);
+            }
+            if (response.status === 204) return null; // No content
+            return response.json();
+        } catch (error) {
+            console.error('API Call Error:', error.message);
+            throw error; // Re-throw to be caught by caller
+        }
+    }
+    // --- End API Helper ---
+
+    // --- Publishing UI and Logic ---
+    function updatePublishControls() {
+        if (!publishStatusContainer) return;
+        publishStatusContainer.innerHTML = ''; // Clear previous content
+
+        if (!currentUserId || !currentScriptID) {
+            const p = document.createElement('p');
+            p.textContent = 'Load or save a script to see publishing options.';
+            publishStatusContainer.appendChild(p);
+            return;
+        }
+
+        if (currentPublishID) {
+            const statusP = document.createElement('p');
+            statusP.textContent = 'Status: Published';
+            publishStatusContainer.appendChild(statusP);
+
+            const viewLink = document.createElement('a');
+            // Construct full URL for the link
+            const fullViewUrl = new URL(`/api/view/${currentPublishID}`, API_BASE_URL).href;
+            viewLink.href = fullViewUrl;
+            viewLink.textContent = fullViewUrl; // Show the full URL
+            viewLink.target = '_blank';
+            viewLink.style.display = 'block';
+            viewLink.style.marginBottom = '5px'; // Reduced margin
+            viewLink.style.wordBreak = 'break-all';
+            publishStatusContainer.appendChild(viewLink);
+
+            const copyLinkButton = document.createElement('button');
+            copyLinkButton.textContent = 'Copy Link';
+            copyLinkButton.className = 'secondary';
+            copyLinkButton.style.marginRight = '10px';
+            copyLinkButton.style.marginBottom = '10px'; // Add some bottom margin
+            copyLinkButton.onclick = () => {
+                navigator.clipboard.writeText(viewLink.href)
+                    .then(() => setStatusMessage('Publish link copied!', false))
+                    .catch(err => setStatusMessage('Failed to copy link: ' + err, true));
+            };
+            publishStatusContainer.appendChild(copyLinkButton);
+
+            const unpublishButton = document.createElement('button');
+            unpublishButton.textContent = 'Unpublish';
+            unpublishButton.className = 'secondary';
+            unpublishButton.style.marginBottom = '10px'; // Add some bottom margin
+            unpublishButton.addEventListener('click', handleUnpublish);
+            publishStatusContainer.appendChild(unpublishButton);
+        } else {
+            const statusP = document.createElement('p');
+            statusP.textContent = 'Status: Not Published';
+            publishStatusContainer.appendChild(statusP);
+
+            const publishButton = document.createElement('button');
+            publishButton.textContent = 'Publish';
+            publishButton.addEventListener('click', handlePublish);
+            publishStatusContainer.appendChild(publishButton);
+        }
+    }
+
+    async function handlePublish() {
+        if (!currentUserId || !currentScriptID) {
+            setStatusMessage("Cannot publish: User ID or Script ID is missing.", true);
+            return;
+        }
+        setStatusMessage("Publishing script...", false);
+        try {
+            // Ensure the latest script content is considered (though backend re-fetches, this is good practice)
+            // If scriptNameInput.value is the source of truth for ID generation on save, use it.
+            // For publish, we use currentScriptID which is set on load/save.
+            const result = await fetchAPI(`${API_BASE_URL}/api/scripts/${currentUserId}/${currentScriptID}/publish`, { method: 'POST' });
+            if (result && result.success && result.publishID) {
+                currentPublishID = result.publishID;
+                setStatusMessage("Script published successfully!", false);
+                updatePublishControls();
+                // Also update the publishID in the main script data on the server via saveScript
+                // This happens automatically if saveScript is called after this,
+                // or if the publish endpoint on the server updates the main script's publishID field.
+                // The current backend implementation of /publish updates scriptData and calls saveScript.
+            } else {
+                throw new Error(result.error || "Publishing failed for an unknown reason.");
+            }
+        } catch (error) {
+            setStatusMessage(`Error publishing script: ${error.message}`, true);
+        }
+    }
+
+    async function handleUnpublish() {
+        if (!currentUserId || !currentScriptID || !currentPublishID) {
+            setStatusMessage("Cannot unpublish: Script context is incomplete or script is not published.", true);
+            return;
+        }
+        setStatusMessage("Unpublishing script...", false);
+        try {
+            const result = await fetchAPI(`${API_BASE_URL}/api/scripts/${currentUserId}/${currentScriptID}/unpublish`, { method: 'POST' });
+            if (result && result.success) {
+                const oldPublishID = currentPublishID; // For logging or confirmation
+                currentPublishID = null;
+                setStatusMessage(`Script (was ${oldPublishID}) unpublished successfully.`, false);
+                updatePublishControls();
+                // Backend's /unpublish endpoint handles removing publishID from main script and deleting published content.
+            } else {
+                throw new Error(result.error || "Unpublishing failed for an unknown reason.");
+            }
+        } catch (error) {
+            setStatusMessage(`Error unpublishing script: ${error.message}`, true);
+        }
+    }
+    // --- End Publishing UI and Logic ---
+
+    // --- View Mode Specific Functions ---
+    async function loadPublishedScriptForView(publishID) {
+        setStatusMessage(`Loading published script ${publishID} for viewing...`, false);
+        try {
+            const scriptData = await fetchAPI(`${API_BASE_URL}/api/view/${publishID}`);
+            if (scriptData && scriptData.name && typeof scriptData.content === 'string') {
+                setStatusMessage(`Published script '${scriptData.name}' loaded.`, false);
+                return scriptData;
+            } else {
+                throw new Error("Published script data is invalid or not found.");
+            }
+        } catch (error) {
+            setStatusMessage(`Error loading published script: ${error.message}`, true);
+            // Display a more prominent error on the page for view mode
+            if (publishStatusContainer) { // Re-use this container for error
+                publishStatusContainer.innerHTML = `<p style="color: red; font-weight: bold;">Could not load published script: ${error.message}</p>`;
+            } else if (errorLog) {
+                 errorLog.textContent += `Fatal Error: Could not load published script: ${error.message}\n`;
+            }
+            return null;
+        }
+    }
+
+    function setupViewModeUI(scriptData) {
+        if (!scriptData) return;
+
+        // Update page and editor titles
+        document.title = `View Script - ${scriptData.name}`;
+        if (editorTitleElement) editorTitleElement.textContent = `VIEWING: ${scriptData.name}`;
+
+        // Load content and set editor to read-only
+        codeMirrorEditor.setValue(scriptData.content);
+        codeMirrorEditor.setOption("readOnly", true);
+
+        // Hide irrelevant UI elements
+        const elementsToHideSelectors = [
+            '.inline-flex-center', // Theme select and line wrap
+            '#optimizationSettings',
+            '.controls-group:has(h3):not(#publishControls):not(:has(#assetPreviews)):not(:has(#displayCanvas))', // Hide all control groups except publish, assets, display
+            '#userId', // Specifically hide UserID input field
+            'label[for="userId"]', // and its label
+            '#scriptList', // select
+            'label[for="scriptList"]',
+            '#loadScriptButton',
+            '#scriptName', // input
+            'label[for="scriptName"]',
+            '#saveScriptButton',
+            '#newScriptButton',
+            '#deviceScriptListContainer',
+            // Hide the parent of deviceScriptListContainer if it's specifically the "Device Sync Scripts" block
+            // This is simpler: find all control groups, then selectively show a few or hide most.
+        ];
+
+        // More robust hiding:
+        document.querySelectorAll('.controls-group').forEach(group => {
+            const h3Text = group.querySelector('h3')?.textContent.trim();
+            if (h3Text === "Script Management" || h3Text === "Execution Path & Optimizations" || h3Text === "Device Sync Scripts") {
+                 group.style.display = 'none';
+            }
+        });
+        document.querySelectorAll('.inline-flex-center').forEach(el => el.style.display = 'none'); // Hides theme/linewrap
+
+        // Modify #publishControls for "Copy and Edit"
+        if (publishStatusContainer) {
+            publishStatusContainer.innerHTML = ''; // Clear it
+            const copyEditButton = document.createElement('button');
+            copyEditButton.textContent = 'Copy and Edit This Script';
+            copyEditButton.className = 'primary'; // Make it prominent
+            copyEditButton.style.width = '100%';
+            copyEditButton.style.padding = '10px';
+            copyEditButton.style.fontSize = '1.1em';
+
+            copyEditButton.addEventListener('click', () => {
+                sessionStorage.setItem('copiedScriptName', scriptData.name);
+                sessionStorage.setItem('copiedScriptContent', scriptData.content);
+                window.location.href = window.location.pathname; // Redirect to index.html without params
+            });
+            publishStatusContainer.appendChild(copyEditButton);
+            // Ensure the parent #publishControls is visible if it was hidden by a generic rule
+            if (document.getElementById('publishControls')) {
+                 document.getElementById('publishControls').style.display = 'block';
+            }
+        }
+
+        // Make asset previews read-only (disable click/drag editing)
+        // This requires modifying renderSingleAssetPreview or its event listeners conditionally
+        // For now, a simple approach: overlay a div or disable pointer events on previews.
+        // Or, more simply, just don't attach editing listeners in view mode.
+        // This is handled by not calling `initializeUserId` and `fetchScriptList` which attach those.
+        // Asset previews will still render if script defines assets.
+
+        // Run the script
+        runScript();
+    }
+    // --- End View Mode Specific Functions ---
 
     // --- Line Wrap Toggle Logic ---
     if (lineWrapToggle && codeMirrorEditor) {
@@ -1422,14 +1690,29 @@ document.addEventListener('DOMContentLoaded', async () => {
             // Update UI
             scriptNameInput.value = scriptData.name || '';
             codeMirrorEditor.setValue(scriptData.content || '');
+
+            currentScriptID = scriptId;
+            currentPublishID = scriptData.publishID || null;
+
             setStatusMessage(`Script '${scriptData.name}' loaded successfully.`, false);
-            console.log("Script loaded:", scriptData);
+            console.log("Script loaded from remote:", scriptData);
+
+            updateEditorTitle();
+            updatePublishControls();
+            // Save to specific local storage slot after successful server load
+            saveContentToLocalStorage(currentScriptID, scriptData.name, scriptData.content, currentPublishID);
+            history.replaceState(null, '', '#scriptID=' + currentScriptID);
+
 
             // Optionally run the loaded script immediately
             runScript();
 
         } catch (error) {
             setStatusMessage(`Error loading script: ${error.message}`, true);
+            currentScriptID = null;
+            currentPublishID = null;
+            updateEditorTitle();
+            updatePublishControls();
         }
     }
 
@@ -1446,52 +1729,67 @@ document.addEventListener('DOMContentLoaded', async () => {
             return;
         }
 
-        // Generate a simple ID from the name (replace with more robust generation if needed)
-        const scriptId = scriptName.toLowerCase()
+        // Generate a simple ID from the name
+        const generatedScriptId = scriptName.toLowerCase()
             .replace(/\s+/g, '-') // Replace spaces with hyphens
             .replace(/[^a-z0-9-]/g, '') // Remove invalid characters
             .substring(0, 50); // Limit length
 
-        if (!scriptId) {
+        if (!generatedScriptId) {
             setStatusMessage("Invalid script name, cannot generate ID.", true);
             return;
         }
 
-        console.log(`Saving script: ID=${scriptId}, Name=${scriptName} for user ${currentUserId}`);
+        // If a script is loaded and name hasn't changed, use currentScriptID.
+        // If it's a new script (currentScriptID is null) or name has changed, use generatedScriptId.
+        let scriptIdToSave = generatedScriptId;
+        if (currentScriptID) {
+            const selectedOption = scriptListSelect.options[scriptListSelect.selectedIndex];
+            if (selectedOption && selectedOption.value === currentScriptID && scriptNameInput.value === selectedOption.text) {
+                scriptIdToSave = currentScriptID;
+            }
+        }
+
+        console.log(`Saving script: ID=${scriptIdToSave}, Name=${scriptName} for user ${currentUserId}. Current publishID: ${currentPublishID}`);
         setStatusMessage(`Saving script '${scriptName}'...`);
 
+        const payload = {
+            name: scriptName,
+            content: scriptContent,
+            publishID: currentPublishID // Pass currentPublishID; backend s3.saveScript handles it
+        };
+
         try {
-            const response = await fetch(`${API_BASE_URL}/api/scripts/${currentUserId}/${scriptId}`, {
+            const result = await fetchAPI(`${API_BASE_URL}/api/scripts/${currentUserId}/${scriptIdToSave}`, {
                 method: 'PUT',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                    name: scriptName,
-                    content: scriptContent,
-                    // userId: currentUserId // Server will get userID from path
-                }),
+                body: JSON.stringify(payload),
             });
 
-            if (!response.ok) {
-                const errorData = await response.json().catch(() => ({ error: 'Unknown error saving script' }));
-                throw new Error(`Failed to save script: ${response.status} ${response.statusText} - ${errorData.error || ''}`);
-            }
-
-            const result = await response.json();
             setStatusMessage(`Script '${result.script.name}' saved successfully!`, false);
             console.log("Script saved:", result);
 
+            currentScriptID = result.script.id;
+            currentPublishID = result.script.publishID || null;
+            scriptNameInput.value = result.script.name; // Ensure name input matches saved name
+
+            // Save to specific local storage slot
+            saveContentToLocalStorage(currentScriptID, result.script.name, result.script.content, currentPublishID);
+            // Update URL hash
+            history.replaceState(null, '', '#scriptID=' + currentScriptID);
+
+            updateEditorTitle();
+            updatePublishControls();
+
             // Refresh the script list to include the new/updated script
             await fetchScriptList();
-            // Select the saved script in the dropdown
-            scriptListSelect.value = scriptId;
-
-            // DO NOT re-run the script automatically after saving.
-            // Keep the current counter and overrides.
+            // Try to re-select the script in the dropdown.
+            if (Array.from(scriptListSelect.options).find(opt => opt.value === currentScriptID)) {
+                 scriptListSelect.value = currentScriptID;
+            }
 
         } catch (error) {
             setStatusMessage(`Error saving script: ${error.message}`, true);
+            updatePublishControls(); // Reflect current state even on error
         }
     }
 
@@ -1657,9 +1955,22 @@ COLOR NAME=BLACK
 FILL NAME="stripes"
 FILL_RECT X=0 Y=0 WIDTH=$WIDTH HEIGHT=$HEIGHT
 `);
-        scriptListSelect.value = ''; // Deselect any loaded script
+        scriptListSelect.value = '';
+
+        currentScriptID = null;
+        currentPublishID = null;
+
+        // Clear specific script from local storage if one was loaded by ID
+        // This is tricky, maybe better to just rely on generic unsaved for new scripts.
+        // For now, newScript just clears current state. Generic unsaved will take over on next edit.
+        localStorage.removeItem(LS_UNSAVED_NAME_KEY); // Clear any lingering unsaved name
+        saveContentToLocalStorage(null, '', codeMirrorEditor.getValue(), null); // Save this blank state as "unsaved"
+
+        history.replaceState(null, '', window.location.pathname + window.location.search); // Clear hash
+        updateEditorTitle();
         setStatusMessage("Cleared editor for new script.", false);
-        runScript(); // Run the blank script template
+        updatePublishControls();
+        runScript();
     }
 
     // Add Event Listeners for Script Management
@@ -1756,8 +2067,112 @@ FILL_RECT X=0 Y=0 WIDTH=$WIDTH HEIGHT=$HEIGHT
     // --- End Profiling System ---
 
     // Run once on load
-    initializeUserId(); // Initialize User ID first
-    setupOptimizationUI(); // Set up optimization UI controls
-    runScript();
-    fetchScriptList(); // Fetch scripts when the page loads (will use currentUserId)
+    if (isViewMode && viewPublishID) {
+        console.log("View Mode Detected. Publish ID:", viewPublishID);
+        // Minimal UI setup for view mode
+        if (themeSelect) {
+            const savedTheme = localStorage.getItem(LOCAL_STORAGE_THEME_KEY) || 'style.css';
+            applyTheme(savedTheme);
+            themeSelect.addEventListener('change', (event) => applyTheme(event.target.value));
+        }
+        if (displaySizeSelect) {
+            const initialValue = displaySizeSelect.value;
+            const [initialWidth, initialHeight] = initialValue.split('x').map(Number);
+            m5PaperZoomFactor = 0.5; updateCanvasDimensions(initialWidth, initialHeight);
+            displaySizeSelect.addEventListener('change', (event) => {
+                const [newWidth, newHeight] = event.target.value.split('x').map(Number);
+                if (newWidth === 540 && newHeight === 960) m5PaperZoomFactor = 0.5;
+                updateCanvasDimensions(newWidth, newHeight); runScript();
+            });
+        }
+        if (zoomToggleButton) {
+            zoomToggleButton.addEventListener('click', () => {
+                if (canvas.width === 540 && canvas.height === 960) {
+                    m5PaperZoomFactor = (m5PaperZoomFactor === 0.5) ? 1.0 : 0.5; applyM5PaperZoom();
+                }
+            });
+        }
+        // Run button does not need special handling if it just calls runScript()
+        // Environment controls are not disabled by default yet.
+
+        const publishedScriptData = await loadPublishedScriptForView(viewPublishID);
+        if (publishedScriptData) {
+            setupViewModeUI(publishedScriptData); // This also calls runScript()
+        } else {
+            document.querySelector('.column:first-child').innerHTML = '<p style="color:red; font-size:1.2em; text-align:center;">Failed to load script for viewing.</p>';
+            document.querySelector('#displayCanvas').style.display = 'none';
+            if(editorTitleElement) editorTitleElement.textContent = 'Error Loading Script';
+        }
+    } else { // Normal Editor Mode
+        console.log("Normal Editor Mode");
+        let scriptLoadedFromSessionOrHash = false;
+
+        const copiedName = sessionStorage.getItem('copiedScriptName');
+        const copiedContent = sessionStorage.getItem('copiedScriptContent');
+
+        if (copiedName !== null && copiedContent !== null) { // Check for null explicitly
+            console.log("Found copied script data from view mode.");
+            scriptNameInput.value = copiedName;
+            codeMirrorEditor.setValue(copiedContent);
+            currentScriptID = null;
+            currentPublishID = null;
+            sessionStorage.removeItem('copiedScriptName');
+            sessionStorage.removeItem('copiedScriptContent');
+            setStatusMessage("Script content copied for editing.", false);
+            updateEditorTitle();
+            scriptLoadedFromSessionOrHash = true;
+        } else if (window.location.hash && window.location.hash.startsWith('#scriptID=')) {
+            const scriptIdFromHash = window.location.hash.substring('#scriptID='.length);
+            console.log("Found scriptID in URL hash:", scriptIdFromHash);
+            const storedScriptJSON = localStorage.getItem(LS_SCRIPT_PREFIX + scriptIdFromHash);
+            if (storedScriptJSON) {
+                try {
+                    const storedScript = JSON.parse(storedScriptJSON);
+                    scriptNameInput.value = storedScript.name || '';
+                    codeMirrorEditor.setValue(storedScript.content || '');
+                    currentScriptID = storedScript.id;
+                    currentPublishID = storedScript.publishID || null;
+                    console.log("Loaded script from hash ID in local storage:", currentScriptID);
+                    setStatusMessage(`Loaded script '${storedScript.name}' from local storage via URL.`, false);
+                    updateEditorTitle();
+                    scriptLoadedFromSessionOrHash = true;
+                } catch (e) {
+                    console.error("Error parsing script from local storage (hash):", e);
+                    setStatusMessage("Error loading script from local storage (URL).", true);
+                    history.replaceState(null, '', window.location.pathname + window.location.search); // Clear bad hash
+                }
+            } else {
+                setStatusMessage(`Script with ID '${scriptIdFromHash}' from URL not found in local storage.`, true);
+                history.replaceState(null, '', window.location.pathname + window.location.search); // Clear bad hash
+            }
+        }
+
+        if (!scriptLoadedFromSessionOrHash) {
+            // Load last generically unsaved script if nothing from session/hash
+            const unsavedContent = localStorage.getItem(LS_UNSAVED_CONTENT_KEY);
+            const unsavedName = localStorage.getItem(LS_UNSAVED_NAME_KEY);
+            if (unsavedContent !== null) {
+                codeMirrorEditor.setValue(unsavedContent);
+                if (unsavedName !== null) scriptNameInput.value = unsavedName;
+                console.log("Loaded last unsaved content from generic local storage.");
+            } else {
+                 // If nothing at all, use default in textarea (already there)
+                 console.log("No script found in session, hash, or generic local storage. Using default.");
+            }
+            updateEditorTitle(); // Set title based on loaded unsaved content/name
+        }
+
+        // Full UI setup for normal mode
+        initializeUserId();
+        setupOptimizationUI();
+        await fetchScriptList(); // await this so scriptListSelect is populated before potential selection
+
+        // If a script was loaded by hash and exists on server, make sure it's selected in dropdown
+        if (currentScriptID && scriptListSelect.querySelector(`option[value="${currentScriptID}"]`)) {
+            scriptListSelect.value = currentScriptID;
+        }
+
+        updatePublishControls();
+        runScript(); // Initial run
+    }
 });
