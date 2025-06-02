@@ -245,7 +245,7 @@ async function handler(req: Request): Promise<Response> {
                 headers: { ...corsHeaders, "Content-Type": "application/json" },
             });
         }
-
+        
         // GET /api/view/:publishID - View a published script
         const viewMatch = path.match(/^\/api\/view\/([a-zA-Z0-9-_]{21})$/); // Assuming 21 char nanoid for publishID
         if (viewMatch && method === "GET") {

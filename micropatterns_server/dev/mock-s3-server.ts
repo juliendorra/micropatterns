@@ -8,6 +8,17 @@ ensureDirSync(LOCAL_STORAGE_DIR);
 
 async function handleRequest(req: Request): Promise<Response> {
     const url = new URL(req.url);
+    const corsHeaders = {
+        "Access-Control-Allow-Origin": "*", // Allow all origins
+        "Access-Control-Allow-Methods": "GET, PUT, DELETE, HEAD, OPTIONS", // Include DELETE
+        "Access-Control-Allow-Headers": "*", // Allow all headers
+    };
+
+    // Handle CORS preflight requests
+    if (req.method === "OPTIONS") {
+        return new Response(null, { headers: corsHeaders, status: 204 });
+    }
+    
     // Key includes bucket name, e.g., /my-bucket/scripts.json or /my-bucket/scripts/my-script.json
     const keyWithBucket = url.pathname.substring(1);
 
@@ -54,10 +65,32 @@ async function handleRequest(req: Request): Promise<Response> {
             {
                 const exists = await objectExists(objectKey); // Use objectKey for storage path logic
                 console.log(`[MOCK S3] HEAD check for key: ${objectKey} - Exists: ${exists}`);
-                return new Response(null, { status: exists ? 200 : 404 });
+                return new Response(null, { status: exists ? 200 : 404, headers: corsHeaders });
             }
+        
+        case "DELETE":
+            {
+                try {
+                    // objectKey already contains the full path within the "bucket" (which is ignored for path construction)
+                    // e.g. published_scripts/some-id.json
+                    const filePath = join(LOCAL_STORAGE_DIR, objectKey); 
+                    
+                    console.log(`[MOCK S3] Attempting to delete: ${filePath}`);
+                    await Deno.remove(filePath);
+                    console.log(`[MOCK S3] Successfully deleted: ${filePath}`);
+                    return new Response(null, { status: 204, headers: corsHeaders });
+                } catch (error) {
+                    if (error instanceof Deno.errors.NotFound) {
+                        console.log(`[MOCK S3] File not found (treated as success for DELETE): ${objectKey}`);
+                        return new Response(null, { status: 204, headers: corsHeaders }); // S3 returns 204 even if not found
+                    }
+                    console.error(`[MOCK S3] Error deleting file ${objectKey}:`, error);
+                    return new Response("Internal Server Error", { status: 500, headers: corsHeaders });
+                }
+            }
+
         default:
-            return new Response("Method not allowed", { status: 405 });
+            return new Response("Method not allowed", { status: 405, headers: corsHeaders });
     }
 }
 

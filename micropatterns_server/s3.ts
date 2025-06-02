@@ -136,7 +136,7 @@ export async function deletePublishedScript(publishId: string): Promise<boolean>
         // It's often okay if the object doesn't exist when trying to delete.
         if (error.message.includes("NoSuchKey") || error.message.includes("Object not found") || error.message.includes("404")) {
             console.log(`[S3] Published script '${publishId}' (key: '${key}') not found during delete, considered successful.`);
-            return true;
+            return true; 
         }
         console.error(`[S3] Error deleting published script '${publishId}' (key: '${key}'):`, error.message);
         return false;
@@ -264,7 +264,7 @@ export async function saveScript(userId: string, scriptId: string, scriptData: a
     let mainScriptSaved = false;
     try {
         // Ensure lastModified is updated before saving
-        scriptData.lastModified = new Date().toISOString();
+        scriptData.lastModified = new Date().toISOString(); 
         const dataString = JSON.stringify(scriptData, null, 2);
         await s3client.putObject(
             key,
@@ -297,7 +297,7 @@ export async function saveScript(userId: string, scriptId: string, scriptData: a
         // For now, we just log that no action is taken for the published version.
         console.log(`[S3] Script '${scriptId}' does not have a (valid) publishID. No action taken for published version.`);
     }
-
+    
     return mainScriptSaved; // Success of saveScript depends on the main script save operation
 }
 

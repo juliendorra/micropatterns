@@ -129,8 +129,9 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // --- Script State ---
     let currentUserId = '';
-    let currentScriptID = null;
+    let currentScriptID = null; 
     let currentPublishID = null;
+    let hasUnsavedChanges = false; // Added for unsaved indicator
     // Constants for local storage keys
     const LS_UNSAVED_CONTENT_KEY = 'micropatterns_editor_unsaved_content';
     const LS_UNSAVED_NAME_KEY = 'micropatterns_editor_unsaved_name'; // If you want to store unsaved name too
@@ -258,7 +259,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             editorTitleElement.textContent = 'MICROPATTERNS SCRIPT';
         }
     }
-
+    
     function saveContentToLocalStorage(scriptId, name, content, publishId) {
         if (scriptId) { // Named script
             const scriptData = {
@@ -266,7 +267,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 name: name,
                 content: content,
                 publishID: publishId, // Make sure to include this
-                lastModified: new Date().toISOString()
+                lastModified: new Date().toISOString() 
             };
             localStorage.setItem(LS_SCRIPT_PREFIX + scriptId, JSON.stringify(scriptData));
             // Optionally clear the generic unsaved content if a named script is explicitly saved
@@ -280,20 +281,34 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     }
 
-    // Auto-save unsaved work (generic)
+    // Auto-save unsaved work (generic) & Unsaved Changes Indicator
+    function updateUnsavedIndicator() {
+        const indicator = document.getElementById('unsavedIndicator');
+        if (indicator) {
+            indicator.style.display = hasUnsavedChanges ? 'inline' : 'none';
+        }
+    }
+
     if (codeMirrorEditor) {
         codeMirrorEditor.on('change', () => {
-            if (!isViewMode && !currentScriptID) { // Only save to generic if no currentScriptID (i.e. it's an "unsaved" new script)
-                 saveContentToLocalStorage(null, scriptNameInput.value, codeMirrorEditor.getValue(), null);
+            if (!isViewMode) {
+                if (!currentScriptID) { // Unnamed script, auto-save to generic
+                    saveContentToLocalStorage(null, scriptNameInput.value, codeMirrorEditor.getValue(), null);
+                }
+                hasUnsavedChanges = true;
+                updateUnsavedIndicator();
             }
-            // If currentScriptID exists, saving to its specific key happens on explicit saveScript()
         });
     }
     if (scriptNameInput) {
          scriptNameInput.addEventListener('input', () => {
             updateEditorTitle();
-            if (!isViewMode && !currentScriptID) { // Also save name if it's an "unsaved" script
-                 saveContentToLocalStorage(null, scriptNameInput.value, codeMirrorEditor.getValue(), null);
+            if (!isViewMode) {
+                if (!currentScriptID) { // Unnamed script with name change, auto-save name to generic
+                    saveContentToLocalStorage(null, scriptNameInput.value, codeMirrorEditor.getValue(), null);
+                }
+                hasUnsavedChanges = true;
+                updateUnsavedIndicator();
             }
         });
     }
@@ -397,7 +412,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             // let's keep the full URL for the copy functionality.
             const fullViewUrlToCopy = new URL(`?view=${currentPublishID}`, window.location.href).href;
             copyLinkButton.textContent = 'Copy Link';
-            copyLinkButton.className = 'secondary';
+            copyLinkButton.className = 'secondary'; 
             copyLinkButton.style.marginRight = '10px';
             copyLinkButton.style.marginBottom = '10px'; // Add some bottom margin
             copyLinkButton.onclick = () => {
@@ -438,7 +453,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             const unpublishButton = document.createElement('button');
             unpublishButton.textContent = 'Unpublish';
-            unpublishButton.className = 'secondary';
+            unpublishButton.className = 'secondary'; 
             unpublishButton.style.marginBottom = '10px'; // Add some bottom margin
             unpublishButton.addEventListener('click', handleUnpublish);
             publishStatusContainer.appendChild(unpublishButton);
@@ -533,7 +548,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         // Update page and editor titles
         document.title = `View Script - ${scriptData.name}`;
         if (editorTitleElement) editorTitleElement.textContent = `VIEWING: ${scriptData.name}`;
-
+        
         // Load content and set editor to read-only
         codeMirrorEditor.setValue(scriptData.content);
         codeMirrorEditor.setOption("readOnly", true);
@@ -556,12 +571,12 @@ document.addEventListener('DOMContentLoaded', async () => {
             // Hide the parent of deviceScriptListContainer if it's specifically the "Device Sync Scripts" block
             // This is simpler: find all control groups, then selectively show a few or hide most.
         ];
-
+        
         // More robust hiding:
         document.querySelectorAll('.controls-group').forEach(group => {
             const h3Text = group.querySelector('h3')?.textContent.trim();
-            if (h3Text === "Script Management" ||
-                h3Text === "Execution Path & Optimizations" ||
+            if (h3Text === "Script Management" || 
+                h3Text === "Execution Path & Optimizations" || 
                 h3Text === "Device Sync Scripts" ||
                 h3Text === "Environment") { // Added "Environment"
                  group.style.display = 'none';
@@ -590,7 +605,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                  document.getElementById('publishControls').style.display = 'block';
             }
         }
-
+        
         // Make asset previews read-only (disable click/drag editing)
         // This requires modifying renderSingleAssetPreview or its event listeners conditionally
         // For now, a simple approach: overlay a div or disable pointer events on previews.
@@ -1730,15 +1745,17 @@ document.addEventListener('DOMContentLoaded', async () => {
             // Update UI
             scriptNameInput.value = scriptData.name || '';
             codeMirrorEditor.setValue(scriptData.content || '');
-
-            currentScriptID = scriptId;
-            currentPublishID = scriptData.publishID || null;
-
+            
+            currentScriptID = scriptId; 
+            currentPublishID = scriptData.publishID || null; 
+            
             setStatusMessage(`Script '${scriptData.name}' loaded successfully.`, false);
             console.log("Script loaded from remote:", scriptData);
-
+            
+            hasUnsavedChanges = false; // Script just loaded, consider it "saved"
+            updateUnsavedIndicator();
             updateEditorTitle();
-            updatePublishControls();
+            updatePublishControls(); 
             // Save to specific local storage slot after successful server load
             saveContentToLocalStorage(currentScriptID, scriptData.name, scriptData.content, currentPublishID);
             history.replaceState(null, '', '#scriptID=' + currentScriptID);
@@ -1751,6 +1768,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             setStatusMessage(`Error loading script: ${error.message}`, true);
             currentScriptID = null;
             currentPublishID = null;
+            hasUnsavedChanges = false;
+            updateUnsavedIndicator();
             updateEditorTitle();
             updatePublishControls();
         }
@@ -1779,7 +1798,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             setStatusMessage("Invalid script name, cannot generate ID.", true);
             return;
         }
-
+        
         // If a script is loaded and name hasn't changed, use currentScriptID.
         // If it's a new script (currentScriptID is null) or name has changed, use generatedScriptId.
         let scriptIdToSave = generatedScriptId;
@@ -1789,7 +1808,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 scriptIdToSave = currentScriptID;
             }
         }
-
+        
         console.log(`Saving script: ID=${scriptIdToSave}, Name=${scriptName} for user ${currentUserId}. Current publishID: ${currentPublishID}`);
         setStatusMessage(`Saving script '${scriptName}'...`);
 
@@ -1807,18 +1826,20 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             setStatusMessage(`Script '${result.script.name}' saved successfully!`, false);
             console.log("Script saved:", result);
-
-            currentScriptID = result.script.id;
-            currentPublishID = result.script.publishID || null;
+            
+            currentScriptID = result.script.id; 
+            currentPublishID = result.script.publishID || null; 
             scriptNameInput.value = result.script.name; // Ensure name input matches saved name
 
             // Save to specific local storage slot
             saveContentToLocalStorage(currentScriptID, result.script.name, result.script.content, currentPublishID);
             // Update URL hash
             history.replaceState(null, '', '#scriptID=' + currentScriptID);
-
+            
+            hasUnsavedChanges = false; // Script is now saved
+            updateUnsavedIndicator();
             updateEditorTitle();
-            updatePublishControls();
+            updatePublishControls(); 
 
             // Refresh the script list to include the new/updated script
             await fetchScriptList();
@@ -1826,7 +1847,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (Array.from(scriptListSelect.options).find(opt => opt.value === currentScriptID)) {
                  scriptListSelect.value = currentScriptID;
             }
-
+            
         } catch (error) {
             setStatusMessage(`Error saving script: ${error.message}`, true);
             updatePublishControls(); // Reflect current state even on error
@@ -1995,22 +2016,24 @@ COLOR NAME=BLACK
 FILL NAME="stripes"
 FILL_RECT X=0 Y=0 WIDTH=$WIDTH HEIGHT=$HEIGHT
 `);
-        scriptListSelect.value = '';
-
-        currentScriptID = null;
-        currentPublishID = null;
-
+        scriptListSelect.value = ''; 
+        
+        currentScriptID = null; 
+        currentPublishID = null; 
+        
         // Clear specific script from local storage if one was loaded by ID
         // This is tricky, maybe better to just rely on generic unsaved for new scripts.
         // For now, newScript just clears current state. Generic unsaved will take over on next edit.
-        localStorage.removeItem(LS_UNSAVED_NAME_KEY); // Clear any lingering unsaved name
-        saveContentToLocalStorage(null, '', codeMirrorEditor.getValue(), null); // Save this blank state as "unsaved"
+        localStorage.removeItem(LS_UNSAVED_NAME_KEY); 
+        saveContentToLocalStorage(null, '', codeMirrorEditor.getValue(), null); 
 
-        history.replaceState(null, '', window.location.pathname + window.location.search); // Clear hash
+        history.replaceState(null, '', window.location.pathname + window.location.search); 
+        hasUnsavedChanges = false;
+        updateUnsavedIndicator();
         updateEditorTitle();
         setStatusMessage("Cleared editor for new script.", false);
-        updatePublishControls();
-        runScript();
+        updatePublishControls(); 
+        runScript(); 
     }
 
     // Add Event Listeners for Script Management
@@ -2154,7 +2177,7 @@ FILL_RECT X=0 Y=0 WIDTH=$WIDTH HEIGHT=$HEIGHT
             console.log("Found copied script data from view mode.");
             scriptNameInput.value = copiedName;
             codeMirrorEditor.setValue(copiedContent);
-            currentScriptID = null;
+            currentScriptID = null; 
             currentPublishID = null;
             sessionStorage.removeItem('copiedScriptName');
             sessionStorage.removeItem('copiedScriptContent');
@@ -2174,6 +2197,8 @@ FILL_RECT X=0 Y=0 WIDTH=$WIDTH HEIGHT=$HEIGHT
                     currentPublishID = storedScript.publishID || null;
                     console.log("Loaded script from hash ID in local storage:", currentScriptID);
                     setStatusMessage(`Loaded script '${storedScript.name}' from local storage via URL.`, false);
+                    hasUnsavedChanges = false; // Loaded from a "saved" state
+                    updateUnsavedIndicator();
                     updateEditorTitle();
                     scriptLoadedFromSessionOrHash = true;
                 } catch (e) {
@@ -2195,24 +2220,48 @@ FILL_RECT X=0 Y=0 WIDTH=$WIDTH HEIGHT=$HEIGHT
                 codeMirrorEditor.setValue(unsavedContent);
                 if (unsavedName !== null) scriptNameInput.value = unsavedName;
                 console.log("Loaded last unsaved content from generic local storage.");
+                // This state is inherently "unsaved" unless it's a blank new script
+                hasUnsavedChanges = codeMirrorEditor.getValue() !== newScriptTemplateContent(); 
             } else {
-                 // If nothing at all, use default in textarea (already there)
-                 console.log("No script found in session, hash, or generic local storage. Using default.");
+                 // If nothing at all, use default in textarea (already there) or createNewScript state
+                 console.log("No script found in session, hash, or generic local storage. Defaulting to new script state.");
+                 codeMirrorEditor.setValue(newScriptTemplateContent()); // Ensure consistent new script content
+                 hasUnsavedChanges = false;
             }
-            updateEditorTitle(); // Set title based on loaded unsaved content/name
+            updateEditorTitle(); 
+            updateUnsavedIndicator();
         }
 
         // Full UI setup for normal mode
-        initializeUserId();
+        initializeUserId(); 
         setupOptimizationUI();
-        await fetchScriptList(); // await this so scriptListSelect is populated before potential selection
-
-        // If a script was loaded by hash and exists on server, make sure it's selected in dropdown
+        await fetchScriptList(); 
+        
         if (currentScriptID && scriptListSelect.querySelector(`option[value="${currentScriptID}"]`)) {
             scriptListSelect.value = currentScriptID;
         }
 
-        updatePublishControls();
-        runScript(); // Initial run
+        updatePublishControls(); 
+        updateUnsavedIndicator(); // Call once more after all initial loading logic
+        runScript(); 
     }
 });
+
+function newScriptTemplateContent() {
+    // Helper to get default new script content, ensuring env.WIDTH/HEIGHT are current if possible
+    // This might need to be more robust if env is not yet initialized.
+    const w = (typeof env !== 'undefined' && env.WIDTH) ? env.WIDTH : 540;
+    const h = (typeof env !== 'undefined' && env.HEIGHT) ? env.HEIGHT : 960;
+    return `# New MicroPatterns Script\n# Display is ${w}x${h}
+
+DEFINE PATTERN NAME="stripes" WIDTH=8 HEIGHT=8 DATA="1111111100000000111111110000000011111111000000001111111100000000"
+
+VAR $CENTERX = $WIDTH / 2
+VAR $CENTERY = $HEIGHT / 2
+VAR $SECONDPLUSONE = $SECOND + 1
+
+COLOR NAME=BLACK
+FILL NAME="stripes"
+FILL_RECT X=0 Y=0 WIDTH=$WIDTH HEIGHT=$HEIGHT
+`;
+}
