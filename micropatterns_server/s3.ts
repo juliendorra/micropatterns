@@ -262,10 +262,14 @@ export async function getScript(userId: string, scriptId: string): Promise<any |
 export async function saveScript(userId: string, scriptId: string, scriptData: any): Promise<boolean> {
     const key = getScriptKey(userId, scriptId);
     let mainScriptSaved = false;
+    // Ensure lastModified is updated before saving the main script metadata
+    scriptData.lastModified = new Date().toISOString();
+    // isPublished should be part of scriptData, default to false if not present
+    scriptData.isPublished = typeof scriptData.isPublished === 'boolean' ? scriptData.isPublished : false;
+    // publishID might exist or be null/undefined
+
     try {
-        // Ensure lastModified is updated before saving
-        scriptData.lastModified = new Date().toISOString(); 
-        const dataString = JSON.stringify(scriptData, null, 2);
+        const dataString = JSON.stringify(scriptData, null, 2); // scriptData now includes publishID and isPublished
         await s3client.putObject(
             key,
             new TextEncoder().encode(dataString),
@@ -278,27 +282,28 @@ export async function saveScript(userId: string, scriptId: string, scriptData: a
         return false; // Primary operation failed
     }
 
-    // After successfully saving the main script, check for publishID and save/update the published version.
-    if (mainScriptSaved && scriptData && typeof scriptData.publishID === 'string' && scriptData.publishID.trim() !== '') {
-        console.log(`[S3] Script '${scriptId}' has a publishID ('${scriptData.publishID}'). Attempting to save/update published version.`);
-        // Use the name and content from the scriptData being saved
-        const publishedSaved = await savePublishedScript(scriptData.publishID, scriptData.name, scriptData.content);
-        if (publishedSaved) {
-            console.log(`[S3] Published version for script '${scriptId}' (publishID: '${scriptData.publishID}') saved/updated successfully.`);
+    // After successfully saving the main script, check for publishID and isPublished status
+    if (mainScriptSaved && scriptData.publishID && typeof scriptData.publishID === 'string' && scriptData.publishID.trim() !== '') {
+        if (scriptData.isPublished === true) {
+            console.log(`[S3] Script '${scriptId}' has publishID ('${scriptData.publishID}') and isPublished is true. Saving to published_scripts/.`);
+            const publishedSaved = await savePublishedScript(scriptData.publishID, scriptData.name, scriptData.content);
+            if (publishedSaved) {
+                console.log(`[S3] Published version for script '${scriptId}' (publishID: '${scriptData.publishID}') updated successfully.`);
+            } else {
+                console.error(`[S3] Failed to update published version for script '${scriptId}' (publishID: '${scriptData.publishID}'). Main script metadata is saved.`);
+            }
         } else {
-            // Log error, but don't mark saveScript as failed if only this part fails.
-            // The main script was saved. This part is secondary; an error here means the published version might be stale.
-            console.error(`[S3] Failed to save/update published version for script '${scriptId}' (publishID: '${scriptData.publishID}'). Main script is saved, but published version may be stale.`);
+            // isPublished is false or not explicitly true, but publishID exists.
+            // This means the script is "known" for publishing but currently unpublished.
+            // The actual deletion of the public file from published_scripts/ is handled by the unpublish endpoint.
+            // Here, we just ensure we don't (re)save it to published_scripts/.
+            console.log(`[S3] Script '${scriptId}' has publishID ('${scriptData.publishID}') but isPublished is false. Not saving to published_scripts/.`);
         }
     } else if (mainScriptSaved) {
-        // This case means either no publishID was provided, or it was empty.
-        // If a script was previously published and then its publishID is removed (e.g. set to "" or null),
-        // we might want to delete the old published version. This is not explicitly handled here yet.
-        // For now, we just log that no action is taken for the published version.
-        console.log(`[S3] Script '${scriptId}' does not have a (valid) publishID. No action taken for published version.`);
+        console.log(`[S3] Script '${scriptId}' does not have a publishID or it is invalid. No action taken for published_scripts/.`);
     }
     
-    return mainScriptSaved; // Success of saveScript depends on the main script save operation
+    return mainScriptSaved; 
 }
 
 // Utility to generate a simple ID from a name

@@ -11,14 +11,25 @@
     <!-- CodeMirror show-hint addon CSS -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.15/addon/hint/show-hint.min.css">
     <link id="themeStylesheet" rel="stylesheet" href="style.css"> <!-- Changed ID and default -->
+    <style>
+        .full-center-message {
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            height: 80vh; /* Adjust as needed */
+            text-align: center;
+        }
+    </style>
 </head>
 
 <body>
-    <div class="column">
+    <div class="column" id="editorColumn">
+        <div id="viewScriptNotFoundMessageContainer" class="full-center-message" style="display:none;"></div>
         <h2 id="editorTitle">MicroPatterns Script <span id="unsavedIndicator" style="display: none; color: #e65100; margin-left: 8px; font-weight: bold;">*</span></h2>
         <!-- Container for the toggle and label -->
 
-        <div class="inline-flex-center">
+        <div id="editorControls" class="inline-flex-center">
 
             <label for="themeSelect">Theme:</label>
             <select id="themeSelect">
@@ -31,7 +42,8 @@
             <label for="lineWrapToggle">Wrap Lines</label>
             <input type="checkbox" id="lineWrapToggle" checked>
         </div>
-        <textarea id="scriptInput" spellcheck="false">
+        <div id="editorAndOptimizationsContainer"> <!-- New wrapper START -->
+            <textarea id="scriptInput" spellcheck="false">
 # Welcome to MicroPatterns!
 # Display is 200x200
 
@@ -156,11 +168,12 @@ ENDREPEAT
                 <label><input type="checkbox" id="logProfilingReport"> Log Profiling Report</label>
             </div>
         </div>
+        </div> <!-- New wrapper END -->
         <div id="errorLog"></div>
     </div>
 
-    <div class="column">
-        <h2>Emulator Display</h2>
+    <div class="column" id="displayAndControlsColumn">
+        <h2 id="emulatorDisplayTitle">Emulator Display</h2>
         <div style="margin-bottom: 15px; display: flex; align-items: center; gap: 15px; flex-wrap: wrap;">
             <label for="displaySizeSelect">Display Size:</label>
             <select id="displaySizeSelect">
@@ -171,9 +184,10 @@ ENDREPEAT
 
         </div>
         <canvas id="displayCanvas" width="540" height="960"></canvas> <!-- Default to M5Paper actual size for buffer -->
-
-        <div class="controls-group" id="publishControls">
-            <h3>Publishing</h3>
+        
+        <div id="mainControlsContainer"> <!-- Wrapper START -->
+            <div class="controls-group" id="publishControls">
+                <h3>Publishing</h3>
             <div id="publishStatusContainer">
                 <!-- Status and buttons will be dynamically inserted here by JS -->
                 <p>Load or save a script to see publishing options.</p>
@@ -269,7 +283,7 @@ ENDREPEAT
             </div>
         </div>
         <!-- End Device Sync Scripts Section -->
-
+        </div> <!-- Wrapper END -->
     </div>
 
     <!-- CodeMirror JS -->

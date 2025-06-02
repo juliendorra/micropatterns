@@ -128,25 +128,47 @@ async function handler(req: Request): Promise<Response> {
                 });
             }
 
-            const scriptData = {
-                id: scriptId, // The scriptId from the path is the canonical one
+            const existingScript = await s3.getScript(userId, scriptId);
+
+            const updatedScriptData = {
+                ...(existingScript || {}), // Start with existing data or empty object if not found
+                id: scriptId,
                 name: requestBody.name,
                 content: requestBody.content,
-                lastModified: new Date().toISOString(), // Will be updated by s3.saveScript again, but good to have here
-                publishID: requestBody.publishID // Pass through publishID if provided
+                // lastModified will be set by s3.saveScript
+                // publishID and isPublished are preserved from existingScript unless client overrides for some reason
+                // However, general saves should not modify publish status - that's for publish/unpublish endpoints.
+                // So, we prioritize existing values for publishID and isPublished.
+                publishID: existingScript?.publishID || null, 
+                isPublished: existingScript?.isPublished || false,
             };
+            // If requestBody *does* contain publishID or isPublished, it's likely from an older client or misuse.
+            // For robustness, let's log if they are unexpectedly provided in a general save.
+            if (requestBody.publishID !== undefined && requestBody.publishID !== updatedScriptData.publishID) {
+                console.warn(`[Server PUT /script] requestBody contained publishID ${requestBody.publishID}, but preserving existing ${updatedScriptData.publishID}`);
+            }
+            if (typeof requestBody.isPublished === 'boolean' && requestBody.isPublished !== updatedScriptData.isPublished) {
+                 console.warn(`[Server PUT /script] requestBody contained isPublished ${requestBody.isPublished}, but preserving existing ${updatedScriptData.isPublished}`);
+            }
 
-            const scriptSaveSuccess = await s3.saveScript(userId, scriptId, scriptData);
+
+            const scriptSaveSuccess = await s3.saveScript(userId, scriptId, updatedScriptData);
             if (!scriptSaveSuccess) {
                 return new Response(JSON.stringify({ error: "Failed to save script file" }), {
                     status: 500,
                     headers: { ...corsHeaders, "Content-Type": "application/json" },
                 });
             }
+            
+            const finalScriptData = await s3.getScript(userId, scriptId); // Get definitive saved data
 
             let index = await s3.getScriptsIndex(userId);
             const existingIndexEntry = index.findIndex(item => item.id === scriptId);
-            const indexEntry = { id: scriptId, name: scriptData.name, lastModified: scriptData.lastModified };
+            const indexEntry = { 
+                id: scriptId, 
+                name: finalScriptData?.name || scriptId, 
+                lastModified: finalScriptData?.lastModified || new Date().toISOString() 
+            };
 
             if (existingIndexEntry !== -1) {
                 index[existingIndexEntry] = indexEntry;
@@ -159,8 +181,8 @@ async function handler(req: Request): Promise<Response> {
             if (!indexSaveSuccess) {
                  console.error(`[Server] Script ${scriptId} for user ${userId} saved, but failed to update index.`);
             }
-
-            return new Response(JSON.stringify({ success: true, script: scriptData }), {
+            
+            return new Response(JSON.stringify({ success: true, script: finalScriptData }), { // Return final data
                 status: 200,
                 headers: { ...corsHeaders, "Content-Type": "application/json" },
             });
@@ -180,16 +202,31 @@ async function handler(req: Request): Promise<Response> {
                 });
             }
 
-            // If not already published, generate a new publishID.
-            // If already published, this effectively re-publishes/updates content with the existing publishID.
-            if (!scriptData.publishID) {
-                scriptData.publishID = generatePublishId();
+            // Ensure scriptData is an object before trying to access/set properties
+            if (typeof scriptData !== 'object' || scriptData === null) {
+                 return new Response(JSON.stringify({ error: "Script data is invalid" }), {
+                    status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
+                });
             }
-            // s3.saveScript will handle saving the main script and the published version
+
+            // If scriptData.publishID is null, undefined, or an empty string, generate a new one.
+            if (!scriptData.publishID || (typeof scriptData.publishID === 'string' && scriptData.publishID.trim() === '')) {
+                scriptData.publishID = generatePublishId();
+                console.log(`[Server /publish] Generated new publishID: ${scriptData.publishID} for script ${scriptId}`);
+            }
+            scriptData.isPublished = true; // Mark as published
+            
             const saveSuccess = await s3.saveScript(userId, scriptId, scriptData);
 
             if (saveSuccess) {
-                return new Response(JSON.stringify({ success: true, publishID: scriptData.publishID }), {
+                // Fetch the script again to get the definitive saved state
+                const finalScriptData = await s3.getScript(userId, scriptId);
+                return new Response(JSON.stringify({ 
+                    success: true, 
+                    publishID: finalScriptData?.publishID, 
+                    isPublished: finalScriptData?.isPublished,
+                    script: finalScriptData 
+                }), {
                     status: 200,
                     headers: { ...corsHeaders, "Content-Type": "application/json" },
                 });
@@ -222,25 +259,42 @@ async function handler(req: Request): Promise<Response> {
                 });
             }
 
-            const oldPublishID = scriptData.publishID;
-            scriptData.publishID = null; // Or delete scriptData.publishID;
+            // Ensure scriptData is an object
+             if (typeof scriptData !== 'object' || scriptData === null) {
+                 return new Response(JSON.stringify({ error: "Script data is invalid for unpublish" }), {
+                    status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
+                });
+            }
 
-            const saveSuccess = await s3.saveScript(userId, scriptId, scriptData);
-            if (!saveSuccess) {
-                return new Response(JSON.stringify({ error: "Failed to update script metadata during unpublish" }), {
+            const publishIdToUnpublish = scriptData.publishID; 
+            scriptData.isPublished = false;
+
+            const metadataSaveSuccess = await s3.saveScript(userId, scriptId, scriptData);
+            if (!metadataSaveSuccess) {
+                return new Response(JSON.stringify({ error: "Failed to update script metadata for unpublish" }), {
                     status: 500,
                     headers: { ...corsHeaders, "Content-Type": "application/json" },
                 });
             }
 
-            // If metadata saved successfully, delete the published script from its dedicated S3 location
-            const deleteSuccess = await s3.deletePublishedScript(oldPublishID);
-            if (!deleteSuccess) {
-                // Log this error, but main unpublish operation (removing publishID from script) succeeded
-                console.error(`[Server] Script ${scriptId} for user ${userId} unpublished, but failed to delete published content for ${oldPublishID}.`);
+            if (publishIdToUnpublish) {
+                const publicFileDeleteSuccess = await s3.deletePublishedScript(publishIdToUnpublish);
+                if (publicFileDeleteSuccess) {
+                    console.log(`[Server /unpublish] Deleted published content for ${publishIdToUnpublish}.`);
+                } else {
+                    console.error(`[Server /unpublish] FAILED to delete published content for ${publishIdToUnpublish}. Metadata is unpublished.`);
+                }
+            } else {
+                 console.warn(`[Server /unpublish] No publishID found on script ${scriptId} to delete from public store.`);
             }
-
-            return new Response(JSON.stringify({ success: true }), {
+            
+            const finalScriptData = await s3.getScript(userId, scriptId); // Get definitive state
+            return new Response(JSON.stringify({ 
+                success: true, 
+                publishID: finalScriptData?.publishID, 
+                isPublished: finalScriptData?.isPublished, 
+                script: finalScriptData 
+            }), {
                 status: 200,
                 headers: { ...corsHeaders, "Content-Type": "application/json" },
             });
