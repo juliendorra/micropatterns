@@ -382,52 +382,95 @@ document.addEventListener('DOMContentLoaded', async () => {
     async function loadPublishedScriptForView(publishID) {
         setStatusMessage(`Loading published script ${publishID} for viewing...`, false);
         try {
-            // fetchAPI will throw an error for non-OK responses (like 404)
-            const scriptData = await fetchAPI(`${API_BASE_URL}/api/view/${publishID}`); 
-            
+            const scriptData = await fetchAPI(`${API_BASE_URL}/api/view/${publishID}`);
+            // Check if scriptData is valid (fetchAPI returns null for 204, or valid JSON object)
             if (scriptData && scriptData.name && typeof scriptData.content === 'string') {
                 setStatusMessage(`Published script '${scriptData.name}' loaded.`, false);
-                // Ensure main content is visible if previously hidden by an error
-                document.getElementById('editorColumn').style.display = ''; // Reset to default/CSS
-                document.getElementById('displayAndControlsColumn').style.display = ''; // Reset to default/CSS
-                document.getElementById('viewScriptNotFoundMessageContainer').style.display = 'none';
-                return scriptData;
+                return { script: scriptData, success: true };
             } else {
-                // This case might be redundant if fetchAPI always throws for invalid/empty useful responses
-                throw new Error("Published script data is invalid or empty."); 
+                // This case implies the API returned 200 OK but the data was not as expected,
+                // or it was a 204 No Content, which is unexpected for a script view.
+                console.warn("Published script data invalid or empty despite a 2xx API response.", scriptData);
+                return { error: 'generic', success: false, message: "Script data received from server was invalid or empty." };
             }
         } catch (error) {
-            setStatusMessage(`Error loading published script: ${error.message}`, true);
-            
-            document.getElementById('editorColumn').style.display = 'none';
-            document.getElementById('displayAndControlsColumn').style.display = 'none';
-            
-            const notFoundContainer = document.getElementById('viewScriptNotFoundMessageContainer');
+            // fetchAPI throws an error for non-ok responses; error.message includes status like "HTTP error 404"
+            setStatusMessage(`Error loading published script: ${error.message}`, true); // Keep this for console logging
+            let errorType = 'generic';
+            // Check message content for 404 indication
             if (error.message && (error.message.includes('HTTP error 404') || error.message.toLowerCase().includes('not found'))) {
-                notFoundContainer.textContent = `The script with ID "${publishID}" could not be found or is not available for viewing. Please check the link.`;
-            } else {
-                notFoundContainer.textContent = `An unexpected error occurred while trying to load the script: ${error.message}. Please try again later.`;
+                errorType = 'not_found';
             }
-            notFoundContainer.style.display = 'block';
+            // The message property in the return will be used by displayNotFoundMessage if needed
+            return { error: errorType, success: false, message: error.message };
+        }
+    }
 
-            if (editorTitleElement) editorTitleElement.textContent = 'Script Not Found';
-            if (scriptNameInput) scriptNameInput.style.display = 'none'; // Hide if it exists
-            
-            // Hide controls that are irrelevant when script is not found
-            if (document.getElementById('publishControls')) {
-                 document.getElementById('publishControls').style.display = 'none';
+    function displayNotFoundMessage(apiMessage = "") {
+        const editorColumn = document.getElementById('editorColumn');
+        const displayControlsColumn = document.getElementById('displayAndControlsColumn');
+        const notFoundContainer = document.getElementById('viewScriptNotFoundMessageContainer');
+        const editorTitle = document.getElementById('editorTitle'); 
+
+        if (editorColumn) editorColumn.style.display = 'none';
+        if (displayControlsColumn) displayControlsColumn.style.display = 'none';
+        
+        // Hide other specific view mode elements that might have been made visible
+        const runButtonElement = document.getElementById('runButton');
+        if (runButtonElement) runButtonElement.style.display = 'none';
+        const publishControlsElement = document.getElementById('publishControls'); // This holds "Copy & Edit"
+        if (publishControlsElement) publishControlsElement.style.display = 'none';
+        
+        // Also hide elements that initial view mode setup might attempt to hide,
+        // or that are part of the general editor UI that shouldn't show on a "not found" page.
+        if (document.getElementById('scriptManagementControls')) document.getElementById('scriptManagementControls').style.display = 'none';
+        if (document.getElementById('optimizationSettings')) document.getElementById('optimizationSettings').style.display = 'none';
+        if (document.getElementById('environmentControls')) document.getElementById('environmentControls').style.display = 'none';
+        if (document.getElementById('deviceSyncControls')) document.getElementById('deviceSyncControls').style.display = 'none';
+        const editorControlsElement = document.getElementById('editorControls'); // Theme select, line wrap etc.
+        if (editorControlsElement) editorControlsElement.style.display = 'none';
+
+
+        if (editorTitle) editorTitle.textContent = 'Script Not Found';
+        document.title = 'Script Not Found - MicroPatterns';
+
+        if (notFoundContainer) {
+            let messageDetail = "<p style='color: #555; font-size: 16px; margin: 15px 0;'>The script you are trying to view either does not exist or is no longer published.</p>";
+            // Example of how apiMessage could be used for debugging, keeping user message simple:
+            // if (apiMessage) { 
+            //     messageDetail = `<p style='color: #777; font-size: 12px; font-style: italic;'>Detail: ${apiMessage}</p>` + messageDetail;
+            // }
+            notFoundContainer.innerHTML = `
+                <div style="text-align: center; padding: 40px 20px; border: 1px solid #ddd; margin: 50px auto; max-width: 600px; background-color: #f9f9f9; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+                    <h2 style="color: #333; font-size: 24px;">Script Not Available</h2>
+                    ${messageDetail}
+                    <p style="color: #555; font-size: 16px; margin-bottom: 25px;">Why not create your own masterpiece?</p>
+                    <button id="createOwnScriptButtonViewNotFound" style="background-color: #007bff; color: white; padding: 12px 25px; border: none; border-radius: 5px; font-size: 16px; cursor: pointer;">Create Your Own Script</button>
+                </div>
+            `;
+            notFoundContainer.style.display = 'block'; // Make sure it's visible
+
+            const createButton = document.getElementById('createOwnScriptButtonViewNotFound');
+            if (createButton) {
+                createButton.addEventListener('click', () => {
+                    window.location.href = 'index.html'; 
+                });
             }
-            if (runButton) runButton.style.display = 'none';
-            if (document.getElementById('executionControls')) document.getElementById('executionControls').style.display = 'none';
-
-
-            return null;
         }
     }
 
     function setupViewModeUI(scriptData) { 
         // Note: scriptData is now guaranteed to be valid if this function is called.
-        // No need for `if (!scriptData) return;` check here anymore if call sites are correct.
+        
+        // Ensure main columns are visible and notFoundContainer is hidden when script IS found.
+        const editorColumn = document.getElementById('editorColumn');
+        const displayControlsColumn = document.getElementById('displayAndControlsColumn');
+        if (editorColumn) editorColumn.style.display = ''; // Reset to default CSS display (e.g., flex)
+        if (displayControlsColumn) displayControlsColumn.style.display = ''; // Reset to default CSS display
+        
+        const notFoundContainer = document.getElementById('viewScriptNotFoundMessageContainer');
+        if (notFoundContainer) notFoundContainer.style.display = 'none';
+
         document.title = `View Script - ${scriptData.name}`;
         if (editorTitleElement) editorTitleElement.textContent = `VIEWING: ${scriptData.name}`;
         codeMirrorEditor.setValue(scriptData.content);
@@ -649,24 +692,53 @@ document.addEventListener('DOMContentLoaded', async () => {
     // --- Initial Load ---
     if (isViewMode && viewPublishID) {
         console.log("View Mode Detected. Publish ID:", viewPublishID);
-        // Minimal UI setup that should always happen in view mode, even if script fails to load
-        if (themeSelect) { /* Minimal theme setup for view mode ... */ } 
-        if (displaySizeSelect) { /* Minimal display setup for view mode ... */ } 
-        if (zoomToggleButton) { /* Minimal zoom setup for view mode ... */ }
-        // Hide elements that are definitely not needed if script load fails or during load
+
+        // Initial hiding of main content columns to prevent flash during load.
+        const editorCol = document.getElementById('editorColumn');
+        const displayCol = document.getElementById('displayAndControlsColumn');
+        if (editorCol) editorCol.style.display = 'none';
+        if (displayCol) displayCol.style.display = 'none';
+        
+        // Minimal UI setup that might always apply in view mode (theme, display size, zoom).
+        // These are less critical if the page ends up being "Not Found".
+        if (themeSelect) { /* Minimal theme setup if any needed before load attempt */ } 
+        if (displaySizeSelect) { /* Minimal display setup if any */ } 
+        if (zoomToggleButton) { /* Minimal zoom setup if any */ }
+
+        // Hide control groups that are definitely not needed in any view mode scenario early.
+        // displayNotFoundMessage and setupViewModeUI also manage some of these, this is an early measure.
+        const editorControlsElement = document.getElementById('editorControls'); // Theme select, line wrap etc.
+        if (editorControlsElement) editorControlsElement.style.display = 'none';
+        // Other major control groups that are editor-specific:
         if (document.getElementById('scriptManagementControls')) document.getElementById('scriptManagementControls').style.display = 'none';
         if (document.getElementById('optimizationSettings')) document.getElementById('optimizationSettings').style.display = 'none';
         if (document.getElementById('environmentControls')) document.getElementById('environmentControls').style.display = 'none';
         if (document.getElementById('deviceSyncControls')) document.getElementById('deviceSyncControls').style.display = 'none';
 
-
-        const publishedScriptData = await loadPublishedScriptForView(viewPublishID);
-        if (publishedScriptData) { 
-            setupViewModeUI(publishedScriptData); 
+        const publishIdRegex = /^[a-zA-Z0-9-_]{21}$/;
+        if (!publishIdRegex.test(viewPublishID)) {
+            console.warn('Invalid Publish ID format:', viewPublishID);
+            displayNotFoundMessage('Invalid script ID format.'); 
+            // Since DOMContentLoaded is async, ensure no further script loading attempts for view mode.
+            // The rest of the function (normal mode setup) should not run if isViewMode is true.
+        } else {
+            const loadResult = await loadPublishedScriptForView(viewPublishID);
+            if (loadResult.success) {
+                // setupViewModeUI will make editorCol and displayCol visible.
+                setupViewModeUI(loadResult.script);
+            } else {
+                // loadResult.message contains the error message from fetchAPI or load function.
+                displayNotFoundMessage(loadResult.message); 
+            }
         }
-        // Error display is now handled within loadPublishedScriptForView
     } else { // Normal Editor Mode
         console.log("Normal Editor Mode");
+        // Ensure columns are visible for normal editor mode, in case they were hidden by prior view mode logic
+        // (e.g. if isViewMode was true but regex failed, then somehow this block was reached - robust).
+        const editorCol = document.getElementById('editorColumn');
+        const displayCol = document.getElementById('displayAndControlsColumn');
+        if (editorCol) editorCol.style.display = ''; // Reset to CSS default
+        if (displayCol) displayCol.style.display = ''; // Reset to CSS default
         let scriptLoadedFromSessionOrHash = false;
         const copiedName = sessionStorage.getItem('copiedScriptName');
         const copiedContent = sessionStorage.getItem('copiedScriptContent');
