@@ -379,17 +379,23 @@ document.addEventListener('DOMContentLoaded', async () => {
             statusP.textContent = 'Status: Published';
             publishStatusContainer.appendChild(statusP);
 
-            const viewLink = document.createElement('a');
-            // New: Link to the current page with ?view=<publishID> query parameter
-            viewLink.href = `?view=${currentPublishID}`;
-            viewLink.textContent = `?view=${currentPublishID}`; // Show the relative URL
-            viewLink.target = '_blank'; // Open in new tab to allow viewing while editing
-            viewLink.style.display = 'block';
-            viewLink.style.marginBottom = '5px'; // Reduced margin
-            viewLink.style.wordBreak = 'break-all';
-            publishStatusContainer.appendChild(viewLink);
+            // Create an "[Open]" button instead of a direct link
+            const openButton = document.createElement('button');
+            openButton.textContent = '[Open]';
+            openButton.classList.add('secondary'); // Optional: style like other secondary buttons
+            openButton.style.marginRight = '10px'; // Keep similar spacing as copy button
+            openButton.style.marginBottom = '10px';
+            openButton.addEventListener('click', () => {
+                window.open(`?view=${currentPublishID}`, '_blank');
+            });
+            publishStatusContainer.appendChild(openButton);
 
             const copyLinkButton = document.createElement('button');
+            // The href for copying should be the full absolute URL to be shareable.
+            // However, the task is about the *displayed link/button for opening*.
+            // For simplicity and to ensure copy works as expected for sharing,
+            // let's keep the full URL for the copy functionality.
+            const fullViewUrlToCopy = new URL(`?view=${currentPublishID}`, window.location.href).href;
             copyLinkButton.textContent = 'Copy Link';
             copyLinkButton.className = 'secondary';
             copyLinkButton.style.marginRight = '10px';
@@ -400,6 +406,35 @@ document.addEventListener('DOMContentLoaded', async () => {
                     .catch(err => setStatusMessage('Failed to copy link: ' + err, true));
             };
             publishStatusContainer.appendChild(copyLinkButton);
+
+            // Add [Share] button if Web Share API is available
+            if (navigator.share) {
+                const shareButton = document.createElement('button');
+                shareButton.textContent = '[Share]';
+                shareButton.classList.add('secondary');
+                shareButton.style.marginRight = '10px';
+                shareButton.style.marginBottom = '10px';
+                shareButton.addEventListener('click', async () => {
+                    const scriptName = scriptNameInput.value.trim() || (currentScriptID ? `Script ${currentScriptID}` : 'My MicroPattern');
+                    const shareUrl = new URL(`?view=${currentPublishID}`, window.location.href).href;
+
+                    try {
+                        await navigator.share({
+                            title: `Micropatterns: ${scriptName}`,
+                            text: `Check out this MicroPatterns script: ${scriptName}`,
+                            url: shareUrl
+                        });
+                        console.log('Content shared successfully');
+                        setStatusMessage('Link shared!', false);
+                    } catch (error) {
+                        console.error('Error sharing:', error);
+                        if (error.name !== 'AbortError') { // Don't show error if user cancels share sheet
+                            setStatusMessage(`Could not share: ${error.message}`, true);
+                        }
+                    }
+                });
+                publishStatusContainer.appendChild(shareButton);
+            }
 
             const unpublishButton = document.createElement('button');
             unpublishButton.textContent = 'Unpublish';
