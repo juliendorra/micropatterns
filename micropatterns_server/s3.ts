@@ -128,8 +128,8 @@ export async function getPublishedScript(publishId: string): Promise<{ name: str
 export async function deletePublishedScript(publishId: string): Promise<boolean> {
     const key = getPublishedScriptKey(publishId);
     try {
-        // Assuming s3_lite_client uses removeObject for deletion.
-        await s3client.removeObject(key);
+        // Corrected method call to deleteObject
+        await s3client.deleteObject(key);
         console.log(`[S3] Published script '${publishId}' (key: '${key}') deleted successfully.`);
         return true;
     } catch (error) {
