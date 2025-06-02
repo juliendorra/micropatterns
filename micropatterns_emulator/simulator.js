@@ -380,11 +380,10 @@ document.addEventListener('DOMContentLoaded', async () => {
             publishStatusContainer.appendChild(statusP);
 
             const viewLink = document.createElement('a');
-            // Construct full URL for the link
-            const fullViewUrl = new URL(`/api/view/${currentPublishID}`, API_BASE_URL).href;
-            viewLink.href = fullViewUrl;
-            viewLink.textContent = fullViewUrl; // Show the full URL
-            viewLink.target = '_blank';
+            // New: Link to the current page with ?view=<publishID> query parameter
+            viewLink.href = `?view=${currentPublishID}`;
+            viewLink.textContent = `?view=${currentPublishID}`; // Show the relative URL
+            viewLink.target = '_blank'; // Open in new tab to allow viewing while editing
             viewLink.style.display = 'block';
             viewLink.style.marginBottom = '5px'; // Reduced margin
             viewLink.style.wordBreak = 'break-all';
@@ -526,7 +525,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         // More robust hiding:
         document.querySelectorAll('.controls-group').forEach(group => {
             const h3Text = group.querySelector('h3')?.textContent.trim();
-            if (h3Text === "Script Management" || h3Text === "Execution Path & Optimizations" || h3Text === "Device Sync Scripts") {
+            if (h3Text === "Script Management" ||
+                h3Text === "Execution Path & Optimizations" ||
+                h3Text === "Device Sync Scripts" ||
+                h3Text === "Environment") { // Added "Environment"
                  group.style.display = 'none';
             }
         });
@@ -1182,24 +1184,27 @@ document.addEventListener('DOMContentLoaded', async () => {
         canvas.dataset.assetName = asset.name; // Use uppercase name for lookup
         canvas.dataset.assetType = 'PATTERN'; // Store asset type
 
-        // --- Add Drag Drawing Event Listeners ---
-        canvas.addEventListener('mousedown', (event) => handleMouseDown(event, canvas, asset));
-        canvas.addEventListener('mousemove', (event) => handleMouseMove(event, canvas, asset));
-        canvas.addEventListener('mouseup', (event) => handleMouseUpOrLeave(canvas, asset));
-        canvas.addEventListener('mouseleave', (event) => handleMouseUpOrLeave(canvas, asset));
-        // Prevent drag selection of the canvas itself
-        canvas.addEventListener('dragstart', (event) => event.preventDefault());
+        if (!isViewMode) {
+            // --- Add Drag Drawing Event Listeners ---
+            canvas.addEventListener('mousedown', (event) => handleMouseDown(event, canvas, asset));
+            canvas.addEventListener('mousemove', (event) => handleMouseMove(event, canvas, asset));
+            canvas.addEventListener('mouseup', (event) => handleMouseUpOrLeave(canvas, asset));
+            canvas.addEventListener('mouseleave', (event) => handleMouseUpOrLeave(canvas, asset));
+            // Prevent drag selection of the canvas itself
+            canvas.addEventListener('dragstart', (event) => event.preventDefault());
 
+            // --- START Drag and Drop Image Feature (also only enable if not in view mode) ---
+            canvas.addEventListener('dragover', handleDragOver);
+            canvas.addEventListener('dragleave', handleDragLeave);
+            canvas.addEventListener('drop', (event) => handleDrop(event, canvas, asset));
+            // --- END Drag and Drop Image Feature ---
+        } else {
+            // Optional: Add a class or style to indicate read-only previews in view mode
+            canvas.style.cursor = 'default'; // Change cursor to indicate non-interactive
+        }
 
         container.appendChild(canvas);
         assetPreviewsContainer.appendChild(container);
-
-        // --- START Drag and Drop Image Feature ---
-        // Add drag and drop listeners to the canvas
-        canvas.addEventListener('dragover', handleDragOver);
-        canvas.addEventListener('dragleave', handleDragLeave);
-        canvas.addEventListener('drop', (event) => handleDrop(event, canvas, asset));
-        // --- END Drag and Drop Image Feature ---
     }
 
 
