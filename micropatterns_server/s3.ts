@@ -136,7 +136,7 @@ export async function deletePublishedScript(publishId: string): Promise<boolean>
         // It's often okay if the object doesn't exist when trying to delete.
         if (error.message.includes("NoSuchKey") || error.message.includes("Object not found") || error.message.includes("404")) {
             console.log(`[S3] Published script '${publishId}' (key: '${key}') not found during delete, considered successful.`);
-            return true; 
+            return true;
         }
         console.error(`[S3] Error deleting published script '${publishId}' (key: '${key}'):`, error.message);
         return false;
@@ -302,8 +302,8 @@ export async function saveScript(userId: string, scriptId: string, scriptData: a
     } else if (mainScriptSaved) {
         console.log(`[S3] Script '${scriptId}' does not have a publishID or it is invalid. No action taken for published_scripts/.`);
     }
-    
-    return mainScriptSaved; 
+
+    return mainScriptSaved;
 }
 
 // Utility to generate a simple ID from a name

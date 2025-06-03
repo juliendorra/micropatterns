@@ -18,7 +18,7 @@ async function handleRequest(req: Request): Promise<Response> {
     if (req.method === "OPTIONS") {
         return new Response(null, { headers: corsHeaders, status: 204 });
     }
-    
+
     // Key includes bucket name, e.g., /my-bucket/scripts.json or /my-bucket/scripts/my-script.json
     const keyWithBucket = url.pathname.substring(1);
 
@@ -67,14 +67,14 @@ async function handleRequest(req: Request): Promise<Response> {
                 console.log(`[MOCK S3] HEAD check for key: ${objectKey} - Exists: ${exists}`);
                 return new Response(null, { status: exists ? 200 : 404, headers: corsHeaders });
             }
-        
+
         case "DELETE":
             {
                 try {
                     // objectKey already contains the full path within the "bucket" (which is ignored for path construction)
                     // e.g. published_scripts/some-id.json
-                    const filePath = join(LOCAL_STORAGE_DIR, objectKey); 
-                    
+                    const filePath = join(LOCAL_STORAGE_DIR, objectKey);
+
                     console.log(`[MOCK S3] Attempting to delete: ${filePath}`);
                     await Deno.remove(filePath);
                     console.log(`[MOCK S3] Successfully deleted: ${filePath}`);

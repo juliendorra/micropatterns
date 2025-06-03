@@ -139,7 +139,7 @@ async function handler(req: Request): Promise<Response> {
                 // publishID and isPublished are preserved from existingScript unless client overrides for some reason
                 // However, general saves should not modify publish status - that's for publish/unpublish endpoints.
                 // So, we prioritize existing values for publishID and isPublished.
-                publishID: existingScript?.publishID || null, 
+                publishID: existingScript?.publishID || null,
                 isPublished: existingScript?.isPublished || false,
             };
             // If requestBody *does* contain publishID or isPublished, it's likely from an older client or misuse.
@@ -159,15 +159,15 @@ async function handler(req: Request): Promise<Response> {
                     headers: { ...corsHeaders, "Content-Type": "application/json" },
                 });
             }
-            
+
             const finalScriptData = await s3.getScript(userId, scriptId); // Get definitive saved data
 
             let index = await s3.getScriptsIndex(userId);
             const existingIndexEntry = index.findIndex(item => item.id === scriptId);
-            const indexEntry = { 
-                id: scriptId, 
-                name: finalScriptData?.name || scriptId, 
-                lastModified: finalScriptData?.lastModified || new Date().toISOString() 
+            const indexEntry = {
+                id: scriptId,
+                name: finalScriptData?.name || scriptId,
+                lastModified: finalScriptData?.lastModified || new Date().toISOString()
             };
 
             if (existingIndexEntry !== -1) {
@@ -181,7 +181,7 @@ async function handler(req: Request): Promise<Response> {
             if (!indexSaveSuccess) {
                  console.error(`[Server] Script ${scriptId} for user ${userId} saved, but failed to update index.`);
             }
-            
+
             return new Response(JSON.stringify({ success: true, script: finalScriptData }), { // Return final data
                 status: 200,
                 headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -215,17 +215,17 @@ async function handler(req: Request): Promise<Response> {
                 console.log(`[Server /publish] Generated new publishID: ${scriptData.publishID} for script ${scriptId}`);
             }
             scriptData.isPublished = true; // Mark as published
-            
+
             const saveSuccess = await s3.saveScript(userId, scriptId, scriptData);
 
             if (saveSuccess) {
                 // Fetch the script again to get the definitive saved state
                 const finalScriptData = await s3.getScript(userId, scriptId);
-                return new Response(JSON.stringify({ 
-                    success: true, 
-                    publishID: finalScriptData?.publishID, 
+                return new Response(JSON.stringify({
+                    success: true,
+                    publishID: finalScriptData?.publishID,
                     isPublished: finalScriptData?.isPublished,
-                    script: finalScriptData 
+                    script: finalScriptData
                 }), {
                     status: 200,
                     headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -266,7 +266,7 @@ async function handler(req: Request): Promise<Response> {
                 });
             }
 
-            const publishIdToUnpublish = scriptData.publishID; 
+            const publishIdToUnpublish = scriptData.publishID;
             scriptData.isPublished = false;
 
             const metadataSaveSuccess = await s3.saveScript(userId, scriptId, scriptData);
@@ -287,19 +287,19 @@ async function handler(req: Request): Promise<Response> {
             } else {
                  console.warn(`[Server /unpublish] No publishID found on script ${scriptId} to delete from public store.`);
             }
-            
+
             const finalScriptData = await s3.getScript(userId, scriptId); // Get definitive state
-            return new Response(JSON.stringify({ 
-                success: true, 
-                publishID: finalScriptData?.publishID, 
-                isPublished: finalScriptData?.isPublished, 
-                script: finalScriptData 
+            return new Response(JSON.stringify({
+                success: true,
+                publishID: finalScriptData?.publishID,
+                isPublished: finalScriptData?.isPublished,
+                script: finalScriptData
             }), {
                 status: 200,
                 headers: { ...corsHeaders, "Content-Type": "application/json" },
             });
         }
-        
+
         // GET /api/view/:publishID - View a published script
         const viewMatch = path.match(/^\/api\/view\/([a-zA-Z0-9-_]{21})$/); // Assuming 21 char nanoid for publishID
         if (viewMatch && method === "GET") {
