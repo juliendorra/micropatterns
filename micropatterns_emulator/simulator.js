@@ -687,12 +687,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     async function updateDeviceSelection() { /* ... (existing code) ... */ }
 
     async function loadScript(scriptId) {
-        if (!currentUserId || !scriptId) { setStatusMessage("User/Script ID missing.", true); return; }
-        setStatusMessage(`Loading script '${scriptId}'...`);
+        if (!currentUserId || !scriptId) {
+            updateScriptMgmtStatus("User/Script ID missing. Cannot load.", true);
+            return;
+        }
+        updateScriptMgmtStatus(`Loading script '${scriptId}'...`, false);
         resetEnvironmentInputs();
         try {
             const scriptDataFromServer = await fetchAPI(`${API_BASE_URL}/api/scripts/${currentUserId}/${scriptId}`);
-            if (!scriptDataFromServer) throw new Error("Script not found or empty response.");
+            if (!scriptDataFromServer) throw new Error("Script not found or empty response from server.");
 
             scriptNameInput.value = scriptDataFromServer.name || '';
             codeMirrorEditor.setValue(scriptDataFromServer.content || '');
@@ -700,15 +703,19 @@ document.addEventListener('DOMContentLoaded', async () => {
             currentPublishID = scriptDataFromServer.publishID || null;
             currentIsPublished = scriptDataFromServer.isPublished === true;
 
-            setStatusMessage(`Script '${scriptDataFromServer.name}' loaded.`, false);
+            updateScriptMgmtStatus(`Script '${scriptDataFromServer.name}' loaded successfully.`, false);
             hasUnsavedChanges = false;
             updateUnsavedIndicator(); updateEditorTitle(); updatePublishControls();
             saveContentToLocalStorage(currentScriptID, scriptDataFromServer.name, scriptDataFromServer.content, currentPublishID, currentIsPublished);
             history.replaceState(null, '', '#scriptID=' + currentScriptID);
             runScript();
         } catch (error) {
-            setStatusMessage(`Error loading script: ${error.message}`, true);
+            updateScriptMgmtStatus(`Error loading script '${scriptId}': ${error.message}`, true);
+            // Reset relevant state as loading failed
             currentScriptID = null; currentPublishID = null; currentIsPublished = false;
+            // Potentially clear script name and editor, or leave as is for user to see what failed to load over
+            // scriptNameInput.value = '';
+            // codeMirrorEditor.setValue('');
             hasUnsavedChanges = false; updateUnsavedIndicator(); updateEditorTitle(); updatePublishControls();
         }
     }
