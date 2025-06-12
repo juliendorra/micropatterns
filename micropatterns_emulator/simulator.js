@@ -6,6 +6,7 @@ import { DisplayListGenerator } from './display_list_generator.js';
 import { DisplayListRenderer } from './display_list_renderer.js';
 
 document.addEventListener('DOMContentLoaded', async () => {
+    console.log('[Debug] DOMContentLoaded event fired.');
     const urlParams = new URLSearchParams(window.location.search);
     const viewPublishID = urlParams.get('view');
     const isViewMode = !!viewPublishID;
@@ -432,30 +433,50 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     function displayNotFoundMessage(apiMessage = "") {
         const editorColumn = document.getElementById('editorColumn');
-        const displayControlsColumn = document.getElementById('displayAndControlsColumn');
-        const notFoundContainer = document.getElementById('viewScriptNotFoundMessageContainer');
-        const editorTitle = document.getElementById('editorTitle');
+        console.log('[Debug] Element by ID "editorColumn" in displayNotFoundMessage:', editorColumn);
+        if (editorColumn) { editorColumn.style.display = 'none'; } else { console.error('[Debug] CRITICAL: Element with ID "editorColumn" not found! Cannot set style.'); }
 
-        if (editorColumn) editorColumn.style.display = 'none';
-        if (displayControlsColumn) displayControlsColumn.style.display = 'none';
+        const displayControlsColumn = document.getElementById('displayAndControlsColumn');
+        console.log('[Debug] Element by ID "displayAndControlsColumn" in displayNotFoundMessage:', displayControlsColumn);
+        if (displayControlsColumn) { displayControlsColumn.style.display = 'none'; } else { console.error('[Debug] CRITICAL: Element with ID "displayAndControlsColumn" not found! Cannot set style.'); }
+
+        const notFoundContainer = document.getElementById('viewScriptNotFoundMessageContainer');
+        console.log('[Debug] Element by ID "viewScriptNotFoundMessageContainer" in displayNotFoundMessage:', notFoundContainer);
+
+        const editorTitle = document.getElementById('editorTitle');
+        console.log('[Debug] Element by ID "editorTitle" in displayNotFoundMessage:', editorTitle);
+        if (editorTitle) { editorTitle.textContent = 'Script Not Found'; } else { console.error('[Debug] CRITICAL: Element with ID "editorTitle" not found! Cannot set textContent.'); }
 
         // Hide other specific view mode elements that might have been made visible
         const runButtonElement = document.getElementById('runButton');
-        if (runButtonElement) runButtonElement.style.display = 'none';
+        console.log('[Debug] Element by ID "runButton" in displayNotFoundMessage:', runButtonElement);
+        if (runButtonElement) { runButtonElement.style.display = 'none'; } else { console.warn('[Debug] Element with ID "runButton" not found in displayNotFoundMessage.'); }
+
         const publishControlsElement = document.getElementById('publishControls'); // This holds "Copy & Edit"
-        if (publishControlsElement) publishControlsElement.style.display = 'none';
+        console.log('[Debug] Element by ID "publishControls" in displayNotFoundMessage:', publishControlsElement);
+        if (publishControlsElement) { publishControlsElement.style.display = 'none'; } else { console.warn('[Debug] Element with ID "publishControls" not found in displayNotFoundMessage.'); }
 
-        // Also hide elements that initial view mode setup might attempt to hide,
-        // or that are part of the general editor UI that shouldn't show on a "not found" page.
-        if (document.getElementById('scriptManagementControls')) document.getElementById('scriptManagementControls').style.display = 'none';
-        if (document.getElementById('optimizationSettings')) document.getElementById('optimizationSettings').style.display = 'none';
-        if (document.getElementById('environmentControls')) document.getElementById('environmentControls').style.display = 'none';
-        if (document.getElementById('deviceSyncControls')) document.getElementById('deviceSyncControls').style.display = 'none';
+        // Also hide elements that initial view mode setup might attempt to hide
+        const scriptManagementControls = document.getElementById('scriptManagementControls');
+        console.log('[Debug] Element by ID "scriptManagementControls" in displayNotFoundMessage:', scriptManagementControls);
+        if (scriptManagementControls) { scriptManagementControls.style.display = 'none'; } else { console.warn('[Debug] Element with ID "scriptManagementControls" not found in displayNotFoundMessage.'); }
+
+        const optimizationSettings = document.getElementById('optimizationSettings');
+        console.log('[Debug] Element by ID "optimizationSettings" in displayNotFoundMessage:', optimizationSettings);
+        if (optimizationSettings) { optimizationSettings.style.display = 'none'; } else { console.warn('[Debug] Element with ID "optimizationSettings" not found in displayNotFoundMessage.'); }
+
+        const environmentControls = document.getElementById('environmentControls');
+        console.log('[Debug] Element by ID "environmentControls" in displayNotFoundMessage:', environmentControls);
+        if (environmentControls) { environmentControls.style.display = 'none'; } else { console.warn('[Debug] Element with ID "environmentControls" not found in displayNotFoundMessage.'); }
+
+        const deviceSyncControls = document.getElementById('deviceSyncControls');
+        console.log('[Debug] Element by ID "deviceSyncControls" in displayNotFoundMessage:', deviceSyncControls);
+        if (deviceSyncControls) { deviceSyncControls.style.display = 'none'; } else { console.warn('[Debug] Element with ID "deviceSyncControls" not found in displayNotFoundMessage.'); }
+
         const editorControlsElement = document.getElementById('editorControls'); // Theme select, line wrap etc.
-        if (editorControlsElement) editorControlsElement.style.display = 'none';
+        console.log('[Debug] Element by ID "editorControls" in displayNotFoundMessage:', editorControlsElement);
+        if (editorControlsElement) { editorControlsElement.style.display = 'none'; } else { console.warn('[Debug] Element with ID "editorControls" not found in displayNotFoundMessage.'); }
 
-
-        if (editorTitle) editorTitle.textContent = 'Script Not Found';
         document.title = 'Script Not Found - MicroPatterns';
 
         if (notFoundContainer) {
@@ -488,12 +509,16 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         // Ensure main columns are visible and notFoundContainer is hidden when script IS found.
         const editorColumn = document.getElementById('editorColumn');
+        console.log('[Debug] Element by ID "editorColumn" in setupViewModeUI:', editorColumn);
+        if (editorColumn) { editorColumn.style.display = ''; } else { console.error('[Debug] CRITICAL: Element with ID "editorColumn" not found in setupViewModeUI! Cannot set style.'); }
+
         const displayControlsColumn = document.getElementById('displayAndControlsColumn');
-        if (editorColumn) editorColumn.style.display = ''; // Reset to default CSS display (e.g., flex)
-        if (displayControlsColumn) displayControlsColumn.style.display = ''; // Reset to default CSS display
+        console.log('[Debug] Element by ID "displayAndControlsColumn" in setupViewModeUI:', displayControlsColumn);
+        if (displayControlsColumn) { displayControlsColumn.style.display = ''; } else { console.error('[Debug] CRITICAL: Element with ID "displayAndControlsColumn" not found in setupViewModeUI! Cannot set style.'); }
 
         const notFoundContainer = document.getElementById('viewScriptNotFoundMessageContainer');
-        if (notFoundContainer) notFoundContainer.style.display = 'none';
+        console.log('[Debug] Element by ID "viewScriptNotFoundMessageContainer" in setupViewModeUI:', notFoundContainer);
+        if (notFoundContainer) { notFoundContainer.style.display = 'none'; } else { console.warn('[Debug] Element with ID "viewScriptNotFoundMessageContainer" not found in setupViewModeUI.'); }
 
         document.title = `View Script - ${scriptData.name}`;
         if (editorTitleElement) editorTitleElement.textContent = `VIEWING: ${scriptData.name}`;
@@ -524,22 +549,87 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
         runScript();
     }
-    if (lineWrapToggle && codeMirrorEditor) { /* ... (existing code) ... */ }
+
+    // Line Wrap Toggle Logging
+    // const lineWrapToggle is already defined at the top of DOMContentLoaded
+    console.log('[Debug] lineWrapToggle element (global const):', lineWrapToggle);
+    if (lineWrapToggle && codeMirrorEditor) {
+        lineWrapToggle.addEventListener('change', function () {
+            console.log('[Debug] Line wrap toggled:', this.checked);
+            codeMirrorEditor.setOption("lineWrapping", this.checked);
+        });
+        console.log('[Debug] Event listener for lineWrapToggle attached.');
+    } else {
+        if (!lineWrapToggle) console.error('[Debug] CRITICAL: lineWrapToggle not found!');
+        if (!codeMirrorEditor && lineWrapToggle) console.error('[Debug] CRITICAL: codeMirrorEditor not found for lineWrapToggle setup, but toggle exists!');
+    }
+
     function applyTheme(themeFile) { /* ... (existing code) ... */ }
-    if (themeStylesheet && themeSelect) {  /* ... (existing code) ... */ }
-    function updateOptimizationVisibility() { /* ... (existing code, but setupOptimizationUI should be guarded) ... */ }
-    function setupOptimizationUI() { /* ... (existing code) ... */ }
+
+    // Theme Selector Logging
+    // const themeSelect is already defined at the top of DOMContentLoaded
+    console.log('[Debug] themeSelect element (global const):', themeSelect);
+    // const themeStylesheet is also a global const
+    console.log('[Debug] themeStylesheet element (global const):', themeStylesheet);
+    if (themeStylesheet && themeSelect) {
+        themeSelect.addEventListener('change', function(e) {
+            console.log('[Debug] Theme changed to:', e.target.value);
+            applyTheme(e.target.value);
+        });
+        console.log('[Debug] Event listener for themeSelect attached.');
+    } else {
+        if (!themeStylesheet) console.error('[Debug] CRITICAL: themeStylesheet not found for themeSelect setup!');
+        if (!themeSelect) console.error('[Debug] CRITICAL: themeSelect not found for themeSelect setup!');
+    }
+
+    function updateOptimizationVisibility() {
+        console.log('[Debug] updateOptimizationVisibility called. Current executionPath:', executionPath);
+        checkboxesConfig.forEach(cbConfig => {
+            // Attempt to find the row. Common pattern is <id>OptionRow or <id>Row
+            const rowElement = document.getElementById(cbConfig.rowId || `${cbConfig.id}OptionRow`) || document.getElementById(`${cbConfig.id}Row`);
+            const checkboxElement = document.getElementById(cbConfig.id); // Checkbox itself
+
+            // Determine if this specific checkbox (and its row) should be visible based on current executionPath
+            const pathsForCheckbox = cbConfig.paths || ['all']; // Default to 'all' if paths not specified
+            const shouldBeVisible = pathsForCheckbox.includes('all') || pathsForCheckbox.includes(executionPath);
+
+            console.log(`[Debug] Opt: ${cbConfig.id}, RowID: ${cbConfig.rowId || `${cbConfig.id}OptionRow`}/${`${cbConfig.id}Row`}, FoundRow: ${!!rowElement}, FoundCheckbox: ${!!checkboxElement}, Paths: ${pathsForCheckbox.join(',')}, ShouldBeVisible: ${shouldBeVisible}`);
+
+            if (rowElement) {
+                rowElement.style.display = shouldBeVisible ? '' : 'none';
+                // console.log(`[Debug] ${cbConfig.id} row display set to: ${rowElement.style.display}`);
+            } else if (checkboxElement && checkboxElement.parentElement && checkboxElement.parentElement.classList.contains('setting-row')) {
+                // Fallback for checkboxes directly inside a 'setting-row' div if no specific rowId is found/used
+                const parentRow = checkboxElement.parentElement;
+                parentRow.style.display = shouldBeVisible ? '' : 'none';
+                console.log(`[Debug] ${cbConfig.id} parentRow display set to: ${parentRow.style.display}`);
+            } else {
+                // Log if neither rowElement nor a suitable parent 'setting-row' is found for non-'all' paths
+                // (Options meant for 'all' paths might not have individual rows if they are always visible)
+                if (!pathsForCheckbox.includes('all')) {
+                     console.warn(`[Debug] UI row not found for conditional optimization option: ${cbConfig.id}`);
+                }
+            }
+        });
+        updateSecondPassDependentOptionsUI();
+    }
+
+    function setupOptimizationUI() { /* ... (existing code, will be called by DOMContentLoaded if !isViewMode) ... */ }
     function updateSecondPassDependentOptionsUI() { /* ... (existing code) ... */ }
 
     // Guard optimization UI setup for non-view mode
     if (!isViewMode) {
         const executionPathRadios = document.querySelectorAll('input[name="executionPath"]');
+        console.log('[Debug] executionPathRadios elements found (in !isViewMode block for setup):', executionPathRadios.length); // Changed log message slightly for context
         executionPathRadios.forEach(radio => {
             if (radio.value === executionPath) radio.checked = true;
             radio.addEventListener('change', function(e) {
+                console.log('[Debug] Execution path changed to (from !isViewMode radio listener):', this.value); // Changed log
                 if (e.target.checked) { executionPath = e.target.value; updateOptimizationVisibility(); }
             });
         });
+        console.log('[Debug] Event listeners for executionPathRadios attached (in !isViewMode block for setup).'); // Changed log
+
         checkboxesConfig.forEach(cbConfig => {
             const checkbox = document.getElementById(cbConfig.id);
             if (checkbox) {
@@ -570,10 +660,23 @@ document.addEventListener('DOMContentLoaded', async () => {
     function clearDisplay() { /* ... (existing code) ... */ }
     function runScript() { /* ... (existing code) ... */ }
 
-    if(runButton){ // Always add run button listener, setupViewModeUI might hide it.
-        runButton.addEventListener('click', runScript);
+    // Run Button Logging
+    // const runButton is already defined at the top of DOMContentLoaded
+    console.log('[Debug] runButton element (global const):', runButton);
+    if(runButton){
+        runButton.addEventListener('click', () => {
+            console.log('[Debug] Run button clicked.');
+            runScript(); // Call the actual runScript function
+        });
+        console.log('[Debug] Event listener for runButton attached.');
+    } else {
+        console.error('[Debug] CRITICAL: runButton not found at point of listener attachment!');
     }
-    if (isViewMode && runButton) runButton.style.display = 'none'; // Explicitly hide if not covered
+    // This existing line handles hiding in view mode, keep it.
+    if (isViewMode && runButton) {
+        console.log('[Debug] In View Mode, attempting to hide runButton.');
+        if (runButton) { runButton.style.display = 'none'; } else { console.error('[Debug] CRITICAL: runButton not found for hiding in View Mode!');}
+    }
 
 
     if (lockCounterButton && env.COUNTER) { /* ... (existing code) ... */ }
@@ -814,9 +917,12 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         // Initial hiding of main content columns to prevent flash during load.
         const editorCol = document.getElementById('editorColumn');
+        console.log('[Debug] Element by ID "editorColumn" in DOMContentLoaded (View Mode Initial Hide):', editorCol);
+        if (editorCol) { editorCol.style.display = 'none'; } else { console.error('[Debug] CRITICAL: Element with ID "editorColumn" not found for initial hide!'); }
+
         const displayCol = document.getElementById('displayAndControlsColumn');
-        if (editorCol) editorCol.style.display = 'none';
-        if (displayCol) displayCol.style.display = 'none';
+        console.log('[Debug] Element by ID "displayAndControlsColumn" in DOMContentLoaded (View Mode Initial Hide):', displayCol);
+        if (displayCol) { displayCol.style.display = 'none'; } else { console.error('[Debug] CRITICAL: Element with ID "displayAndControlsColumn" not found for initial hide!'); }
 
         // Minimal UI setup that might always apply in view mode (theme, display size, zoom).
         // These are less critical if the page ends up being "Not Found".
@@ -827,12 +933,24 @@ document.addEventListener('DOMContentLoaded', async () => {
         // Hide control groups that are definitely not needed in any view mode scenario early.
         // displayNotFoundMessage and setupViewModeUI also manage some of these, this is an early measure.
         const editorControlsElement = document.getElementById('editorControls'); // Theme select, line wrap etc.
-        if (editorControlsElement) editorControlsElement.style.display = 'none';
-        // Other major control groups that are editor-specific:
-        if (document.getElementById('scriptManagementControls')) document.getElementById('scriptManagementControls').style.display = 'none';
-        if (document.getElementById('optimizationSettings')) document.getElementById('optimizationSettings').style.display = 'none';
-        if (document.getElementById('environmentControls')) document.getElementById('environmentControls').style.display = 'none';
-        if (document.getElementById('deviceSyncControls')) document.getElementById('deviceSyncControls').style.display = 'none';
+        console.log('[Debug] Element by ID "editorControls" in DOMContentLoaded (View Mode Initial Hide):', editorControlsElement);
+        if (editorControlsElement) { editorControlsElement.style.display = 'none'; } else { console.warn('[Debug] Element "editorControls" not found for initial hide.'); }
+
+        const scriptManagementControls = document.getElementById('scriptManagementControls');
+        console.log('[Debug] Element by ID "scriptManagementControls" in DOMContentLoaded (View Mode Initial Hide):', scriptManagementControls);
+        if (scriptManagementControls) { scriptManagementControls.style.display = 'none'; } else { console.warn('[Debug] Element "scriptManagementControls" not found for initial hide.'); }
+
+        const optimizationSettings = document.getElementById('optimizationSettings');
+        console.log('[Debug] Element by ID "optimizationSettings" in DOMContentLoaded (View Mode Initial Hide):', optimizationSettings);
+        if (optimizationSettings) { optimizationSettings.style.display = 'none'; } else { console.warn('[Debug] Element "optimizationSettings" not found for initial hide.'); }
+
+        const environmentControls = document.getElementById('environmentControls');
+        console.log('[Debug] Element by ID "environmentControls" in DOMContentLoaded (View Mode Initial Hide):', environmentControls);
+        if (environmentControls) { environmentControls.style.display = 'none'; } else { console.warn('[Debug] Element "environmentControls" not found for initial hide.'); }
+
+        const deviceSyncControls = document.getElementById('deviceSyncControls');
+        console.log('[Debug] Element by ID "deviceSyncControls" in DOMContentLoaded (View Mode Initial Hide):', deviceSyncControls);
+        if (deviceSyncControls) { deviceSyncControls.style.display = 'none'; } else { console.warn('[Debug] Element "deviceSyncControls" not found for initial hide.'); }
 
         const publishIdRegex = /^[a-zA-Z0-9-_]{21}$/;
         if (!publishIdRegex.test(viewPublishID)) {
@@ -953,3 +1071,4 @@ FILL NAME="stripes"
 FILL_RECT X=0 Y=0 WIDTH=$WIDTH HEIGHT=$HEIGHT
 `;
 }
+console.log('[Debug] End of DOMContentLoaded event listener.');
