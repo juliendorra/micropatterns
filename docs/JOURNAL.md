@@ -236,3 +236,62 @@ it inline and blocks on the whole waveform; we would rather not.
 
 **Not verified on device at time of writing.** Builds + 15/15 goldens only. The
 device checklist is in `analysis/m5paper-panel-refresh.md`.
+
+
+---
+
+## 2026-08-27 (later) — Watchy UX, and a crash that only bites one device
+
+### Buttons
+
+`BTN_UP` was GPIO **32**, which is Watchy **1/1.5**. Watchy 2.0 is **35**. That
+button had never worked. Found by reading InkWatchy's `condition.h` rather than
+by testing — the failure was silent because a dead button is indistinguishable
+from an unpressed one.
+
+The corner mapping was then wrong in a second way: the pin *names* do not match
+the physical layout. First attempt put MENU top-left; on the device the
+indicator showed MENU is **bottom-left** and BACK is top-left. Fixed by
+dispatching actions on **corner** rather than pin name, so the layout lives in
+exactly one table and cannot drift from the indicator again.
+
+The corner indicator was designed as its own verification: press a button, see
+which corner lights. That is how the inversion was caught in one round.
+
+### The script name was never implemented
+
+Reported as "maybe it is offscreen?" — it was not offscreen, it was absent. The
+Watchy firmware had only ever rendered the script itself. Now shown on its own
+cleared frame, and only when the script actually changes.
+
+### Flashing
+
+Every render was a full refresh (2600 ms, flashes) where a fast partial update
+(500 ms, no flash) would do — safe because the content is pure black and white.
+See `analysis/watchy-panel-updates.md`. De-ghost interval measured on device at
+24, unlike the M5Paper's equivalent which is still a guess at 8.
+
+### The thunderstorms crash, and what the Watchy told us
+
+`thunderstorms` hangs the **M5Paper** with a task-watchdog abort and a corrupted
+backtrace, with **both cores idle**. Bisected on hardware: clean 3/3 on the
+waveform commit, reliable failure on the interpreter commit that followed.
+
+Then the useful negative result: **the Watchy cannot be made to crash on the
+same script**, despite compiling the *same* core sources — same
+`DisplayListItem`, same slot refactor, same snapshot pool.
+
+That reshapes the diagnosis. A plain "dangling pointer in shared code" does not
+fit; something M5Paper-specific is required. Ranked candidates:
+
+1. **Stack overflow in `RenderTask`** (bounded 8192 words). The Watchy renders
+   from `setup()`/`loop()` on a much larger stack. This fits every symptom —
+   corrupted backtrace, both cores idle, one device immune.
+2. **Canvas size.** 540x960 vs 200x200; thunderstorms is procedural and emits a
+   larger list on the M5Paper.
+3. **PSRAM.** The M5Paper's canvas and occlusion buffer are PSRAM-backed; an
+   overrun there behaves differently from one on the heap.
+
+Recorded because it is easy to misread: **"could not reproduce" is not proof of
+absence.** The Watchy runs the same suspect code and may simply not be hitting
+the trigger.

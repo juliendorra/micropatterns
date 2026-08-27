@@ -33,3 +33,6 @@ tools/device/hello_watchy/.pio
 
 # Sanitizer build tree for the host harness (see tools/host_harness).
 tools/host_harness/build_asan/
+
+# Sanitizer/null-shim build trees for the host harness.
+tools/host_harness/build_null/
