@@ -29,12 +29,16 @@ public:
     int getRenderedItems() const { return _renderedItems; }
     int getCulledOffScreen() const { return _culledOffScreen; }
     int getCulledByOcclusion() const { return _culledByOcclusion; }
+    // Pixels the drawing layer skipped because the pixel-occupation map said
+    // they were already covered. Already tracked by MicroPatternsDrawing and
+    // already logged by render(); this getter just exposes it to callers
+    // (used by tools/host_harness). Purely additive, not called during render.
+    unsigned int getOverdrawSkippedPixels() const { return _drawing.getOverdrawSkippedPixelsCount(); }
 
     void setInterruptCheckCallback(std::function<bool()> cb);
 
 
 private:
-    DisplayManager& _displayMgr; // To get canvas
     MicroPatternsDrawing _drawing;
     const std::map<String, MicroPatternsAsset>& _assets; // Reference to assets from parser
     OcclusionBuffer _occlusionBuffer;

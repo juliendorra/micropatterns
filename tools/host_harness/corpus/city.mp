@@ -1,0 +1,173 @@
+# City Map Generator - MicroPatterns DSL
+# Creates a procedural city layout using 8 different 20x20 tile patterns
+# Adapts to any screen size using $WIDTH and $HEIGHT
+
+# Define 8 city tile patterns (20x20 each)
+
+# Pattern 1: Empty lot/grass
+DEFINE PATTERN NAME="empty" WIDTH=20 HEIGHT=20 DATA="00000000000000000000000100000001000000000010000100000000000100010000000000000001000100000000000000010001000000000000000100010000000000000001000100000000000000010001000000000000000100010000000000000001000100000000000000010001000000000000000100010000000000000001000100000000000000010001000000000000000100010000000000000001000100000000000000010001000000000000000000000000000000000000"
+
+# Pattern 2: Building block (solid)
+DEFINE PATTERN NAME="building" WIDTH=20 HEIGHT=20 DATA="11111111111111111111100100100100100100110010010010010010011001001001001001001100100100100100100110010010010010010011001001001001001001100100100100100100110010010010010010011001001001001001001100100100100100100110010010010010010011001001001001001001100100100100100100110010010010010010011001001001001001001100100100100100100111111111111111111111"
+
+# Pattern 3: Horizontal road
+DEFINE PATTERN NAME="road_h" WIDTH=20 HEIGHT=20 DATA="00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001111111111111111111100000000000000000000011111111111111111110000000000000000000011111111111111111111000000000000000000001111111111111111111100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+
+# Pattern 4: Vertical road
+DEFINE PATTERN NAME="road_v" WIDTH=20 HEIGHT=20 DATA="00000111100000111100000011110000001111000000111100000011110000001111000000111100000011110000001111000000111100000011110000001111000000111100000011110000001111000000111100000011110000001111000000111100000011110000001111000000111100000011110000001111000000111100000011110000001111000000111100000011110000001111000000111100000011110000001111"
+
+# Pattern 5: Intersection (cross roads)
+DEFINE PATTERN NAME="intersection" WIDTH=20 HEIGHT=20 DATA="00000111100000111100000011110000001111000000111100000011110000001111000000111100000011111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111000000111100000011110000001111000000111100000011110000001111000000111100000011110000001111000000111100000011110000001111000000111100000011110000001111"
+
+# Pattern 6: Park/green space
+DEFINE PATTERN NAME="park" WIDTH=20 HEIGHT=20 DATA="00010001000100010001000100010001000100010001000100010001000100010001000100010001000100010001000100010001000100010001000100010001000100010001000100010001000100010001000100010001000100010001000100010001000100010001000100010001000100010001000100010001000100010001000100010001000100010001000100010001000100010001000100010001000100010001000100010001"
+
+# Pattern 7: Dense building area
+DEFINE PATTERN NAME="dense" WIDTH=20 HEIGHT=20 DATA="11111111110111111111111111111011111111111111111101111111111111111110111111111111111111011111111111111111101111111111111111110111111111111111111011111111111111111101111111111111111110111111111111111111011111111111111111101111111111111111110111111111111111111011111111111111111101111111111111111110111111111111111111011111111"
+
+# Pattern 8: Commercial strip
+DEFINE PATTERN NAME="commercial" WIDTH=20 HEIGHT=20 DATA="11110000111100001111000011110000111100000000000000000000000000000000000011110000111100001111000011110000111100000000000000000000000000000000000011110000111100001111000011110000111100000000000000000000000000000000000011110000111100001111000011110000111100000000000000000000000000000000000011110000111100001111000011110000"
+
+VAR $scaling=4
+
+# Calculate grid dimensions (how many 20x20 scaled up tiles fit)
+VAR $grid_width = $WIDTH / 20 * $scaling
+VAR $grid_height = $HEIGHT / 20 *$scaling
+
+# Ensure minimum grid size
+IF $grid_width < 1 THEN
+    LET $grid_width = 1
+ENDIF
+IF $grid_height < 1 THEN
+    LET $grid_height = 1
+ENDIF
+
+# Variables for city generation with more randomness sources
+VAR $seed = $HOUR * 60 + $MINUTE + $COUNTER
+VAR $time_factor = $SECOND * 3 + $MINUTE / 10
+VAR $counter_mod = $COUNTER % 17
+VAR $x
+VAR $y
+VAR $tile_type
+VAR $pattern_choice
+
+# Fill background
+COLOR NAME=WHITE
+FILL NAME=SOLID
+FILL_RECT X=0 Y=0 WIDTH=$WIDTH HEIGHT=$HEIGHT
+
+# Generate city grid
+REPEAT COUNT=$grid_height
+
+    LET $y = $INDEX
+    
+    REPEAT COUNT=$grid_width
+        LET $x = $INDEX
+        
+        # Generate pseudo-random tile type with multiple randomness sources
+        VAR $x_factor = $x * 13
+        VAR $y_factor = $y * 19
+        VAR $xy_cross = $x * $y * 7
+        VAR $time_influence = $time_factor * 23
+        VAR $counter_influence = $counter_mod * 31
+        VAR $random_sum = $x_factor + $y_factor + $xy_cross + $seed + $time_influence + $counter_influence
+        LET $tile_type = $random_sum % 100
+                
+        # Choose pattern based on tile_type value
+        IF $tile_type < 5 THEN
+            # empty lot
+            LET $pattern_choice = 1
+        ENDIF
+        
+        IF $tile_type >= 5 THEN
+            IF $tile_type < 25 THEN
+                # building
+                LET $pattern_choice = 2
+            ENDIF
+        ENDIF
+        
+        IF $tile_type >= 25 THEN
+            IF $tile_type < 35 THEN
+                # horizontal road
+                LET $pattern_choice = 3
+            ENDIF
+        ENDIF
+        
+        IF $tile_type >= 35 THEN
+            IF $tile_type < 45 THEN
+                # vertical road
+                LET $pattern_choice = 4
+            ENDIF
+        ENDIF
+        
+        IF $tile_type >= 45 THEN
+            IF $tile_type < 50 THEN
+                # intersection
+                LET $pattern_choice = 5
+            ENDIF
+        ENDIF
+        
+        IF $tile_type >= 50 THEN
+            IF $tile_type < 60 THEN
+                # park
+                LET $pattern_choice = 6
+            ENDIF
+        ENDIF
+        
+        IF $tile_type >= 60 THEN
+            IF $tile_type < 80 THEN
+                # dense building
+                LET $pattern_choice = 7
+            ENDIF
+        ENDIF
+        
+        IF $tile_type >= 80 THEN
+            # commercial strip
+            LET $pattern_choice = 8
+        ENDIF
+        
+        # Calculate grid position (20x20 spacing)
+        VAR $pixel_x = $x * 20
+        VAR $pixel_y = $y * 20
+        
+        # Apply 4x scale 
+        COLOR NAME=BLACK
+        SCALE FACTOR=$scaling
+
+        IF $pattern_choice == 1 THEN
+            DRAW NAME="empty" X=$pixel_x Y=$pixel_y
+        ENDIF
+        
+        IF $pattern_choice == 2 THEN
+            DRAW NAME="building" X=$pixel_x Y=$pixel_y
+        ENDIF
+        
+        IF $pattern_choice == 3 THEN
+            DRAW NAME="road_h" X=$pixel_x Y=$pixel_y
+        ENDIF
+        
+        IF $pattern_choice == 4 THEN
+            DRAW NAME="road_v" X=$pixel_x Y=$pixel_y
+        ENDIF
+        
+        IF $pattern_choice == 5 THEN
+            DRAW NAME="intersection" X=$pixel_x Y=$pixel_y
+        ENDIF
+        
+        IF $pattern_choice == 6 THEN
+            DRAW NAME="park" X=$pixel_x Y=$pixel_y
+        ENDIF
+        
+        IF $pattern_choice == 7 THEN
+            DRAW NAME="dense" X=$pixel_x Y=$pixel_y
+        ENDIF
+        
+        IF $pattern_choice == 8 THEN
+            DRAW NAME="commercial" X=$pixel_x Y=$pixel_y
+        ENDIF
+        
+        # Reset scale after drawing
+        RESET_TRANSFORMS
+        
+    ENDREPEAT
+ENDREPEAT
