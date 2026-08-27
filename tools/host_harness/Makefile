@@ -20,6 +20,12 @@ LOGLEVEL ?= 0
 
 CXXFLAGS ?= -std=c++17 -O2 -g -Wall -Wno-unused-variable -Wno-sign-compare
 CXXFLAGS += -I$(SHIM) -I$(SRC) -I$(FW_SRC) -DHOST_LOG_LEVEL=$(LOGLEVEL)
+# -MMD -MP emits a .d file per object listing the headers it included, so a
+# change to micropatterns_command.h (or any other header) rebuilds what depends
+# on it. Without this the objects were only tracked against their .cpp, and a
+# header-only change silently left stale objects in build/ -- which at best
+# measures the wrong code and at worst links a binary that crashes.
+CXXFLAGS += -MMD -MP
 
 # Renderer core -- compiled VERBATIM from the firmware tree.
 CORE_SRCS := \
@@ -57,6 +63,8 @@ $(BUILD)/h_%.o: $(SRC)/%.cpp | $(BUILD)
 
 $(BUILD):
 	mkdir -p $(BUILD)
+
+-include $(OBJS:.o=.d)
 
 list: $(BIN)
 	$(BIN) list --corpus corpus --golden golden
