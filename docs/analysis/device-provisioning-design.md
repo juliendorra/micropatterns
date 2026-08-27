@@ -42,31 +42,51 @@ So a single serial-based provisioning path cannot cover both devices.
 | BLE | yes (ESP32-D0WDQ6) | yes (ESP32-PICO-D4) |
 | PSRAM | 4.5 MB | **none**, ~300 KB heap |
 
-## Recommendation
+## Recommendation: Web Bluetooth for BOTH devices
 
-**Web Serial for the M5Paper, Web Bluetooth for the Watchy, one shared UI in the
-editor.**
+An earlier draft split this — Web Serial for the M5Paper, Web Bluetooth for the
+Watchy — on the assumption that BLE might not fit the Watchy. **Measured, it
+fits**, so aligning on one transport is better.
 
-Note this is **Web Serial**, not WebUSB. WebUSB cannot claim a CH9102/CP2102N —
-those are USB-UART bridges owned by the OS driver, and the ESP32 classic has no
-native USB of its own. Web Serial is the API that actually talks to them, and it
-is what Chrome/Edge expose for exactly this case.
+BLE footprint on the Watchy (ESP32-PICO-D4, no PSRAM), measured by building the
+real firmware with a BLE server, service and characteristic:
 
-Both APIs require HTTPS and a user gesture. The editor is HTTPS and already
-holds the user ID, so it is the natural host — and provisioning from the same
-page that manages scripts means the ID is never typed twice.
+| | without BLE | with BLE | delta |
+|---|---|---|---|
+| RAM (static) | 21,876 B (6.7%) | 38,068 B (11.6%) | **+16 KB** |
+| Flash | 382,689 B (12.2%) | 1,175,581 B (37.4%) | **+793 KB** |
 
-### Browser reality, stated plainly
+37% of flash and 12% of static RAM on the *constrained* device. The M5Paper has
+4.5 MB of PSRAM and 6.5 MB of flash, so it is not a question there.
 
-| API | Chrome/Edge desktop | Safari | Firefox | Android Chrome | iOS |
-|---|---|---|---|---|---|
-| Web Serial | yes | **no** | **no** | no | **no** |
-| Web Bluetooth | yes | **no** | **no** | yes | **no** |
+Aligning wins on every axis that matters here:
 
-Neither works on iOS at all, and neither works in Safari or Firefox. This is a
-Chrome/Edge feature. If provisioning must work from an iPhone, the fallback is a
-**SoftAP captive portal** on the device — worth designing for, not building
-first.
+- **One protocol, one editor code path, one firmware module.** The same
+  argument that made the renderer core shared: two implementations of the same
+  idea drift, and this project already compiles one renderer for two devices.
+- **No cable.** Provisioning a *watch* by USB is the wrong shape, and the
+  M5Paper's bridge disappears when it sleeps after 3 s — a trap that has already
+  cost hours (`tools/device/SERIAL-TROUBLESHOOTING.md`).
+- **Wider reach.** Web Bluetooth also works in Chrome on Android; Web Serial is
+  desktop-only. BLE-only is a *superset* of what serial would have covered.
+- Serial provisioning would have needed the console extended anyway.
+
+**Serial stays as a debug path on the M5Paper**, because `serial_console.cpp`
+already exists and costs nothing to keep. It is a developer convenience, not the
+supported route, and the Watchy cannot use it at all.
+
+Note this is **Web Bluetooth**, and explicitly **not WebUSB**: WebUSB cannot
+claim a CH9102/CP2102N — those are USB-UART bridges owned by the OS driver — and
+the ESP32 classic has no native USB of its own.
+
+### Caveat on the measurement
+
+The +16 KB is **static** RAM. The BLE stack allocates more at runtime once
+advertising and connected; that was not measured. On the Watchy that lands on a
+~300 KB heap that also holds the display list, so measure free heap while
+connected before trusting it. Mitigation if it bites: `BLEDevice::deinit()` once
+provisioning completes, so the cost is only paid during the provisioning window
+and not for the rest of the device's life.
 
 ## Telling the user when their browser cannot do this
 
