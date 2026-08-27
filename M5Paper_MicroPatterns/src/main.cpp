@@ -530,6 +530,35 @@ void MainControlTask_Function(void *pvParameters) {
             String fetch_message(fetchResultItem.message); // Construct String from char[]
             log_i("MainCtrl: Received fetch result. Status: %d, Message: %s", (int)fetchResultItem.status, fetch_message.c_str());
 
+            // Record the ATTEMPT, not just the success.
+            //
+            // Both gates that decide whether to fetch -- isFullRefreshIntended()
+            // and the last-fetch timestamp -- used to advance only on SUCCESS.
+            // So when the server is unreachable, both stayed permanently true
+            // and the device re-attempted WiFi + fetch on EVERY boot and EVERY
+            // 77s wake, forever, with no backoff. That is the "why is it trying
+            // so often" behaviour: it was not retrying a failure deliberately,
+            // it simply never recorded that it had tried.
+            //
+            // Stamping the timestamp on a completed attempt restores the normal
+            // 120-minute cadence for failures too. The full-refresh INTENT is
+            // deliberately left set, so when connectivity does come back the
+            // refresh still happens -- we throttle the retry, we do not forget
+            // the intent.
+            //
+            // Interrupted and restart-requested outcomes are NOT attempts: the
+            // user cut it short, so they must not push the next try out by two
+            // hours.
+            if (fetchResultItem.status != FetchResultStatus::INTERRUPTED_BY_USER &&
+                fetchResultItem.status != FetchResultStatus::RESTART_REQUESTED &&
+                fetchResultItem.status != FetchResultStatus::SUCCESS) {
+                log_i("MainCtrl: Fetch attempt failed; recording attempt time so the retry backs off.");
+                g_systemManager->updateLastFetchTimestamp();
+                if (!g_systemManager->saveSettings()) {
+                    log_e("MainCtrl: Failed to save settings after failed fetch attempt!");
+                }
+            }
+
             if (fetchResultItem.status == FetchResultStatus::NO_WIFI) {
                 log_w("MainCtrl: Fetch failed (NO_WIFI). Silently skipping. No EPD message, no re-render.");
                 // User requested to not show message on EPD and not re-render script.
