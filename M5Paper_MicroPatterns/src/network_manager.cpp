@@ -1,4 +1,5 @@
 #include "network_manager.h"
+#include "mp_provisioning.h"
 #include "system_manager.h" // If used for config
 #include "esp32-hal-log.h"
 #include "esp_task_wdt.h" // For esp_task_wdt_reset()
@@ -7,17 +8,20 @@
 const int FETCH_INTERRUPTED_BY_USER = -9999;
 
 // Define default credentials and API URL (can be overridden by NVS or SystemManager later)
-// FALLBACK ONLY -- compile-time defaults, not configuration.
+// PLACEHOLDERS -- deliberately not working values.
 //
-// Credentials do not belong in source. These are superseded by NVS-backed
-// values written over BLE from the editor; see
-// docs/analysis/device-provisioning-design.md. They remain only so the device
-// still connects until provisioning ships. Nothing new should depend on them,
-// and no real credential should ever be added here.
-const char *NetworkManager::WIFI_SSID_DEFAULT = "OpenWrt2.4";
-const char *NetworkManager::WIFI_PASSWORD_DEFAULT = "hudohudo";
+// Real credentials live in NVS, written over BLE from the editor; see
+// mp_provisioning.h and docs/analysis/device-provisioning-design.md. An
+// unprovisioned device therefore fails to connect, which is the correct and
+// visible outcome -- it says so in the log rather than silently joining
+// somebody's network.
+//
+// This repo is public. Never put a real SSID, password or user ID here: the
+// previous values leaked and had to be rotated. Git history keeps them forever.
+const char *NetworkManager::WIFI_SSID_DEFAULT = "EXAMPLE-SSID";
+const char *NetworkManager::WIFI_PASSWORD_DEFAULT = "EXAMPLE-PASSWORD";
 const char *NetworkManager::API_BASE_URL_DEFAULT = "https://micropatterns-api.juliendorra.deno.net";
-const char *NetworkManager::USER_ID_DEFAULT = "kksh2hjtkb"; // Added User ID
+const char *NetworkManager::USER_ID_DEFAULT = "EXAMPLE-USER-ID";
 
 // ISRG Root X1 CA Certificate
 const char *NetworkManager::ROOT_CA_CERT_DEFAULT =
@@ -60,6 +64,17 @@ void NetworkManager::setInterruptFlag(volatile bool *flag)
     _interruptRequestFlag = flag;
 }
 
+// The provisioned user ID if the device has one, else the placeholder. The ID
+// is both identity and authentication for the script API, so a device that has
+// not been provisioned must not silently fall back to somebody else's.
+String NetworkManager::activeUserId()
+{
+    String provisioned = MPProvisioning::userId();
+    if (provisioned.length() > 0) return provisioned;
+    log_w("No provisioned user ID; using the placeholder, which will not resolve.");
+    return String(USER_ID_DEFAULT);
+}
+
 bool NetworkManager::connectWiFi(TickType_t timeout)
 {
     if (WiFi.status() == WL_CONNECTED)
@@ -68,20 +83,61 @@ bool NetworkManager::connectWiFi(TickType_t timeout)
         return true;
     }
 
+    // Build the candidate list from NVS (written over BLE by the editor -- see
+    // mp_provisioning.h), LAST-GOOD FIRST.
+    //
+    // Order matters on a battery device: walking a five-network list in order
+    // costs a full association timeout for every network that is not in range.
+    // At work, with home first in the list, that is the difference between a
+    // ~2s and a ~20s wake. The last network that worked is overwhelmingly the
+    // most likely to work again.
+    struct Candidate { String ssid; String psk; int index; };
+    Candidate cands[MPProvisioning::MAX_NETWORKS + 1];
+    int nCands = 0;
+
+    const int stored = MPProvisioning::networkCount();
+    const int lastGood = MPProvisioning::lastGoodIndex();
+
+    if (stored > 0)
+    {
+        if (lastGood >= 0 && lastGood < stored)
+        {
+            cands[nCands++] = { MPProvisioning::networkSSID(lastGood),
+                                MPProvisioning::networkPSK(lastGood), lastGood };
+        }
+        for (int i = 0; i < stored; i++)
+        {
+            if (i == lastGood) continue;   // already first in the list
+            cands[nCands++] = { MPProvisioning::networkSSID(i),
+                                MPProvisioning::networkPSK(i), i };
+        }
+    }
+    else
+    {
+        // Nothing provisioned. The compile-time values are PLACEHOLDERS, not
+        // real credentials, so this attempt is expected to fail -- that is the
+        // correct outcome for an unprovisioned device, and the log says so
+        // plainly rather than looking like a mysterious WiFi problem.
+        log_w("No WiFi networks provisioned. Provision the device from the editor over Bluetooth.");
+        cands[nCands++] = { String(WIFI_SSID_DEFAULT), String(WIFI_PASSWORD_DEFAULT), -1 };
+    }
+
     WiFi.mode(WIFI_STA);
-    WiFi.disconnect(false); // Disconnect if previously connected, don't erase config
+    WiFi.disconnect(false);
     vTaskDelay(pdMS_TO_TICKS(100));
 
-    log_i("Connecting to WiFi SSID: %s", WIFI_SSID_DEFAULT);
-    WiFi.begin(WIFI_SSID_DEFAULT, WIFI_PASSWORD_DEFAULT);
+    // Split the caller's overall budget across the candidates so the total time
+    // spent is unchanged no matter how many networks are stored.
+    const TickType_t perNetwork = timeout / (TickType_t)nCands;
 
-    TickType_t startTimeTicks = xTaskGetTickCount();
-    TickType_t last_dot_log_time_ticks = startTimeTicks;
-    int retry_count = 0;
-    const int max_retries = 1; // Total 2 attempts (initial + 1 retry)
-
-    while (retry_count <= max_retries)
+    for (int c = 0; c < nCands; c++)
     {
+        log_i("Connecting to WiFi SSID: %s (%d of %d)", cands[c].ssid.c_str(), c + 1, nCands);
+        WiFi.begin(cands[c].ssid.c_str(), cands[c].psk.c_str());
+
+        TickType_t startTicks = xTaskGetTickCount();
+        TickType_t lastDot = startTicks;
+
         while (WiFi.status() != WL_CONNECTED)
         {
             if (_interruptRequestFlag && *_interruptRequestFlag)
@@ -94,47 +150,36 @@ bool NetworkManager::connectWiFi(TickType_t timeout)
 
             vTaskDelay(pdMS_TO_TICKS(50));
 
-            if ((xTaskGetTickCount() - last_dot_log_time_ticks) > pdMS_TO_TICKS(500))
+            if ((xTaskGetTickCount() - lastDot) > pdMS_TO_TICKS(500))
             {
                 log_d(".");
-                esp_task_wdt_reset(); // Reset WDT periodically during WiFi connection attempts
-                last_dot_log_time_ticks = xTaskGetTickCount();
+                esp_task_wdt_reset();
+                lastDot = xTaskGetTickCount();
             }
 
-            if ((xTaskGetTickCount() - startTimeTicks) > timeout / (max_retries + 1))
-            { // Timeout per attempt
-                if (retry_count < max_retries)
-                {
-                    log_w("WiFi connection attempt %d timed out, retrying...", retry_count + 1);
-                    WiFi.disconnect(false);
-                    vTaskDelay(pdMS_TO_TICKS(500));
-                    WiFi.begin(WIFI_SSID_DEFAULT, WIFI_PASSWORD_DEFAULT);
-                    startTimeTicks = xTaskGetTickCount(); // Reset timeout for next attempt
-                    retry_count++;
-                    break;
-                }
-                else
-                {
-                    log_e("WiFi connection failed after %d attempts!", max_retries + 1);
-                    WiFi.disconnect(false);
-                    WiFi.mode(WIFI_OFF);
-                    return false;
-                }
-            }
-            if (WiFi.status() == WL_CONNECTED)
+            if ((xTaskGetTickCount() - startTicks) > perNetwork)
+            {
+                log_w("WiFi: '%s' did not connect in time.", cands[c].ssid.c_str());
+                WiFi.disconnect(false);
+                vTaskDelay(pdMS_TO_TICKS(200));
                 break;
+            }
         }
+
         if (WiFi.status() == WL_CONNECTED)
-            break;
+        {
+            log_i("WiFi connected to '%s'! IP Address: %s",
+                  cands[c].ssid.c_str(), WiFi.localIP().toString().c_str());
+            if (cands[c].index >= 0 && cands[c].index != lastGood)
+            {
+                MPProvisioning::setLastGood(cands[c].index);
+                log_i("WiFi: remembering '%s' as the last good network.", cands[c].ssid.c_str());
+            }
+            return true;
+        }
     }
 
-    if (WiFi.status() == WL_CONNECTED)
-    {
-        log_i("WiFi connected! IP Address: %s", WiFi.localIP().toString().c_str());
-        return true;
-    }
-
-    log_e("WiFi connection failed with unexpected state!");
+    log_e("WiFi connection failed: none of %d network(s) responded.", nCands);
     WiFi.disconnect(false);
     WiFi.mode(WIFI_OFF);
     return false;
@@ -226,7 +271,7 @@ FetchResultStatus NetworkManager::fetchScriptList(JsonDocument &outListDoc)
     httpsClient.setCACert(ROOT_CA_CERT_DEFAULT);
     HTTPClient http;
 
-    String listUrl = String(API_BASE_URL_DEFAULT) + "/api/device/scripts/" + String(USER_ID_DEFAULT);
+    String listUrl = String(API_BASE_URL_DEFAULT) + "/api/device/scripts/" + activeUserId();
     log_i("fetchScriptList: Fetching from %s", listUrl.c_str());
 
     // Check for interrupt before starting request
@@ -408,7 +453,7 @@ FetchResultStatus NetworkManager::fetchScriptContent(const String &humanId, Json
     httpsClient.setCACert(ROOT_CA_CERT_DEFAULT);
     HTTPClient http;
 
-    String scriptUrl = String(API_BASE_URL_DEFAULT) + "/api/scripts/" + String(USER_ID_DEFAULT) + "/" + humanId;
+    String scriptUrl = String(API_BASE_URL_DEFAULT) + "/api/scripts/" + activeUserId() + "/" + humanId;
     log_i("fetchScriptContent: Fetching script '%s' from %s", humanId.c_str(), scriptUrl.c_str());
 
     // Check for interrupt before request

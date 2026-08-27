@@ -22,6 +22,9 @@ public:
     // Connects to WiFi. Timeout is in FreeRTOS ticks.
     // Returns true if connected, false otherwise (timeout, error, interrupt).
     // Checks interruptFlag periodically.
+    // Provisioned user ID from NVS, or the placeholder if unprovisioned.
+    String activeUserId();
+
     bool connectWiFi(TickType_t timeout = pdMS_TO_TICKS(20000));
     void disconnectWiFi();
     bool isConnected();
@@ -45,7 +48,7 @@ private:
     static const char *WIFI_SSID_DEFAULT;
     static const char *WIFI_PASSWORD_DEFAULT;
     static const char *API_BASE_URL_DEFAULT;
-    static const char *USER_ID_DEFAULT; // Added User ID
+    static const char *USER_ID_DEFAULT; // placeholder only; see activeUserId()
     static const char *ROOT_CA_CERT_DEFAULT;
 
     // Helper for HTTP requests
