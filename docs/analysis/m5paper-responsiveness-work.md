@@ -45,9 +45,16 @@ Interrupt abort latency: not measurable before (the mechanism was inert),
 Because the rasterize phase is not the whole wall clock. Every render also pays:
 
 - **display-list generation** (the interpreter), untouched by this work;
-- **the EPD panel refresh itself** — `pushCanvas(..., UPDATE_MODE_GC16)`. This
-  was observed taking roughly **0.7 s** and is a hardware floor: no amount of
-  rasterizer optimisation removes it.
+- **the EPD panel refresh itself** — `pushCanvas(..., UPDATE_MODE_GC16)`,
+  observed at roughly **0.7 s**.
+
+> **CORRECTION.** This was originally described as "a hardware floor". It is
+> not. Rasterizer work cannot remove it, but it is mostly a *software*
+> inefficiency: that 0.7 s is almost entirely the synchronous SPI gram transfer
+> (129,600 word writes at 10 MHz, shipping 1bpp content as 4bpp, with 32 SPI
+> bits per 16 bits of payload and a CS toggle per word) — not waveform time.
+> See `m5paper-panel-refresh.md`. Changing the waveform does **not** move this
+> number; it shortens the panel settle that follows.
 
 So for a script like `reconnected`, end-to-end goes from roughly
 `62 + 7252 + ~700` ms to `33 + 1335 + ~700` ms — about **3-4x perceived**, not
