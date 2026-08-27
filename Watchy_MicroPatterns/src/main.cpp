@@ -314,6 +314,11 @@ static void drawCornerIndicator(Corner c, bool filled)
     int x = (c == CORNER_TL || c == CORNER_BL) ? 0 : W - S;
     int y = (c == CORNER_TL || c == CORNER_TR) ? 0 : H - S;
 
+    // Counts toward the de-ghost budget: this is a fast waveform on real pixels
+    // and it ghosts like any other. Not routed through beginPanelUpdate()
+    // because that would promote an indicator to a full-screen flash when the
+    // budget happens to expire on a button press.
+    g_updatesSinceFull++;
     g_display.setPartialWindow(x, y, S, S);
     g_display.firstPage();
     do {
@@ -352,7 +357,12 @@ static void showScriptName(const char* name)
 // implemented. See docs/analysis/watchy-port-attempt-log.md.
 static void fullRefresh()
 {
-    g_updatesSinceFull = WATCHY_DEGHOST_INTERVAL;  // next render is a full refresh
+    // Counter goes to ZERO, not to the interval. This function drives the panel
+    // black then white, which IS the de-ghost -- the panel is clean when it
+    // returns. Setting the counter to the interval told the very next render to
+    // do a third full refresh, so one gesture produced black / white / flash,
+    // which reads exactly like a failed attempt being retried.
+    g_updatesSinceFull = 0;
     g_display.setFullWindow();
     for (int pass = 0; pass < 2; ++pass) {
         g_display.firstPage();
