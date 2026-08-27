@@ -143,32 +143,54 @@ void begin()
     prefs.end();
     log_i("Provisioning: %d stored network(s), provisioned=%s",
           n, isProvisioned() ? "yes" : "no");
+
+    // Build the BLE stack HERE, at boot, and never again.
+    //
+    // It used to be created lazily inside openWindow(), i.e. from loop() on a
+    // button press -- after the renderer, the display list and GxEPD2 had all
+    // allocated. BLEDevice::init() wants a large contiguous block, and on the
+    // Watchy (~300KB heap, no PSRAM, fragmented by then) that crashed the
+    // firmware. Doing it at boot, while the heap is clean and contiguous, is
+    // both cheaper and far more predictable.
+    //
+    // The cost is the stack's memory for the life of the device rather than
+    // only during a window. Measured at +16KB static on the Watchy, which is
+    // affordable; a crash is not.
+    log_i("Provisioning: free heap before BLE init: %u (largest block %u)",
+          ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+
+    BLEDevice::init("MicroPatterns");
+    g_server = BLEDevice::createServer();
+    g_server->setCallbacks(new ServerCB());
+    BLEService* svc = g_server->createService(SERVICE_UUID);
+
+    BLECharacteristic* w = svc->createCharacteristic(
+        CHAR_WRITE_UUID, BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_WRITE_NR);
+    w->setCallbacks(new WriteCB());
+
+    g_notify = svc->createCharacteristic(
+        CHAR_NOTIFY_UUID, BLECharacteristic::PROPERTY_NOTIFY);
+    g_notify->addDescriptor(new BLE2902());
+
+    svc->start();
+    BLEAdvertising* adv = BLEDevice::getAdvertising();
+    adv->addServiceUUID(SERVICE_UUID);
+    adv->setScanResponse(true);
+    g_bleInited = true;
+
+    // Built but SILENT. Nothing is advertised until a button press.
+    log_i("Provisioning: BLE ready (not advertising), free heap now %u", ESP.getFreeHeap());
 }
 
 void openWindow(uint32_t ms)
 {
     if (!g_bleInited) {
-        BLEDevice::init("MicroPatterns");
-        g_server = BLEDevice::createServer();
-        g_server->setCallbacks(new ServerCB());
-        BLEService* svc = g_server->createService(SERVICE_UUID);
-
-        BLECharacteristic* w = svc->createCharacteristic(
-            CHAR_WRITE_UUID, BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_WRITE_NR);
-        w->setCallbacks(new WriteCB());
-
-        g_notify = svc->createCharacteristic(
-            CHAR_NOTIFY_UUID, BLECharacteristic::PROPERTY_NOTIFY);
-        g_notify->addDescriptor(new BLE2902());
-
-        svc->start();
-        BLEAdvertising* adv = BLEDevice::getAdvertising();
-        adv->addServiceUUID(SERVICE_UUID);
-        adv->setScanResponse(true);
-        g_bleInited = true;
+        log_w("Provisioning: BLE not initialised; begin() was not called");
+        return;
     }
-    // Absolute deadline, deliberately REPLACED on each call rather than added
-    // to: pressing five buttons must not leave the radio up for five windows.
+    // Advertising only -- the stack was built at boot. Absolute deadline,
+    // deliberately REPLACED on each call rather than added to, so repeated
+    // presses end the window 20s after the LAST press and never later.
     const bool wasOpen = g_windowOpen;
     BLEDevice::startAdvertising();
     g_windowOpen = true;
@@ -182,18 +204,11 @@ void closeWindow()
     if (!g_windowOpen) return;
     BLEDevice::stopAdvertising();
     g_windowOpen = false;
-
-    // Tear the stack down rather than leaving it idle. Two reasons: BLE and
-    // WiFi share the 2.4GHz radio and the M5Paper needs WiFi immediately after
-    // provisioning, and the BLE stack's RUNTIME heap use (beyond the +16KB
-    // static measured) matters on the Watchy's ~300KB heap with no PSRAM.
-    // Provisioning is rare; paying the init cost per window is the right trade.
-    BLEDevice::deinit(true);
-    g_bleInited = false;
-    g_server = nullptr;
-    g_notify = nullptr;
     g_rx = "";
-    log_i("Provisioning: window closed, BLE torn down");
+    // The stack stays built. Tearing it down and rebuilding it per window is
+    // what caused the crash described in begin(); the radio is idle when not
+    // advertising, and BLE and WiFi coexist on this controller.
+    log_i("Provisioning: window closed (BLE idle, still initialised)");
 }
 
 bool windowOpen() { return g_windowOpen; }
