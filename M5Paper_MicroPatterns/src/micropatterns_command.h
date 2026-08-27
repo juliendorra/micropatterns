@@ -41,11 +41,25 @@ struct ParamValue {
     int intValue;
     String stringValue; // Also used for variable names ("$COUNTER") and operators ("+")
 
+    // --- Runtime memo (not parse data) -------------------------------------
+    // For TYPE_VARIABLE tokens the runtime resolves the (uppercased) name to a
+    // small integer slot exactly once and remembers it here, so the second and
+    // every subsequent evaluation of the same token -- i.e. every iteration of
+    // the REPEAT loop it sits in -- costs an array index instead of a String
+    // copy + toUpperCase() + two red-black-tree lookups.
+    // `slotEpoch` tags which runtime instance filled the memo in; a fresh
+    // MicroPatternsRuntime takes a new epoch, so a stale memo can never be
+    // read. Epoch 0 is never issued, which makes the default value invalid.
+    mutable int32_t slotCache = -1;
+    mutable uint32_t slotEpoch = 0;
+
     ParamValue() : type(TYPE_INT), intValue(0) {}
     ParamValue(int v) : type(TYPE_INT), intValue(v) {}
     // Constructor for strings, variables, operators
     ParamValue(String s, ValueType t = TYPE_STRING) : type(t), stringValue(s) {}
 };
+
+struct MicroPatternsAsset; // defined below
 
 // Structure for a parsed command
 struct MicroPatternsCommand {
@@ -71,6 +85,22 @@ struct MicroPatternsCommand {
     std::vector<ParamValue> conditionTokens; // Stores tokenized condition expression
     std::list<MicroPatternsCommand> thenCommands;
     std::list<MicroPatternsCommand> elseCommands; // Populated only if ELSE is present
+
+    // Runtime memo for the VAR/LET assignment target, same scheme as
+    // ParamValue::slotCache above (avoids rebuilding "$" + varName, which is a
+    // heap allocation on Arduino String, on every execution).
+    mutable int32_t targetSlotCache = -1;
+    mutable uint32_t targetSlotEpoch = 0;
+
+    // Runtime memo for the NAME parameter of FILL / DRAW. The name is always a
+    // literal (never a variable), so the asset it resolves to is fixed for the
+    // life of the parse -- but uppercasing it and looking it up in the
+    // String-keyed asset map costs two heap allocations per execution on
+    // Arduino String, which inside a REPEAT body means per drawn item.
+    // assetKind: 0 = not resolved yet, 1 = SOLID, 2 = asset (assetCache), 3 = unknown name.
+    mutable const MicroPatternsAsset* assetCache = nullptr;
+    mutable uint32_t assetEpoch = 0;
+    mutable uint8_t assetKind = 0;
 
     MicroPatternsCommand(CommandType t = CMD_UNKNOWN, int line = 0) : type(t), lineNumber(line) {}
 };
@@ -111,28 +141,73 @@ struct MicroPatternsState {
     }
 };
 
-// Structure for an item in the display list
-struct DisplayListItem {
-    CommandType type = CMD_UNKNOWN;
-    int sourceLine = 0;
-
-    // Resolved parameters
-    std::map<String, int> intParams;
-    std::map<String, String> stringParams; // For asset names, color keywords etc.
-
-    // Snapshotted rendering state
+// Snapshot of the transform state shared by a run of display-list items.
+//
+// Transform state changes only on TRANSLATE / ROTATE / SCALE / RESET_TRANSFORMS,
+// which are far rarer than the primitives between them, so items point at a
+// pooled snapshot instead of each carrying their own 52-byte copy. The pool is
+// owned by MicroPatternsRuntime and lives as long as the display list does.
+struct TransformSnapshot {
     float matrix[6];
     float inverseMatrix[6];
-    float scaleFactor = 1.0f;
-    uint8_t color = 15; // Resolved color (0=white, 15=black)
-    const MicroPatternsAsset* fillAsset = nullptr; // Pointer to asset, or nullptr for SOLID
+    float scale = 1.0f;
 
-    bool isOpaque = false; // Hint for occlusion culling
-
-    DisplayListItem() {
+    TransformSnapshot() {
         matrix_identity(matrix);
         matrix_identity(inverseMatrix);
     }
+};
+
+// Identity snapshot used when an item somehow has no pooled transform, so that
+// consumers never have to null-check `xf`.
+extern const TransformSnapshot kIdentityTransform;
+
+// Structure for an item in the display list.
+//
+// This used to be `std::map<String,int> intParams` + `std::map<String,String>
+// stringParams` + an inline copy of the transform state: ~128 bytes of struct
+// plus 2-5 heap-allocated tree nodes (each with an Arduino String key) PER
+// ITEM. A 20k-item script therefore paid ~60k allocations during generation and
+// a String-keyed map lookup per parameter per item again during rasterization's
+// per-item cull loop.
+//
+// It is now a trivially-copyable POD: parameters live in a fixed 4-slot array
+// whose meaning is fixed by `type` (see the accessors), the DRAW asset is
+// resolved to a pointer at generation time rather than carried as a name
+// String, and the transform is a pointer into the runtime's snapshot pool.
+// 40 bytes on a 32-bit target, zero heap allocations, and growing the
+// std::vector is now a memcpy instead of thousands of map deep-copies.
+struct DisplayListItem {
+    CommandType type = CMD_UNKNOWN;
+    int32_t sourceLine = 0;
+
+    // Resolved integer parameters. Slot meaning by command type:
+    //   PIXEL / FILL_PIXEL : [0]=X  [1]=Y
+    //   LINE               : [0]=X1 [1]=Y1 [2]=X2 [3]=Y2
+    //   RECT / FILL_RECT   : [0]=X  [1]=Y  [2]=WIDTH [3]=HEIGHT
+    //   CIRCLE/FILL_CIRCLE : [0]=X  [1]=Y  [2]=RADIUS
+    //   DRAW               : [0]=X  [1]=Y  (asset in `asset`)
+    int32_t p[4] = {0, 0, 0, 0};
+
+    // Asset drawn by a DRAW item, resolved at generation time. nullptr otherwise.
+    const MicroPatternsAsset* asset = nullptr;
+
+    // Snapshotted rendering state
+    const TransformSnapshot* xf = &kIdentityTransform;
+    const MicroPatternsAsset* fillAsset = nullptr; // Current FILL pattern, or nullptr for SOLID
+    uint8_t color = 15;                            // Resolved color (0=white, 15=black)
+    bool isOpaque = false;                         // Hint for occlusion culling
+
+    // Named accessors -- the readable spelling of the slots above.
+    int x()  const { return p[0]; }
+    int y()  const { return p[1]; }
+    int w()  const { return p[2]; }
+    int h()  const { return p[3]; }
+    int x1() const { return p[0]; }
+    int y1() const { return p[1]; }
+    int x2() const { return p[2]; }
+    int y2() const { return p[3]; }
+    int radius() const { return p[2]; }
 };
 
 #endif // MICROPATTERNS_COMMAND_H

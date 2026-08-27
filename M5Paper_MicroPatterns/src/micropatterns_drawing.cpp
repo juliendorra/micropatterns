@@ -155,21 +155,21 @@ void MicroPatternsDrawing::clearCanvas() {
 // --- Transformation ---
 // Uses DisplayListItem's snapshotted state
 void MicroPatternsDrawing::transformPoint(float logical_x, float logical_y, const DisplayListItem& item, float& screen_x, float& screen_y) {
-    float scaled_lx = logical_x * item.scaleFactor;
-    float scaled_ly = logical_y * item.scaleFactor;
-    matrix_apply_to_point(item.matrix, scaled_lx, scaled_ly, screen_x, screen_y);
+    float scaled_lx = logical_x * item.xf->scale;
+    float scaled_ly = logical_y * item.xf->scale;
+    matrix_apply_to_point(item.xf->matrix, scaled_lx, scaled_ly, screen_x, screen_y);
 }
 
 void MicroPatternsDrawing::screenToLogicalBase(float screen_x, float screen_y, const DisplayListItem& item, float& base_logical_x, float& base_logical_y) {
     float scaled_logical_x, scaled_logical_y;
-    matrix_apply_to_point(item.inverseMatrix, screen_x, screen_y, scaled_logical_x, scaled_logical_y);
+    matrix_apply_to_point(item.xf->inverseMatrix, screen_x, screen_y, scaled_logical_x, scaled_logical_y);
 
-    if (item.scaleFactor == 0.0f) {
+    if (item.xf->scale == 0.0f) {
         base_logical_x = scaled_logical_x;
         base_logical_y = scaled_logical_y;
     } else {
-        base_logical_x = scaled_logical_x / item.scaleFactor;
-        base_logical_y = scaled_logical_y / item.scaleFactor;
+        base_logical_x = scaled_logical_x / item.xf->scale;
+        base_logical_y = scaled_logical_y / item.xf->scale;
     }
 }
 
@@ -223,19 +223,19 @@ uint8_t MicroPatternsDrawing::getFillColor(float screen_pixel_center_x, float sc
         return item.color; // Solid fill
     }
     float scaled_logical_x, scaled_logical_y;
-    matrix_apply_to_point(item.inverseMatrix, screen_pixel_center_x, screen_pixel_center_y,
+    matrix_apply_to_point(item.xf->inverseMatrix, screen_pixel_center_x, screen_pixel_center_y,
                           scaled_logical_x, scaled_logical_y);
     return fillColorFromScaled(scaled_logical_x, scaled_logical_y, item);
 }
 
 uint8_t MicroPatternsDrawing::fillColorFromScaled(float scaled_logical_x, float scaled_logical_y, const DisplayListItem& item) const {
     float base_lx, base_ly;
-    if (item.scaleFactor == 0.0f) {
+    if (item.xf->scale == 0.0f) {
         base_lx = scaled_logical_x;
         base_ly = scaled_logical_y;
     } else {
-        base_lx = scaled_logical_x / item.scaleFactor;
-        base_ly = scaled_logical_y / item.scaleFactor;
+        base_lx = scaled_logical_x / item.xf->scale;
+        base_ly = scaled_logical_y / item.xf->scale;
     }
     return fillColorFromBase(base_lx, base_ly, item);
 }
@@ -265,8 +265,8 @@ uint8_t MicroPatternsDrawing::fillColorFromBase(float base_lx, float base_ly, co
 
 void MicroPatternsDrawing::drawPixel(const DisplayListItem& item) {
     if (!_canvas) return;
-    int lx = item.intParams.at("X");
-    int ly = item.intParams.at("Y");
+    int lx = item.x();
+    int ly = item.y();
 
     float s_tl_x, s_tl_y, s_tr_x, s_tr_y, s_bl_x, s_bl_y, s_br_x, s_br_y;
     transformPoint(static_cast<float>(lx), static_cast<float>(ly), item, s_tl_x, s_tl_y);
@@ -288,9 +288,9 @@ void MicroPatternsDrawing::drawPixel(const DisplayListItem& item) {
 
 
     // Hoisted: these four products were recomputed on every pixel of the AABB.
-    const float* IM = item.inverseMatrix;
+    const float* IM = item.xf->inverseMatrix;
     const float im0 = IM[0], im1 = IM[1], im2 = IM[2], im3 = IM[3], im4 = IM[4], im5 = IM[5];
-    const float sf = item.scaleFactor;
+    const float sf = item.xf->scale;
     const float px0 = static_cast<float>(lx) * sf;
     const float px1 = static_cast<float>(lx + 1) * sf;
     const float py0 = static_cast<float>(ly) * sf;
@@ -323,8 +323,8 @@ void MicroPatternsDrawing::drawPixel(const DisplayListItem& item) {
 
 void MicroPatternsDrawing::drawFilledPixel(const DisplayListItem& item) {
     if (!_canvas) return;
-    int lx = item.intParams.at("X");
-    int ly = item.intParams.at("Y");
+    int lx = item.x();
+    int ly = item.y();
 
     float s_tl_x, s_tl_y, s_tr_x, s_tr_y, s_bl_x, s_bl_y, s_br_x, s_br_y;
     transformPoint(static_cast<float>(lx), static_cast<float>(ly), item, s_tl_x, s_tl_y);
@@ -344,9 +344,9 @@ void MicroPatternsDrawing::drawFilledPixel(const DisplayListItem& item) {
 
 
     // Hoisted: these four products were recomputed on every pixel of the AABB.
-    const float* IM = item.inverseMatrix;
+    const float* IM = item.xf->inverseMatrix;
     const float im0 = IM[0], im1 = IM[1], im2 = IM[2], im3 = IM[3], im4 = IM[4], im5 = IM[5];
-    const float sf = item.scaleFactor;
+    const float sf = item.xf->scale;
     const float px0 = static_cast<float>(lx) * sf;
     const float px1 = static_cast<float>(lx + 1) * sf;
     const float py0 = static_cast<float>(ly) * sf;
@@ -380,10 +380,10 @@ void MicroPatternsDrawing::drawFilledPixel(const DisplayListItem& item) {
 
 void MicroPatternsDrawing::drawLine(const DisplayListItem& item) {
     if (!_canvas) return;
-    int lx1 = item.intParams.at("X1");
-    int ly1 = item.intParams.at("Y1");
-    int lx2 = item.intParams.at("X2");
-    int ly2 = item.intParams.at("Y2");
+    int lx1 = item.x1();
+    int ly1 = item.y1();
+    int lx2 = item.x2();
+    int ly2 = item.y2();
 
     float sx1_f, sy1_f, sx2_f, sy2_f;
     transformPoint(static_cast<float>(lx1), static_cast<float>(ly1), item, sx1_f, sy1_f);
@@ -394,10 +394,10 @@ void MicroPatternsDrawing::drawLine(const DisplayListItem& item) {
 
 void MicroPatternsDrawing::drawRect(const DisplayListItem& item) {
     if (!_canvas) return;
-    int lx = item.intParams.at("X");
-    int ly = item.intParams.at("Y");
-    int lw = item.intParams.at("WIDTH");
-    int lh = item.intParams.at("HEIGHT");
+    int lx = item.x();
+    int ly = item.y();
+    int lw = item.w();
+    int lh = item.h();
     if (lw <= 0 || lh <= 0) return;
 
     float s_tl_x, s_tl_y, s_tr_x, s_tr_y, s_bl_x, s_bl_y, s_br_x, s_br_y;
@@ -414,10 +414,10 @@ void MicroPatternsDrawing::drawRect(const DisplayListItem& item) {
 
 void MicroPatternsDrawing::fillRect(const DisplayListItem& item) {
     if (!_canvas) return;
-    int lx = item.intParams.at("X");
-    int ly = item.intParams.at("Y");
-    int lw = item.intParams.at("WIDTH");
-    int lh = item.intParams.at("HEIGHT");
+    int lx = item.x();
+    int ly = item.y();
+    int lw = item.w();
+    int lh = item.h();
     if (lw <= 0 || lh <= 0) return;
 
     float s_tl_x, s_tl_y, s_tr_x, s_tr_y, s_bl_x, s_bl_y, s_br_x, s_br_y;
@@ -440,9 +440,9 @@ void MicroPatternsDrawing::fillRect(const DisplayListItem& item) {
     // Loop invariants, hoisted. These four products used to be recomputed on
     // every single pixel; the compiler could not hoist them itself because the
     // canvas write in the loop body may alias `item`.
-    const float* IM = item.inverseMatrix;
+    const float* IM = item.xf->inverseMatrix;
     const float im0 = IM[0], im1 = IM[1], im2 = IM[2], im3 = IM[3], im4 = IM[4], im5 = IM[5];
-    const float sf = item.scaleFactor;
+    const float sf = item.xf->scale;
     const float rect_x0 = static_cast<float>(lx) * sf;
     const float rect_x1 = static_cast<float>(lx + lw) * sf;
     const float rect_y0 = static_cast<float>(ly) * sf;
@@ -541,17 +541,17 @@ void MicroPatternsDrawing::fillRect(const DisplayListItem& item) {
 
 void MicroPatternsDrawing::drawCircle(const DisplayListItem& item) {
     if (!_canvas) return;
-    int lcx = item.intParams.at("X");
-    int lcy = item.intParams.at("Y");
-    int lr = item.intParams.at("RADIUS");
+    int lcx = item.x();
+    int lcy = item.y();
+    int lr = item.radius();
     if (lr <= 0) return;
      
     float scx_f, scy_f;
     transformPoint(static_cast<float>(lcx), static_cast<float>(lcy), item, scx_f, scy_f);
      
-    float mat_scale_x = sqrtf(item.matrix[0]*item.matrix[0] + item.matrix[1]*item.matrix[1]);
-    float mat_scale_y = sqrtf(item.matrix[2]*item.matrix[2] + item.matrix[3]*item.matrix[3]);
-    float screen_radius_approx = static_cast<float>(lr) * item.scaleFactor * std::max(mat_scale_x, mat_scale_y);
+    float mat_scale_x = sqrtf(item.xf->matrix[0]*item.xf->matrix[0] + item.xf->matrix[1]*item.xf->matrix[1]);
+    float mat_scale_y = sqrtf(item.xf->matrix[2]*item.xf->matrix[2] + item.xf->matrix[3]*item.xf->matrix[3]);
+    float screen_radius_approx = static_cast<float>(lr) * item.xf->scale * std::max(mat_scale_x, mat_scale_y);
      
     int scx = static_cast<int>(round(scx_f));
     int scy = static_cast<int>(round(scy_f));
@@ -579,9 +579,9 @@ void MicroPatternsDrawing::drawCircle(const DisplayListItem& item) {
 
 void MicroPatternsDrawing::fillCircle(const DisplayListItem& item) {
     if (!_canvas) return;
-    int lcx = item.intParams.at("X");
-    int lcy = item.intParams.at("Y");
-    int lr = item.intParams.at("RADIUS");
+    int lcx = item.x();
+    int lcy = item.y();
+    int lr = item.radius();
     if (lr <= 0) return;
 
     float logical_radius = static_cast<float>(lr);
@@ -616,9 +616,9 @@ void MicroPatternsDrawing::fillCircle(const DisplayListItem& item) {
     if (min_sx >= max_sx || min_sy >= max_sy) return;
 
     const float logical_radius_sq = logical_radius * logical_radius;
-    const float* IM = item.inverseMatrix;
+    const float* IM = item.xf->inverseMatrix;
     const float im0 = IM[0], im1 = IM[1], im2 = IM[2], im3 = IM[3], im4 = IM[4], im5 = IM[5];
-    const float sf = item.scaleFactor;
+    const float sf = item.xf->scale;
     const float flcx = static_cast<float>(lcx);
     const float flcy = static_cast<float>(lcy);
 
@@ -691,8 +691,8 @@ void MicroPatternsDrawing::fillCircle(const DisplayListItem& item) {
 
 void MicroPatternsDrawing::drawAsset(const DisplayListItem& item, const MicroPatternsAsset& asset) {
     if (!_canvas || asset.width <= 0 || asset.height <= 0 || asset.data.empty()) return;
-    int lx_asset_origin = item.intParams.at("X");
-    int ly_asset_origin = item.intParams.at("Y");
+    int lx_asset_origin = item.x();
+    int ly_asset_origin = item.y();
 
     float s_tl_x, s_tl_y, s_tr_x, s_tr_y, s_bl_x, s_bl_y, s_br_x, s_br_y;
     transformPoint(static_cast<float>(lx_asset_origin), static_cast<float>(ly_asset_origin), item, s_tl_x, s_tl_y);
@@ -712,9 +712,9 @@ void MicroPatternsDrawing::drawAsset(const DisplayListItem& item, const MicroPat
 
     if (min_sx >= max_sx || min_sy >= max_sy) return;
 
-    const float* IM = item.inverseMatrix;
+    const float* IM = item.xf->inverseMatrix;
     const float im0 = IM[0], im1 = IM[1], im2 = IM[2], im3 = IM[3], im4 = IM[4], im5 = IM[5];
-    const float sf = item.scaleFactor;
+    const float sf = item.xf->scale;
     const float forigin_x = static_cast<float>(lx_asset_origin);
     const float forigin_y = static_cast<float>(ly_asset_origin);
     const float fasset_w = static_cast<float>(asset.width);

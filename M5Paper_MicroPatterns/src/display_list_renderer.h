@@ -44,7 +44,11 @@ public:
 
 private:
     MicroPatternsDrawing _drawing;
-    const std::map<String, MicroPatternsAsset>& _assets; // Reference to assets from parser
+    // NOTE: the assets map is still a constructor parameter (callers, including
+    // the Watchy firmware, pass it), but the renderer no longer stores it: DRAW
+    // items now carry a resolved MicroPatternsAsset* from display-list
+    // generation instead of an asset NAME that had to be looked up in this
+    // String-keyed map once per item during culling and again when drawing.
     OcclusionBuffer _occlusionBuffer;
     
     int _canvasWidth;

@@ -7,12 +7,12 @@ DisplayListRenderer::DisplayListRenderer(MPCanvas* canvas,
                                        const std::map<String, MicroPatternsAsset>& assets,
                                        int canvasWidth, int canvasHeight)
     : _drawing(canvas),
-      _assets(assets),
       _occlusionBuffer(canvasWidth, canvasHeight, 16), // Default block size 16
       _canvasWidth(canvasWidth),
       _canvasHeight(canvasHeight),
       _totalItems(0), _renderedItems(0), _culledOffScreen(0), _culledByOcclusion(0),
       _interrupt_check_cb(nullptr) {
+    (void)assets; // see the note on the removed _assets member in the header
     _drawing.setCanvas(canvas); // Ensure drawing module has the correct canvas
 }
 
@@ -42,15 +42,11 @@ bool DisplayListRenderer::determineItemOpacity(const DisplayListItem& item) cons
     if (item.type == CMD_PIXEL) {
         return true;
     }
-    // For DRAW commands, opacity depends on the asset being drawn.
+    // For DRAW commands, opacity depends on the asset being drawn. The asset
+    // pointer is resolved at display-list generation time, so no name lookup
+    // happens here any more.
     if (item.type == CMD_DRAW) {
-        if (item.stringParams.count("NAME")) {
-            String assetName = item.stringParams.at("NAME"); // Already uppercase
-            if (_assets.count(assetName)) {
-                return isAssetDataFullyOpaque(&_assets.at(assetName));
-            }
-        }
-        return false; // No asset name or asset not found.
+        return isAssetDataFullyOpaque(item.asset);
     }
     // LINE, RECT (outline), CIRCLE (outline) are not considered opaque for area culling.
     return false;
@@ -74,13 +70,12 @@ ScreenBounds DisplayListRenderer::calculateScreenBounds(const DisplayListItem& i
 
 
     if (item.type == CMD_DRAW) {
-        if (item.stringParams.count("NAME")) {
-            String assetName = item.stringParams.at("NAME");
-            if (_assets.count(assetName)) {
-                const MicroPatternsAsset& asset = _assets.at(assetName);
+        if (item.asset) {
+            {
+                const MicroPatternsAsset& asset = *item.asset;
                 if (asset.width > 0 && asset.height > 0) {
-                    int lx = item.intParams.at("X");
-                    int ly = item.intParams.at("Y");
+                    int lx = item.x();
+                    int ly = item.y();
                     float s_pts_x[4], s_pts_y[4];
                     transformItemPoint(lx, ly, s_pts_x[0], s_pts_y[0]);
                     transformItemPoint(lx + asset.width, ly, s_pts_x[1], s_pts_y[1]);
@@ -96,10 +91,10 @@ ScreenBounds DisplayListRenderer::calculateScreenBounds(const DisplayListItem& i
             }
         }
     } else if (item.type == CMD_RECT || item.type == CMD_FILL_RECT) {
-        int lx = item.intParams.at("X");
-        int ly = item.intParams.at("Y");
-        int lw = item.intParams.at("WIDTH");
-        int lh = item.intParams.at("HEIGHT");
+        int lx = item.x();
+        int ly = item.y();
+        int lw = item.w();
+        int lh = item.h();
         if (lw > 0 && lh > 0) {
             float s_pts_x[4], s_pts_y[4];
             transformItemPoint(lx, ly, s_pts_x[0], s_pts_y[0]);
@@ -114,8 +109,8 @@ ScreenBounds DisplayListRenderer::calculateScreenBounds(const DisplayListItem& i
         }
     } else if (item.type == CMD_LINE) {
         float s_p1_x, s_p1_y, s_p2_x, s_p2_y;
-        transformItemPoint(item.intParams.at("X1"), item.intParams.at("Y1"), s_p1_x, s_p1_y);
-        transformItemPoint(item.intParams.at("X2"), item.intParams.at("Y2"), s_p2_x, s_p2_y);
+        transformItemPoint(item.x1(), item.y1(), s_p1_x, s_p1_y);
+        transformItemPoint(item.x2(), item.y2(), s_p2_x, s_p2_y);
         unclippedVisualMinX = std::min(s_p1_x, s_p2_x);
         unclippedVisualMinY = std::min(s_p1_y, s_p2_y);
         unclippedVisualMaxX = std::max(s_p1_x, s_p2_x);
@@ -123,22 +118,22 @@ ScreenBounds DisplayListRenderer::calculateScreenBounds(const DisplayListItem& i
         validShape = true;
     } else if (item.type == CMD_PIXEL || item.type == CMD_FILL_PIXEL) {
         float s_p_x, s_p_y;
-        transformItemPoint(item.intParams.at("X"), item.intParams.at("Y"), s_p_x, s_p_y);
+        transformItemPoint(item.x(), item.y(), s_p_x, s_p_y);
         // A pixel covers a 1x1 logical unit. Transform all 4 corners.
         float s_p1_x, s_p1_y, s_p2_x, s_p2_y, s_p3_x, s_p3_y, s_p4_x, s_p4_y;
-        transformItemPoint(item.intParams.at("X"), item.intParams.at("Y"), s_p1_x, s_p1_y);
-        transformItemPoint(item.intParams.at("X") + 1, item.intParams.at("Y"), s_p2_x, s_p2_y);
-        transformItemPoint(item.intParams.at("X") + 1, item.intParams.at("Y") + 1, s_p3_x, s_p3_y);
-        transformItemPoint(item.intParams.at("X"), item.intParams.at("Y") + 1, s_p4_x, s_p4_y);
+        transformItemPoint(item.x(), item.y(), s_p1_x, s_p1_y);
+        transformItemPoint(item.x() + 1, item.y(), s_p2_x, s_p2_y);
+        transformItemPoint(item.x() + 1, item.y() + 1, s_p3_x, s_p3_y);
+        transformItemPoint(item.x(), item.y() + 1, s_p4_x, s_p4_y);
         unclippedVisualMinX = std::min({s_p1_x, s_p2_x, s_p3_x, s_p4_x});
         unclippedVisualMinY = std::min({s_p1_y, s_p2_y, s_p3_y, s_p4_y});
         unclippedVisualMaxX = std::max({s_p1_x, s_p2_x, s_p3_x, s_p4_x});
         unclippedVisualMaxY = std::max({s_p1_y, s_p2_y, s_p3_y, s_p4_y});
         validShape = true;
     } else if (item.type == CMD_CIRCLE || item.type == CMD_FILL_CIRCLE) {
-        int lcx = item.intParams.at("X");
-        int lcy = item.intParams.at("Y");
-        int lr = item.intParams.at("RADIUS");
+        int lcx = item.x();
+        int lcy = item.y();
+        int lr = item.radius();
         if (lr > 0) {
             transformItemPoint(lcx, lcy, s_center_x_for_circle, s_center_y_for_circle);
             float s_edge_on_x_axis_x, s_edge_on_x_axis_y;
@@ -192,11 +187,11 @@ ScreenBounds DisplayListRenderer::calculateScreenBounds(const DisplayListItem& i
             bounds.markingBounds.maxX = static_cast<int>(ceil(std::min(static_cast<float>(_canvasWidth), s_center_x_for_circle + markingRadius)));
             bounds.markingBounds.maxY = static_cast<int>(ceil(std::min(static_cast<float>(_canvasHeight), s_center_y_for_circle + markingRadius)));
         } else if (item.type == CMD_FILL_RECT && validShape) {
-            int lw = item.intParams.at("WIDTH");
-            int lh = item.intParams.at("HEIGHT");
+            int lw = item.w();
+            int lh = item.h();
             if (lw > 0 && lh > 0) {
-                const float matrixDeterminant = std::abs(item.matrix[0] * item.matrix[3] - item.matrix[1] * item.matrix[2]);
-                const float actualScreenArea = static_cast<float>(lw) * lh * item.scaleFactor * item.scaleFactor * matrixDeterminant;
+                const float matrixDeterminant = std::abs(item.xf->matrix[0] * item.xf->matrix[3] - item.xf->matrix[1] * item.xf->matrix[2]);
+                const float actualScreenArea = static_cast<float>(lw) * lh * item.xf->scale * item.xf->scale * matrixDeterminant;
                 const float visualAABBWidth = unclippedVisualMaxX - unclippedVisualMinX;
                 const float visualAABBHeight = unclippedVisualMaxY - unclippedVisualMinY;
                 const float visualAABBArea = visualAABBWidth * visualAABBHeight;
@@ -241,19 +236,14 @@ void DisplayListRenderer::renderItem(const DisplayListItem& item) {
         case CMD_PIXEL:       _drawing.drawPixel(item); break;
         case CMD_FILL_PIXEL:  _drawing.drawFilledPixel(item); break;
         case CMD_DRAW:
-            if (item.stringParams.count("NAME")) {
-                String assetName = item.stringParams.at("NAME");
-                if (_assets.count(assetName)) {
-                    _drawing.drawAsset(item, _assets.at(assetName));
-                } else {
-                    log_w("DisplayListRenderer (Line %d): Asset '%s' not found for DRAW.", item.sourceLine, assetName.c_str());
-                }
+            if (item.asset) {
+                _drawing.drawAsset(item, *item.asset);
             } else {
-                 log_w("DisplayListRenderer (Line %d): DRAW command missing NAME parameter.", item.sourceLine);
+                 log_w("DisplayListRenderer (Line %d): DRAW item has no resolved asset.", (int)item.sourceLine);
             }
             break;
         default:
-            log_w("DisplayListRenderer (Line %d): Unknown item type %d", item.sourceLine, (int)item.type);
+            log_w("DisplayListRenderer (Line %d): Unknown item type %d", (int)item.sourceLine, (int)item.type);
     }
 }
 
