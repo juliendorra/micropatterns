@@ -7,6 +7,13 @@
 const int FETCH_INTERRUPTED_BY_USER = -9999;
 
 // Define default credentials and API URL (can be overridden by NVS or SystemManager later)
+// FALLBACK ONLY -- these are compile-time defaults, not configuration.
+//
+// They are in this repo's public git history (8e911e7, 6c1b5cd, 536e62b) and
+// must be treated as compromised: rotate the WiFi password and the user ID.
+// Credentials belong in NVS, written by the editor over BLE -- see
+// docs/analysis/device-provisioning-design.md. Until that lands these remain
+// as the fallback path, but nothing new should depend on them.
 const char *NetworkManager::WIFI_SSID_DEFAULT = "OpenWrt2.4";
 const char *NetworkManager::WIFI_PASSWORD_DEFAULT = "hudohudo";
 const char *NetworkManager::API_BASE_URL_DEFAULT = "https://micropatterns-api.juliendorra.deno.net";
