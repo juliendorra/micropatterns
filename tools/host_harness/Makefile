@@ -42,6 +42,10 @@ HARNESS_SRCS := \
   $(SRC)/render_path.cpp \
   $(SRC)/main.cpp
 
+# mpsoak links the same core plus its own main. See src/soak.cpp for why the
+# golden gate cannot cover what this covers.
+SOAK_SRCS := $(SRC)/host_display_manager.cpp $(SRC)/soak.cpp
+
 CORE_OBJS    := $(patsubst $(FW_SRC)/%.cpp,$(BUILD)/core_%.o,$(CORE_SRCS))
 HARNESS_OBJS := $(patsubst $(SRC)/%.cpp,$(BUILD)/h_%.o,$(HARNESS_SRCS))
 OBJS         := $(CORE_OBJS) $(HARNESS_OBJS)
@@ -83,5 +87,57 @@ bake: $(BIN)
 profile: CXXFLAGS += -fno-omit-frame-pointer
 profile: clean all
 
+# ---------------------------------------------------------------------------
+# Memory-safety gates. These build the SAME core sources into a separate
+# directory with sanitizers on, so they never disturb build/ or a benchmark.
+#
+# SANITIZE  -fsanitize=address,undefined. A dangling read into the transform
+#           snapshot pool, an out-of-range variable slot, or signed overflow in
+#           expression evaluation becomes a hard failure with a stack trace,
+#           instead of a slightly wrong pixel or nothing at all.
+#
+# STRICT    also -DMP_SHIM_NULL_CSTR=1, which makes the shim's String::c_str()
+#           return NULL for an empty string. That is what the ESP32's WString
+#           actually does (String::init sets buffer to nullptr), and it is a
+#           fidelity gap that hides device-only null dereferences: any code that
+#           does strcmp/strcasecmp on a possibly-empty String, or indexes
+#           c_str()[0], is safe on a std::string-backed shim and crashes on
+#           hardware. -O1 keeps sanitizer stacks readable.
+# ---------------------------------------------------------------------------
+SAN_FLAGS := -std=c++17 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer \
+             -Wall -Wno-unused-variable -Wno-sign-compare \
+             -I$(SHIM) -I$(SRC) -I$(FW_SRC) -DHOST_LOG_LEVEL=$(LOGLEVEL) -MMD -MP
+
+.PHONY: sanitize verify-strict soak stress stress-clean
+
+# Golden gate, rebuilt under sanitizers + the device-accurate NULL c_str().
+verify-strict:
+	$(MAKE) BUILD=build_strict CXXFLAGS="$(SAN_FLAGS) -DMP_SHIM_NULL_CSTR=1" build_strict/mpharness
+	build_strict/mpharness verify --corpus corpus --golden golden
+
+# Golden gate under sanitizers only (no shim behaviour change).
+sanitize:
+	$(MAKE) BUILD=build_san CXXFLAGS="$(SAN_FLAGS)" build_san/mpharness
+	build_san/mpharness verify --corpus corpus --golden golden
+
+$(BUILD)/mpsoak: $(patsubst $(SRC)/%.cpp,$(BUILD)/h_%.o,$(SOAK_SRCS)) $(CORE_OBJS)
+	$(CXX) $(CXXFLAGS) $^ -o $@
+
+# Lifetime / determinism soak. Renders the stress scripts through the shape the
+# M5Paper firmware uses (one reused parser, runtime and renderer recreated per
+# render) across many seeds, twice per seed, byte-comparing the two canvases.
+# No goldens needed, so scripts can be added freely -- including generated ones.
+soak: stress/generated
+	$(MAKE) BUILD=build_soak CXXFLAGS="$(SAN_FLAGS) -DMP_SHIM_NULL_CSTR=1" build_soak/mpsoak
+	build_soak/mpsoak --renders 24 stress/*.mp stress/generated/*.mp
+
+stress/generated:
+	python3 stress/generate.py --count 40 --out-dir stress/generated
+
+stress: stress-clean stress/generated
+
+stress-clean:
+	rm -rf stress/generated
+
 clean:
-	rm -rf $(BUILD)
+	rm -rf $(BUILD) build_san build_strict build_soak stress/generated

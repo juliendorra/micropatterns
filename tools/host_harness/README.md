@@ -109,8 +109,14 @@ build/mpharness compare a.json b.json
 build/mpharness compare-paths A B
 ```
 
+```sh
+build_soak/mpsoak [--width W --height H --renders N] <script.mp> ...
+                                    # lifetime + determinism soak, no goldens
+```
+
 Make targets wrap the common ones: `make list`, `make verify`, `make bench`,
-`make bake`.
+`make bake`, plus the memory-safety gates `make sanitize`, `make verify-strict`
+and `make soak`.
 
 ### `render`
 
@@ -183,6 +189,55 @@ Goldens are stored as binary PGM (P5). PGM, not PNG, because `verify` needs to
 read them back for pixel-level diffing and PGM needs no inflate implementation.
 `render --out foo.png` writes a real PNG (self-contained writer: stored-deflate
 zlib stream, hand-rolled CRC32/Adler32) for viewing.
+
+### Memory-safety gates: `sanitize`, `verify-strict`, `soak`
+
+`verify` proves the renderer draws the right picture. It does **not** prove the
+renderer is memory-safe, and by construction it cannot:
+
+- it renders each script **once**, from a freshly constructed parser and runtime,
+  so nothing it does can distinguish a live pointer from a stale one;
+- `DisplayListItem` holds **raw pointers** — into the runtime's
+  `TransformSnapshot` pool and into the parser's asset map — and the runtime
+  memoises variable slots and resolved assets into `mutable` fields on the
+  **parse tree**, tagged with a per-runtime epoch. A one-shot render never
+  re-reads a memo another runtime wrote;
+- the shim canvas silently drops out-of-range pixel writes, and reading recycled
+  memory usually still produces *a* picture.
+
+Three targets close that gap. They build the same core sources into their own
+directories, so they never disturb `build/` or a benchmark:
+
+```sh
+make sanitize        # golden gate under -fsanitize=address,undefined
+make verify-strict   # the same, plus -DMP_SHIM_NULL_CSTR=1 (device NULL c_str())
+make soak            # lifetime + determinism soak, no goldens needed
+```
+
+`make soak` builds `mpsoak` (`src/soak.cpp`) and runs the scripts in `stress/`
+through **the shape the M5Paper firmware actually uses** — see
+`RenderController::renderScript`: one parser reused across renders, reset and
+re-parsed each time, with the runtime and renderer deleted and recreated. It
+renders every seed **twice** and byte-compares the two canvases, so a read of
+freed or uninitialised memory has to be either caught by ASan or shown as a
+non-deterministic pixel.
+
+`stress/` deliberately holds scripts with **no goldens**: a golden needs a baked
+reference image and is expensive to add, while sanitizer coverage needs only the
+script. `stress/generate.py` exploits that — it emits structurally varied scripts
+from a seed (every primitive, `REPEAT`/`IF` nested two deep, `$INDEX` inside
+nested bodies, transform churn, variables declared inside loop bodies), and
+`make soak` generates 40 of them into `stress/generated/` before running. A
+failure is reproducible from its seed:
+
+```sh
+python3 stress/generate.py --seed 17 > /tmp/one.mp
+build_soak/mpsoak --renders 24 /tmp/one.mp
+```
+
+`stress/thunderstorms.mp` is a real device script (`Thunderstorms`, restored from
+the 2026-08-27 backup) kept here rather than in `corpus/` for the same reason: it
+needs sanitizer coverage more than it needs a golden.
 
 ### `bench` / `compare`
 
@@ -266,6 +321,20 @@ range, and `begin()`/`end()` (ESP32's `WString.h` exposes these, and
 - **`operator[]` on out-of-range** returns `'\0'` in both, but the shim does not
   reproduce Arduino's invalid-object (`buffer == NULL`) state after a failed
   allocation.
+
+**A correctness difference, not just a benchmarking one — `c_str()` can be
+NULL on device.** ESP32's `String::c_str()` returns the raw `buffer` pointer,
+and `String::init()` sets that pointer to `nullptr`
+(`framework-arduinoespressif32/cores/esp32/WString.cpp`). So a default-constructed
+or empty `String` yields **`c_str() == nullptr`** on hardware, while the
+std::string-backed shim always yields `""`. Any firmware code that does
+`strcmp` / `strcasecmp` on a possibly-empty `String`, or indexes `c_str()[0]`,
+is therefore safe on the host and a null dereference on device — invisible to
+every golden.
+
+Build with **`-DMP_SHIM_NULL_CSTR=1`** to make the shim return `nullptr` for an
+empty string and reproduce that. `make verify-strict` does exactly this, under
+sanitizers.
 
 ### Float
 

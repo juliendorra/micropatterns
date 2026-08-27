@@ -42,7 +42,17 @@ public:
     unsigned int length() const { return (unsigned int)_s.size(); }
     bool isEmpty() const { return _s.empty(); }
     void reserve(unsigned int n) { _s.reserve(n); }
+    // DEVICE FIDELITY: the ESP32 WString returns its raw `buffer` pointer, and a
+    // default-constructed / cleared String has buffer == nullptr (WString.cpp
+    // String::init sets setBuffer(nullptr)). So on device -- and NOT with a
+    // std::string-backed shim -- `String().c_str()` is NULL, and any strcmp /
+    // strcasecmp / opStr[0] on it is a null dereference that host tests cannot
+    // see. Build with -DMP_SHIM_NULL_CSTR=1 to reproduce that.
+#if MP_SHIM_NULL_CSTR
+    const char* c_str() const { return _s.empty() ? nullptr : _s.c_str(); }
+#else
     const char* c_str() const { return _s.c_str(); }
+#endif
     // Arduino returns '\0' (not UB) for an out-of-range index.
     char operator[](unsigned int i) const { return i < _s.size() ? _s[i] : '\0'; }
     char operator[](int i) const { return (i >= 0 && (size_t)i < _s.size()) ? _s[i] : '\0'; }
