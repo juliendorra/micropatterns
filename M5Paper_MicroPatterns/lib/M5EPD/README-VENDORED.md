@@ -219,3 +219,52 @@ If you ever pull a newer upstream:
    replaces whole loop bodies.
 4. Delete `examples/`, `tools/`, `.piopm`, `.clang-format` again.
 5. Regenerate `upstream-<new>.patch` and update this file.
+
+
+---
+
+## Device test result, 2026-08-27: 1bpp produces VERTICAL SHEARING
+
+First contact with the panel. Outcome:
+
+- **4bpp bulk path: CORRECT and fast.** ~666 ms -> ~207 ms, no visual defect,
+  buttons and interaction normal. This is a real, verified win and is the
+  current default.
+- **1bpp path: WRONG.** Real script output rendered with **vertical shearing** —
+  a consistent progressive horizontal slant down the image. `SCRIPT_PUSH_1BPP`
+  is now `false` pending a fix.
+
+### Reading the symptom
+
+The symptom table in this file predicted *torn bands / noise* for a clock or
+FIFO problem. **Shear is not that**, and the distinction matters:
+
+| symptom | meaning |
+|---|---|
+| torn bands, noise, random | timing: SPI clock too high, FIFO under-run |
+| **consistent progressive slant** | **row-stride mismatch** — each row starts at the wrong offset |
+
+A slant is deterministic and geometric, so it is a addressing bug, not a
+signal-integrity one. Raising or lowering the SPI clock will not touch it.
+
+### Where to look
+
+`pushCanvas1bpp()` transposes the 540x960 canvas to panel-native 960x540 and
+packs 8 pixels per byte. A shear means the output row stride does not match the
+row length actually written — the classic cause is computing the stride from the
+wrong dimension (540 vs 960) or from the unpacked rather than packed width
+(960/8 = 120 bytes per row).
+
+Worth checking in order:
+1. Output row stride: must be **120 bytes** (960 packed pixels), not 540/8 = 67.5
+   (not an integer — see the original note on why 540 is unpackable) nor 240.
+2. The `Area_W = W/8` value handed to the controller against the stride actually
+   used when filling the buffer.
+3. Whether the transpose's inner loop advances the destination by the stride or
+   by the source width.
+
+### Do not re-enable without panel verification
+
+The transfer being 4x faster was measured and is not in doubt. Correctness was
+assumed and was wrong. Any fix must be looked at on the panel before the flag
+goes back to `true`.

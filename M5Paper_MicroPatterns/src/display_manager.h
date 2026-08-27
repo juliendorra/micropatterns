@@ -83,7 +83,16 @@ public:
     // NOT used for the periodic de-ghost push: that one wants a genuine 16-grey
     // GC16 sweep, and going through 4bpp is also what clears the controller's
     // latched 1bpp display mode.
-    static constexpr bool SCRIPT_PUSH_1BPP = true;
+    // DISABLED 2026-08-27 after on-device testing: the 1bpp path produced
+    // VERTICAL SHEARING artifacts on real script output. Shear means each row
+    // lands at a progressively wrong horizontal offset, i.e. a row-stride
+    // mismatch in the host-side transpose -- not a clock/FIFO problem, which
+    // presents as torn bands rather than a consistent slant.
+    //
+    // The 4bpp bulk-SPI path is still a large win over upstream (~666ms ->
+    // ~207ms) and is known correct, so it is the safe default until the
+    // transpose stride is fixed and re-verified on the panel.
+    static constexpr bool SCRIPT_PUSH_1BPP = false;
 
     DisplayManager();
     ~DisplayManager();
