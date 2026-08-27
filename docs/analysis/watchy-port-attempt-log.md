@@ -155,7 +155,13 @@ each item removes a hypothesis that would otherwise be re-tried.
 - **No reset pulse runs the app either.** For each boot-mode line held in each
   state, the other line was pulsed as EN. All four combinations: silence.
 
-### 4.2c The most concrete lead: the chip sits in DOWNLOAD MODE
+### 4.2c FALSIFIED: "the chip sits in DOWNLOAD MODE"
+
+> **This section is WRONG and is kept only as a record of the mistake. The
+> hypothesis below was falsified, and the observation that produced it was an
+> artifact of my own tooling. Read §4.2d before believing anything here.**
+
+### 4.2c (original text, retained)
 
 ```
 esptool.py --port /dev/cu.usbserial-110 --before no_reset flash_id   # connects instantly
@@ -181,6 +187,102 @@ had not been performed at the time of writing.
 evidence, not a proven cause. It is contradicted by the fact that another
 session flashed AND ran InkWatchy on this same device on the same day. Whatever
 that session does differently is the answer, and it is not yet known.
+
+### 4.2d The correction: silence is NOT diagnostic, and 4.2c was self-inflicted
+
+Two independent findings demolish the reasoning above.
+
+**1. The download-mode observation was an artifact of my own command.** The
+esptool invocation immediately preceding that test was:
+
+```
+esptool.py ... --before default_reset --after no_reset verify_flash ...
+```
+
+`--after no_reset` **leaves the chip sitting in the ROM loader**. The very next
+command then "discovered" the chip in the ROM loader. I measured the state my
+previous flag had created and reported it as a property of the device. An
+independent check by the other session, with no such flag in play, gives the
+opposite result: `--before no_reset` FAILS and `--before default_reset`
+succeeds — i.e. the chip requires a host-issued reset and is **not** idling in
+the loader. The hypothesis is falsified.
+
+**2. Zero serial output is not diagnostic on this hardware.** The other session
+flashed the official prebuilt `Watchy_2-demo.bin` (InkWatchy v2.1.0, full 4 MB
+image, hash verified). The watch **visibly works** — display updating, running
+normally — and that same known-good image produced **zero serial bytes** in a
+60-second capture at 115200. Not a partial log: zero.
+
+The consequence is severe and applies to everything above:
+
+> **Every conclusion in §4.1-4.2c that rests on "it was silent, therefore it was
+> not running" is unsupported.** That includes the bisect result. The bare
+> `Serial.println()` firmware being silent very likely did NOT mean it failed to
+> execute. The instrument was dead; the chip may have been fine throughout.
+
+Neither session has a confirmed mechanism for why run-mode UART does not reach
+the host while esptool's stub communicates fine over the same pins. Nobody
+should invent one.
+
+Also corrected: **the ROM banner's absence diagnoses nothing here.** The other
+session never saw one either, including while the app was demonstrably running
+and emitting its own log lines. InkWatchy additionally sets
+`CONFIG_BOOTLOADER_LOG_LEVEL_NONE=y`, disabling second-stage bootloader output
+by design.
+
+**And the partition layout is confirmed fine.** The official v2.1.0 release puts
+the factory app at **0x10000** — the same offset used here. The earlier
+"InkWatchy uses 0x20000" is true of the repo's generated `partitions.csv` but
+not of the shipped release.
+
+### 4.2e Why the panel stayed blank for the other session's builds
+
+Not the same fault as ours, but it explains the device's behaviour after this
+session's work: the `erase_flash` performed here wiped the **littlefs**
+partition, and the other session subsequently flashed only `firmware.bin`,
+never `fs.bin`. So InkWatchy booted and ran correctly with every font and image
+missing, drew nothing, and the panel held its last latched frame. The tell,
+misread as harmless at the time:
+
+```
+[E][vfs_api.cpp:99] open(): /littlefs/weather/hourly/315446400 does not exist
+```
+
+This does **not** explain the Micropatterns firmware's behaviour — that build
+embeds its scripts in flash and uses no filesystem at all.
+
+### 4.2f What this leaves as the actual open question
+
+The Micropatterns firmware may well have been executing the whole time. What is
+established is only that **the panel never changed**. With serial removed as
+evidence, the prime suspect becomes the display path itself:
+
+- Upstream `zinggjm/GxEPD2` is used here. InkWatchy vendors
+  `Szybet/GxEPD2-watchy`, a fork carrying fixes for this exact
+  SSD1681/GDEH0154D67 pairing, including a first-boot grey/ghosting workaround
+  and a documented border-waveform quirk. Trying that fork is now the obvious
+  next step, where before it would have been changing libraries on a hunch.
+- `g_display.init()` blocking on the BUSY line remains possible and, without
+  serial, is invisible.
+
+**Any further debugging must not depend on UART.** Use the panel itself as the
+output channel — e.g. fill the screen with a distinctive pattern as the very
+first action after `init()`, before any script work — or drive a GPIO. A
+"silent" reading proves nothing on this device.
+
+### 4.2g Instrument discipline (the actual lesson)
+
+Both sessions lost hours to the same class of error: **an instrument returning
+nothing for reasons unrelated to the device under test.**
+
+- Here: silence read as "not running", and `--after no_reset` read as device state.
+- The other session: `timeout` does not exist on macOS, so two esptool tests
+  produced no output and were nearly read as "chip unresponsive".
+
+> **Verify the instrument reads a known-good state before trusting it to report
+> a bad one.** Flashing the official working image FIRST — and discovering it is
+> also silent — would have invalidated the serial channel on day one and saved
+> this entire investigation.
 
 ### 4.3 Unresolved
 
