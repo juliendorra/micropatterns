@@ -1256,6 +1256,15 @@ a cable. Nothing is copied from InkWatchy here — it has no working OTA.
 
 ## 9. Open product questions for the user
 
+> **UPDATE 2026-08-27 — the coordinate-space question below is SETTLED and is no
+> longer open.** Per the project owner: *no scaling, one pixel is one pixel.*
+> That is a core principle of Micropatterns, and the web editor already previews
+> both screen sizes. Scripts adapt via `$WIDTH`/`$HEIGHT`; scripts with
+> hardcoded coordinates will be wrong at 200x200 and that is intended. The
+> implemented firmware renders at true 200x200 with no scaling. See
+> `watchy-port-attempt-log.md` §5. The rest of this section stands.
+
+
 Foundation is no longer among these — it is decided (§5). What remains:
 
 1. **Coordinate space — the big one.** Should existing 960×540 scripts appear on the watch at all
