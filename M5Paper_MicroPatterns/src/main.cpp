@@ -864,11 +864,19 @@ void FetchTask_Function(void *pvParameters) {
                 esp_task_wdt_reset(); // After successful connect or attempt
                 // Perform fetch operations
             
-                if (job.full_refresh) {
-                    esp_task_wdt_reset(); // Before file system op
-                    g_scriptManager->clearAllScriptData(); // Clear local data first for full refresh
-                    esp_task_wdt_reset(); // After file system op
-                }
+                // NOTE: a full refresh used to call clearAllScriptData() HERE, before
+                // the fetch. That destroyed every local script up front, so any
+                // later failure -- a 404, a dropped connection, a malformed list --
+                // left the device with nothing and no way to recover, since the
+                // scripts exist only on the device. That is exactly what happened
+                // when the API began returning 404 for this device id.
+                //
+                // The wipe was also redundant: saveScriptList() below replaces
+                // list.json wholesale, the content loop overwrites each file, and
+                // cleanupOrphanedContent()/cleanupOrphanedStates() remove anything
+                // the server no longer lists -- but only once the sync has fully
+                // succeeded. Deleting nothing up front is strictly safer and ends
+                // in the same state.
 
                 esp_task_wdt_reset(); // Before network op (fetchScriptList)
                 resultData.status = g_networkManager->fetchScriptList(serverListDoc);
