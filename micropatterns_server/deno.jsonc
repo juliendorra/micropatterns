@@ -13,5 +13,11 @@
   
   "compilerOptions": {
     "lib": ["deno.window", "dom"]
+  },
+  "deploy": {
+    "org": "juliendorra",
+    "app": "micropatterns-api"
   }
 }
+
+
