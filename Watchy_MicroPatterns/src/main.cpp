@@ -85,6 +85,10 @@ static int  g_counter = 0;
 // Kept rather than deleted because this was the ONLY instrument that worked on
 // this device: serial is silent even for firmware that is demonstrably running,
 // and the panel cannot report progress that happens before the panel works.
+#ifndef MP_PANEL_PROBE
+#define MP_PANEL_PROBE 0
+#endif
+
 #ifndef MP_STAGE_BUZZ
 #define MP_STAGE_BUZZ 0
 #endif
@@ -414,20 +418,23 @@ void setup()
     Serial.println("MPCON|display init: returned"); Serial.flush();
     log_i("Display initialised: %dx%d", g_display.width(), g_display.height());
 
-    // PANEL-AS-INSTRUMENT probe.
+    // PANEL-AS-INSTRUMENT probe. Default OFF; -DMP_PANEL_PROBE=1 re-enables.
     //
-    // Serial output is proven WORTHLESS on this device: the official InkWatchy
-    // image runs visibly while emitting zero bytes over 60s (see
-    // docs/analysis/watchy-port-attempt-log.md 4.2d). So the panel is the only
-    // trustworthy output channel, and this draws to it before ANY script,
-    // parser or renderer code can fail or hang.
+    // Draws a diagonal stripe pattern immediately after init(), before any
+    // parser, runtime or renderer code can fail or hang. Written when serial
+    // was proven useless on this device (the official InkWatchy image runs
+    // visibly while emitting zero bytes over 60s), so the panel was the only
+    // channel that could report progress.
     //
-    // Reading the result:
-    //   diagonal-stripe pattern visible -> init() returned AND the panel is
-    //       being driven correctly. Any later blank screen is then a fault in
-    //       the script/render path, not in the display or the boot.
-    //   screen unchanged -> we never got this far: init() blocked (most likely
-    //       waiting on BUSY) or the app is not executing at all.
+    //   stripes appear  -> init() returned AND the panel is driven correctly,
+    //                      so a later blank screen is a script/render fault
+    //   nothing          -> we never got here: init() blocked, or the app is
+    //                      not executing at all
+    //
+    // Kept because that distinction was the hard part of this port and is not
+    // reconstructable from a blank screen. Off by default: on a working device
+    // it is just a confusing flash and a 2.5s delay at every boot.
+#if MP_PANEL_PROBE
     g_display.setFullWindow();
     g_display.firstPage();
     do {
@@ -438,9 +445,9 @@ void setup()
             }
         }
     } while (g_display.nextPage());
-    g_stage = 4;                                  // probe pattern pushed
     Serial.println("MPCON|probe pattern pushed"); Serial.flush();
-    delay(2500); // hold it long enough to be seen before the first script draws
+    delay(2500);   // hold it long enough to be seen before the first script
+#endif
 
     showScript(0, true);
     g_stage = 5;                                  // first script rendered; loop() runs
