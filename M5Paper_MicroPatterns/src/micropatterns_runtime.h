@@ -75,6 +75,7 @@ private:
     int _canvasHeight;
 
     void resetStateAndList();
+    void seedEnvSlots(); // (re)installs the fixed env names in _slotByName
     // Processes a command and adds to _displayList, potentially recursively for blocks
     void processCommandForDisplayList(const MicroPatternsCommand& cmd, int loopIndex = -1);
 

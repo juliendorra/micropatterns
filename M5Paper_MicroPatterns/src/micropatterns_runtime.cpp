@@ -28,8 +28,14 @@ MicroPatternsRuntime::MicroPatternsRuntime(int canvasWidth, int canvasHeight, co
     _envValues[ENV_WIDTH] = _canvasWidth;
     _envValues[ENV_HEIGHT] = _canvasHeight;
 
-    // Seed the fixed env slots so internSlot() resolves them without any
-    // special-casing at lookup time.
+    seedEnvSlots();
+
+    resetStateAndList();
+}
+
+// Seeds the fixed env slots so internSlot() resolves them without any
+// special-casing at lookup time.
+void MicroPatternsRuntime::seedEnvSlots() {
     _slotByName["$WIDTH"] = ENV_WIDTH;
     _slotByName["$HEIGHT"] = ENV_HEIGHT;
     _slotByName["$HOUR"] = ENV_HOUR;
@@ -37,8 +43,6 @@ MicroPatternsRuntime::MicroPatternsRuntime(int canvasWidth, int canvasHeight, co
     _slotByName["$SECOND"] = ENV_SECOND;
     _slotByName["$COUNTER"] = ENV_COUNTER;
     _slotByName["$INDEX"] = ENV_INDEX;
-
-    resetStateAndList();
 }
 
 int MicroPatternsRuntime::getCounter() const {
@@ -52,6 +56,20 @@ void MicroPatternsRuntime::getTime(int& hour, int& minute, int& second) const {
 }
 
 void MicroPatternsRuntime::setCommands(const std::list<MicroPatternsCommand>* commands) {
+    // A new command list means the slot/asset memos held in the OLD parse tree
+    // must never be honoured again -- and, more importantly, that this runtime's
+    // slot table no longer describes the incoming one. Taking a fresh epoch
+    // here makes every memo in the new tree miss on first use and re-intern,
+    // which is what the "one epoch per runtime instance" scheme silently
+    // assumed but did not enforce. Cold path: once per render.
+    if (commands != _commands) {
+        _epoch = ++s_runtimeEpochCounter;
+        if (_epoch == 0) _epoch = ++s_runtimeEpochCounter;
+        _slotByName.clear();
+        seedEnvSlots();
+        _varValues.clear();
+        _varDefined.clear();
+    }
     _commands = commands;
 }
 
@@ -148,8 +166,18 @@ int MicroPatternsRuntime::resolveValue(const ParamValue& val, int lineNumber, in
             }
             return loopIndex;
         }
-        if (slot < ENV_SLOT_COUNT) return _envValues[slot];
-        int userSlot = slot - ENV_SLOT_COUNT;
+        if (slot >= 0 && slot < ENV_SLOT_COUNT) return _envValues[slot];
+        // Bounds check, not decoration. `slot` arrives from a memo written into
+        // the (mutable) parse tree, so a memo that outlives the slot table it
+        // was computed against -- a runtime handed a different command list, or
+        // an epoch collision -- would index this vector out of range and
+        // silently corrupt the heap. One compare per variable read; unmeasurable
+        // next to the map lookup it replaced.
+        size_t userSlot = (size_t)(slot - ENV_SLOT_COUNT);
+        if (slot < 0 || userSlot >= _varValues.size()) {
+            runtimeError("Internal: variable slot out of range for " + val.stringValue, lineNumber);
+            return 0;
+        }
         if (_varDefined[userSlot]) return _varValues[userSlot];
         runtimeError("Undefined variable: " + val.stringValue, lineNumber);
         return 0;
@@ -160,7 +188,14 @@ int MicroPatternsRuntime::resolveValue(const ParamValue& val, int lineNumber, in
 
 const ParamValue* MicroPatternsRuntime::findParam(const std::map<String, ParamValue>& params, const char* name) {
     for (const auto& kv : params) {
-        if (strcmp(kv.first.c_str(), name) == 0) return &kv.second;
+        // NOT redundant on device. ESP32's WString returns its raw buffer from
+        // c_str(), and String::init() sets that buffer to nullptr -- so an empty
+        // String yields a NULL c_str() and strcmp() would dereference it. The
+        // host shim is std::string-backed and never returns NULL, which is
+        // exactly why this class of bug cannot be seen without the check (see
+        // MP_SHIM_NULL_CSTR in the harness shim).
+        const char* key = kv.first.c_str();
+        if (key && strcmp(key, name) == 0) return &kv.second;
     }
     return nullptr;
 }
@@ -392,7 +427,9 @@ void MicroPatternsRuntime::processCommandForDisplayList(const MicroPatternsComma
             int slot = slotForCommandTarget(cmd, cmd.varName);
             int userSlot = slot - ENV_SLOT_COUNT;
             int value = cmd.initialExpressionTokens.empty() ? 0 : evaluateExpression(cmd.initialExpressionTokens, cmd.lineNumber, loopIndex);
-            if (userSlot >= 0) {
+            // Bounds-checked write -- see the note in resolveValue(). userSlot < 0
+            // means the name resolved to an env slot, which VAR must not assign.
+            if (userSlot >= 0 && (size_t)userSlot < _varValues.size()) {
                 _varValues[userSlot] = value;
                 _varDefined[userSlot] = 1;
             }
@@ -401,7 +438,7 @@ void MicroPatternsRuntime::processCommandForDisplayList(const MicroPatternsComma
         case CMD_LET: {
             int slot = slotForCommandTarget(cmd, cmd.letTargetVar);
             int userSlot = slot - ENV_SLOT_COUNT;
-            if (userSlot >= 0 && _varDefined[userSlot]) {
+            if (userSlot >= 0 && (size_t)userSlot < _varValues.size() && _varDefined[userSlot]) {
                 _varValues[userSlot] = cmd.letExpressionTokens.empty() ? 0 : evaluateExpression(cmd.letExpressionTokens, cmd.lineNumber, loopIndex);
             } else {
                 runtimeError("LET: Undeclared variable: $" + cmd.letTargetVar, cmd.lineNumber);
@@ -414,7 +451,10 @@ void MicroPatternsRuntime::processCommandForDisplayList(const MicroPatternsComma
             uint8_t resolvedColor = RUNTIME_COLOR_BLACK; // default, and the fallback on error
             if (nameVal) {
                 if (nameVal->type == ParamValue::TYPE_STRING) {
-                    if (strcasecmp(nameVal->stringValue.c_str(), "WHITE") == 0) resolvedColor = RUNTIME_COLOR_WHITE;
+                    // NULL-guarded: see findParam(). COLOR NAME="" reaches here
+                    // with an empty String, whose c_str() is NULL on device.
+                    const char* n = nameVal->stringValue.c_str();
+                    if (n && strcasecmp(n, "WHITE") == 0) resolvedColor = RUNTIME_COLOR_WHITE;
                 } else {
                     runtimeError("Parameter NAME requires a string/keyword.", cmd.lineNumber);
                 }
