@@ -322,3 +322,83 @@ scaling anywhere.
 - **`.DS_Store` files** break the ESP-IDF component manager with
   `NotADirectoryError` once Finder has browsed a project.
   `find . -name .DS_Store -delete` before building.
+
+
+---
+
+# 5. RESOLVED (2026-08-27)
+
+The watch displays scripts. The renderer core is shared with the M5Paper, one
+pixel per pixel at 200x200, no scaling.
+
+## 5.1 The step that actually unblocked this
+
+Not a display change — **a 20-line firmware that did nothing but buzz the
+vibration motor.**
+
+For hours the working assumption was that the app was running and only the
+display failed. That was never tested. The motor-only firmware (no display, no
+libraries, no globals with constructors, just `digitalWrite(GPIO 13)` in
+`loop()`) buzzed immediately, proving the toolchain, bootloader, flash mode,
+partition layout and boot path were all fine and that the fault was inside the
+Micropatterns firmware.
+
+**That test should have come first.** Two display fixes were applied before it,
+both guesses layered on an unverified premise. The correct order is: prove the
+device runs code you compiled, *then* debug what that code does.
+
+The motor then became the telemetry channel, since serial is worthless here and
+the panel cannot report progress that happens before the panel works. A separate
+FreeRTOS task repeated the furthest boot stage reached, forever, so it kept
+reporting even while `setup()` was blocked — a one-shot buzz per stage is not
+enough, because a hang leaves you with silence and no count. Kept in the tree
+behind `-DMP_STAGE_BUZZ=1`, default off.
+
+## 5.2 What changed on the display side
+
+Two things went in, both derived from InkWatchy's known-good Watchy-2 path
+rather than invented:
+
+1. **`Szybet/GxEPD2-watchy`** instead of upstream `zinggjm/GxEPD2`, pinned to
+   the commit InkWatchy pins. The fork carries fixes for this exact
+   SSD1681/GDEH0154D67 pairing.
+2. **Panel bring-up matched to `initDisplay()`** in InkWatchy:
+   `init(0, initial, 10, true)` — note **`pulldown_rst_mode = true`** (was
+   `false`) and **reset duration 10 ms** (was 2 ms) — plus explicit `pinMode()`s
+   with `BUSY` as INPUT, and `selectSPI(SPI, 20 MHz, MODE0)`.
+
+A tempting red herring, recorded because "fix the obvious pin clash" would have
+been wrong: `EPD_BUSY` is GPIO19, which is *also* VSPI's default MISO. InkWatchy
+deliberately does **not** call `SPI.begin()` on Watchy 2 because the default
+VSPI pins already match the wiring, so neither do we.
+
+## 5.3 What is NOT known, and should not be claimed
+
+**Which change fixed it is undetermined.** The flash that first showed a working
+panel contained the fork, the InkWatchy init parameters, the probe pattern *and*
+the stage reporter. An earlier flash contained the fork and the init parameters
+and was reported as "no change" — but that report cannot be fully trusted as
+evidence of failure, because on this device we had no working instrument at the
+time and the observation window was not controlled.
+
+So there are two live possibilities and no evidence separating them:
+
+- the init parameters (most likely `pulldown_rst_mode`) were decisive; or
+- the earlier flash also worked and was simply not observed working.
+
+Bisecting this would mean reverting one change at a time and re-testing with the
+motor telemetry enabled. **Not done.** If anyone needs certainty — for example
+before dropping the fork and returning to upstream GxEPD2 — that is the
+experiment to run.
+
+## 5.4 The lesson, stated plainly
+
+Both sessions working on this watch lost hours to the same error: **an
+instrument returning nothing for reasons unrelated to the device under test.**
+Serial silence was read as "not running"; `--after no_reset` was read as device
+state; on the other session, macOS lacking `timeout` produced empty output that
+nearly read as "chip unresponsive".
+
+> Verify the instrument reads a known-good state before trusting it to report a
+> bad one. A cheap positive control — the buzzing firmware, or flashing the
+> official working image — invalidates a dead channel in minutes.
