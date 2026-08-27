@@ -53,6 +53,24 @@ extern EventGroupHandle_t g_appEventGroup; // General application events/flags
 extern EventGroupHandle_t g_renderTaskEventFlags; // For render task specific flags
 extern const EventBits_t RENDER_INTERRUPT_BIT;    // Bit to signal render interrupt
 
+// Mid-render interrupt flag, read from the rasterizer's INNERMOST loops.
+//
+// RenderController::checkInterrupt() used to answer this question by calling
+// xEventGroupGetBits(), which takes a critical section, on every unlatched call.
+// The rasterizer polls that callback from its scanline loops in fillRect /
+// fillCircle / drawAsset, so a render paid for tens of thousands of FreeRTOS
+// critical sections. Measured on the host harness (tools/host_harness) against
+// the real rasterizer: a lock-shaped check costs +1% to +3.3% of rasterization
+// time versus a plain flag load, and a plain flag load is free versus no check
+// at all (+-0.6%, inside noise). It was far worse (+95% to +154%) while the
+// drawing layer still polled per pixel, which is where the change originated.
+//
+// So: MainControlTask sets BOTH this plain flag and RENDER_INTERRUPT_BIT. The
+// event bit stays because RenderTask's post-render handshake still reads it;
+// this flag is what the hot path polls. Plain `volatile bool` is sufficient --
+// it is a single-writer/single-reader boolean latch, never a read-modify-write.
+extern volatile bool g_renderInterruptRequested;
+
 // --- Task Function Prototypes ---
 void MainControlTask_Function(void *pvParameters);
 void InputTask_Function(void *pvParameters);

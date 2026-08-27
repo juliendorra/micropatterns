@@ -1,5 +1,5 @@
 #include "render_controller.h"
-#include "main.h" // For g_renderTaskEventFlags / RENDER_INTERRUPT_BIT
+#include "main.h" // For g_renderInterruptRequested
 #include "esp32-hal-log.h"
 
 RenderController::RenderController(DisplayManager& displayMgr)
@@ -13,19 +13,22 @@ RenderController::~RenderController() {
 }
 
 bool RenderController::checkInterrupt() {
-    // Fast path: already latched.
+    // HOT PATH. micropatterns_drawing.cpp polls this callback from its scanline
+    // loops in fillRect/fillCircle/drawAsset, so it must be nothing but loads.
+    //
+    // It used to fall through to xEventGroupGetBits(g_renderTaskEventFlags) on
+    // every unlatched call -- a FreeRTOS critical section, tens of thousands of
+    // times per render (and, before the drawing layer moved to per-scanline
+    // polling, millions). MainControlTask now sets the plain flag
+    // g_renderInterruptRequested (main.cpp) alongside RENDER_INTERRUPT_BIT, so we
+    // answer from memory alone and still abort on the same signal. Measured on
+    // the host harness: +1%..+3.3% of rasterization time for the lock-shaped
+    // check versus this one, and it was +95%..+154% under per-pixel polling.
     if (_interrupt_requested_for_runtime_or_renderer) {
         return true;
     }
-    // MainControlTask signals a mid-render interrupt by setting RENDER_INTERRUPT_BIT
-    // on g_renderTaskEventFlags (main.cpp, on any input during a render). Nothing
-    // used to read that bit from inside the render path, so the whole cooperative
-    // interrupt mechanism was inert and a stale render always ran to completion --
-    // painting over the new script's title. Latch it here so the runtime and the
-    // renderer, which poll this callback, actually stop.
-    if (g_renderTaskEventFlags != NULL &&
-        (xEventGroupGetBits(g_renderTaskEventFlags) & RENDER_INTERRUPT_BIT) != 0) {
-        _interrupt_requested_for_runtime_or_renderer = true;
+    if (g_renderInterruptRequested) {
+        _interrupt_requested_for_runtime_or_renderer = true; // latch
         return true;
     }
     return false;
@@ -33,7 +36,7 @@ bool RenderController::checkInterrupt() {
 
 RenderResultData RenderController::renderScript(const String& script_id, const String& script_content, const ScriptExecState& initial_state) {
     log_i("RenderController: Starting render for script ID: %s", script_id.c_str());
-    _interrupt_requested_for_runtime_or_renderer = false; // Reset interrupt flag
+    _interrupt_requested_for_runtime_or_renderer = false; // Reset latched interrupt flag
 
     RenderResultData result;
     result.script_id = script_id;

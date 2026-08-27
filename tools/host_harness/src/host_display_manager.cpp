@@ -20,13 +20,21 @@ void hostSetCanvasSize(int width, int height) {
     g_canvasHeight = height;
 }
 
-DisplayManager::DisplayManager() : _epdMutex(nullptr), _isInitialized(false) {}
+// The firmware split the old single _epdMutex into _canvasMutex (long-held,
+// guards the script framebuffer) and _panelMutex (short-held, guards EPD
+// transactions and the indicator scratch canvas). The host has no concurrency,
+// so both are null here and the lock methods are no-ops.
+DisplayManager::DisplayManager()
+    : _canvasMutex(nullptr), _panelMutex(nullptr), _isInitialized(false),
+      _canvasW(0), _canvasH(0) {}
 
 DisplayManager::~DisplayManager() {}
 
 bool DisplayManager::initializeEPD() {
     _canvas.createCanvas((int16_t)g_canvasWidth, (int16_t)g_canvasHeight);
     _canvas.fillCanvas(0);
+    _canvasW = g_canvasWidth;
+    _canvasH = g_canvasHeight;
     _isInitialized = true;
     return true;
 }

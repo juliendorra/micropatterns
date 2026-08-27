@@ -27,6 +27,10 @@ EventGroupHandle_t g_appEventGroup = NULL;
 // const EventBits_t FETCH_INTERRUPT_REQUESTED_BIT = (1 << 1); // Example
 EventGroupHandle_t g_renderTaskEventFlags = NULL;
 const EventBits_t RENDER_INTERRUPT_BIT = (1 << 0);
+// See main.h for why this exists alongside the event bit: the rasterizer polls
+// the interrupt callback from its scanline loops, and a plain flag load keeps a
+// FreeRTOS critical section (xEventGroupGetBits) off that path entirely.
+volatile bool g_renderInterruptRequested = false;
 
 
 // --- Global Manager Instances ---
@@ -398,6 +402,9 @@ void MainControlTask_Function(void *pvParameters) {
             // Stop ongoing render or fetch if significant input
             if (currentState == AppState::RENDERING_SCRIPT) { // Check if currently rendering
                 log_i("MainCtrl: Input received during render. Requesting interrupt.");
+                // Plain flag first: this is the one the rasterizer's inner loops
+                // actually poll, so it is what makes the abort land quickly.
+                g_renderInterruptRequested = true;
                 xEventGroupSetBits(g_renderTaskEventFlags, RENDER_INTERRUPT_BIT);
                 // Preemptively change state to allow new render to be queued.
                 // The RenderTask will eventually send its (now hopefully interrupted) status.
@@ -604,9 +611,10 @@ void MainControlTask_Function(void *pvParameters) {
         if (currentState == AppState::IDLE && (xTaskGetTickCount() - lastActivityTime) > pdMS_TO_TICKS(SLEEP_IDLE_THRESHOLD_MS)) {
             log_i("MainCtrl: Idle timeout. Checking EPD mutex before light sleep.");
 
-            // Attempt to lock EPD mutex with a very short timeout to ensure it's free before sleeping.
-            if (g_displayManager->lockEPD(pdMS_TO_TICKS(5))) {
-                g_displayManager->unlockEPD(); // Immediately release if taken, we just wanted to check.
+            // Probe BOTH display locks with a very short timeout: the canvas lock
+            // (a render in flight) and the panel lock (an indicator/banner push in
+            // flight). Sleeping through either would be wrong.
+            if (g_displayManager->isDisplayIdle(pdMS_TO_TICKS(5))) {
                 
                 log_i("MainCtrl: EPD Mutex free. Going to light sleep.");
                 // User requested to not show "Sleeping..." message on EPD.
@@ -775,7 +783,11 @@ void RenderTask_Function(void *pvParameters) {
             // RenderResultData renderScript(const RenderJobData& job_meta_data, const String& script_content_payload);
 
             if (g_displayManager->lockEPD(pdMS_TO_TICKS(1000))) { // Lock EPD, 1s timeout
-                // Clear any pending interrupt bit before starting
+                // Clear any pending interrupt request before starting.
+                // NOTE (still open, see docs/analysis/m5paper-render-interrupt-bug.md):
+                // a request raised between the job being queued and this clear is
+                // dropped. A render epoch counter remains the better design.
+                g_renderInterruptRequested = false;
                 xEventGroupClearBits(g_renderTaskEventFlags, RENDER_INTERRUPT_BIT);
                 
                 // Pass jobDataForRenderCtrl (meta) and script_content_for_parser (payload)
@@ -800,6 +812,7 @@ void RenderTask_Function(void *pvParameters) {
                     // Ensure RenderController's internal flag is also set, though its main processing is done.
                     // This helps if RenderController is queried later about its interrupt state for this job.
                     renderCtrl.requestInterrupt();
+                    g_renderInterruptRequested = false;
                     xEventGroupClearBits(g_renderTaskEventFlags, RENDER_INTERRUPT_BIT); // Clear the bit
                 } else if (resultData.interrupted) {
                     // This case means RenderController itself detected an interrupt (e.g., via its checkInterrupt polling the event group).
@@ -831,7 +844,10 @@ void RenderTask_Function(void *pvParameters) {
                     log_i("RenderTask: Render interrupted for '%s'. Skipping canvas push to avoid painting stale content.",
                           resultData.script_id.c_str());
                 } else {
-                    canvas->pushCanvas(0, 0, UPDATE_MODE_GC16); // Or appropriate mode
+                    // Panel transactions are serialized separately from the canvas
+                    // lock we are holding, so an activity indicator pushed during
+                    // this render cannot collide with this push.
+                    g_displayManager->pushMainCanvasLocked(UPDATE_MODE_GC16);
                 }
                 
                 g_displayManager->unlockEPD(); // Unlock EPD

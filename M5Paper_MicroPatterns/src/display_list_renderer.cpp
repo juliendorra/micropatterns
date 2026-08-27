@@ -267,11 +267,27 @@ void DisplayListRenderer::render(const std::vector<DisplayListItem>& displayList
     _occlusionBuffer.reset(); // Reset occlusion buffer state
     _drawing.clearCanvas();   // Clear canvas to white (this will also call _drawing.resetPixelOccupationMap())
 
-    // Iterate in reverse for back-to-front processing (last script command first).
-    // This allows foreground elements to mark pixels in pixelOccupationMap before background elements are processed.
+    // INTERRUPT GRANULARITY -- what actually bounds abort latency.
+    //
+    // The check below is per display-list item, but that is NOT the binding
+    // constraint: MicroPatternsDrawing polls the same callback once per SCANLINE
+    // inside fillRect(), fillCircle() and drawAsset(), which is where a heavy
+    // script spends essentially all of its rasterization time. Measured on the
+    // host harness across the whole corpus, the worst gap between two consecutive
+    // interrupt checks during a complete render is 0.3%-0.8% of that render --
+    // i.e. ~25-65 ms on an 8 s device render.
+    //
+    // The genuinely coarse cases are the primitives with no inner check at all:
+    // PIXEL / FILL_PIXEL (screen bounding box grows with SCALE^2, up to full
+    // screen) and LINE / RECT / CIRCLE (bounded by perimeter). A synthetic script
+    // of large PIXEL items records exactly one check per item, and its worst gap
+    // is 7% of the render. Closing that needs a per-scanline check in
+    // micropatterns_drawing.cpp's drawPixel()/drawFilledPixel(); it cannot be done
+    // from here, because each primitive computes its own screen bounds.
     for (auto it = displayList.rbegin(); it != displayList.rend(); ++it) {
         if (_interrupt_check_cb && _interrupt_check_cb()) {
             log_i("DisplayListRenderer: Interrupt detected during rendering loop.");
+            _drawing.enablePixelOccupationMap(false); // do not leave the pass flag set
             return; // Stop rendering
         }
 

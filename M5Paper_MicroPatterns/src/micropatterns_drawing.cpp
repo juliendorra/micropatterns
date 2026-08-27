@@ -286,25 +286,39 @@ void MicroPatternsDrawing::drawPixel(const DisplayListItem& item) {
     max_sx = std::min(_canvasWidth, max_sx);
     max_sy = std::min(_canvasHeight, max_sy);
 
+
+    // Hoisted: these four products were recomputed on every pixel of the AABB.
+    const float* IM = item.inverseMatrix;
+    const float im0 = IM[0], im1 = IM[1], im2 = IM[2], im3 = IM[3], im4 = IM[4], im5 = IM[5];
+    const float sf = item.scaleFactor;
+    const float px0 = static_cast<float>(lx) * sf;
+    const float px1 = static_cast<float>(lx + 1) * sf;
+    const float py0 = static_cast<float>(ly) * sf;
+    const float py1 = static_cast<float>(ly + 1) * sf;
+
+    uint8_t* occ = occupancyBase();
+    const int cw = _canvasWidth;
+    unsigned int skipped = 0;
+
+    const uint8_t color = item.color;
     for (int sy_iter = min_sy; sy_iter < max_sy; ++sy_iter) {
+        // Per-scanline interrupt poll, matching fillRect/fillCircle/drawAsset.
+        // PIXEL's screen bbox grows with SCALE^2 and can cover the whole panel, so a
+        // single item could otherwise run ~0.5-1s with no opportunity to abort.
+        if (_interrupt_check_cb && _interrupt_check_cb()) { _overdrawSkippedPixels += skipped; return; }
+        const float fy = static_cast<float>(sy_iter) + 0.5f;
+        const float m2y = im2 * fy, m3y = im3 * fy;
+        uint8_t* occRow = occ ? occ + (size_t)sy_iter * cw : nullptr;
         for (int sx_iter = min_sx; sx_iter < max_sx; ++sx_iter) {
-            float screen_center_x = static_cast<float>(sx_iter) + 0.5f;
-            float screen_center_y = static_cast<float>(sy_iter) + 0.5f;
-
-            float scaled_logical_x, scaled_logical_y;
-            matrix_apply_to_point(item.inverseMatrix, screen_center_x, screen_center_y, scaled_logical_x, scaled_logical_y);
-
-            float logical_pixel_start_x_scaled = static_cast<float>(lx) * item.scaleFactor;
-            float logical_pixel_end_x_scaled = static_cast<float>(lx + 1) * item.scaleFactor;
-            float logical_pixel_start_y_scaled = static_cast<float>(ly) * item.scaleFactor;
-            float logical_pixel_end_y_scaled = static_cast<float>(ly + 1) * item.scaleFactor;
-            
-            if (scaled_logical_x >= logical_pixel_start_x_scaled && scaled_logical_x < logical_pixel_end_x_scaled &&
-                scaled_logical_y >= logical_pixel_start_y_scaled && scaled_logical_y < logical_pixel_end_y_scaled) {
-                rawPixel(sx_iter, sy_iter, item.color);
+            const float fx = static_cast<float>(sx_iter) + 0.5f;
+            const float slx = im0 * fx + m2y + im4;
+            const float sly = im1 * fx + m3y + im5;
+            if (slx >= px0 && slx < px1 && sly >= py0 && sly < py1) {
+                emitPixel(sx_iter, sy_iter, color, occRow, skipped);
             }
         }
     }
+    _overdrawSkippedPixels += skipped;
 }
 
 void MicroPatternsDrawing::drawFilledPixel(const DisplayListItem& item) {
@@ -328,26 +342,39 @@ void MicroPatternsDrawing::drawFilledPixel(const DisplayListItem& item) {
     max_sx = std::min(_canvasWidth, max_sx);
     max_sy = std::min(_canvasHeight, max_sy);
 
+
+    // Hoisted: these four products were recomputed on every pixel of the AABB.
+    const float* IM = item.inverseMatrix;
+    const float im0 = IM[0], im1 = IM[1], im2 = IM[2], im3 = IM[3], im4 = IM[4], im5 = IM[5];
+    const float sf = item.scaleFactor;
+    const float px0 = static_cast<float>(lx) * sf;
+    const float px1 = static_cast<float>(lx + 1) * sf;
+    const float py0 = static_cast<float>(ly) * sf;
+    const float py1 = static_cast<float>(ly + 1) * sf;
+
+    uint8_t* occ = occupancyBase();
+    const int cw = _canvasWidth;
+    unsigned int skipped = 0;
+
     for (int sy_iter = min_sy; sy_iter < max_sy; ++sy_iter) {
+        // Per-scanline interrupt poll, matching fillRect/fillCircle/drawAsset.
+        // PIXEL's screen bbox grows with SCALE^2 and can cover the whole panel, so a
+        // single item could otherwise run ~0.5-1s with no opportunity to abort.
+        if (_interrupt_check_cb && _interrupt_check_cb()) { _overdrawSkippedPixels += skipped; return; }
+        const float fy = static_cast<float>(sy_iter) + 0.5f;
+        const float m2y = im2 * fy, m3y = im3 * fy;
+        uint8_t* occRow = occ ? occ + (size_t)sy_iter * cw : nullptr;
         for (int sx_iter = min_sx; sx_iter < max_sx; ++sx_iter) {
-            float screen_center_x = static_cast<float>(sx_iter) + 0.5f;
-            float screen_center_y = static_cast<float>(sy_iter) + 0.5f;
-
-            float scaled_logical_x, scaled_logical_y;
-            matrix_apply_to_point(item.inverseMatrix, screen_center_x, screen_center_y, scaled_logical_x, scaled_logical_y);
-            
-            float logical_pixel_start_x_scaled = static_cast<float>(lx) * item.scaleFactor;
-            float logical_pixel_end_x_scaled = static_cast<float>(lx + 1) * item.scaleFactor;
-            float logical_pixel_start_y_scaled = static_cast<float>(ly) * item.scaleFactor;
-            float logical_pixel_end_y_scaled = static_cast<float>(ly + 1) * item.scaleFactor;
-
-            if (scaled_logical_x >= logical_pixel_start_x_scaled && scaled_logical_x < logical_pixel_end_x_scaled &&
-                scaled_logical_y >= logical_pixel_start_y_scaled && scaled_logical_y < logical_pixel_end_y_scaled) {
-                uint8_t fillColor = getFillColor(screen_center_x, screen_center_y, item);
-                rawPixel(sx_iter, sy_iter, fillColor);
+            const float fx = static_cast<float>(sx_iter) + 0.5f;
+            const float slx = im0 * fx + m2y + im4;
+            const float sly = im1 * fx + m3y + im5;
+            if (slx >= px0 && slx < px1 && sly >= py0 && sly < py1) {
+                const uint8_t fillColor = item.fillAsset ? fillColorFromScaled(slx, sly, item) : item.color;
+                emitPixel(sx_iter, sy_iter, fillColor, occRow, skipped);
             }
         }
     }
+    _overdrawSkippedPixels += skipped;
 }
 
 
