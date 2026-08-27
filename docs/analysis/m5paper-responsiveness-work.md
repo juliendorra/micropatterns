@@ -7,13 +7,53 @@ results, the **dead ends**, and what is still open.
 
 ## 1. Measured results (on device, not estimates)
 
-Like-for-like on `circuits` with an identical 351-item display list:
+> **A first version of this document claimed 9.5x, "like-for-like on `circuits`
+> with an identical 351-item display list". That was wrong** — the two figures
+> came from different renders (a 29-item one and a 351-item one). `circuits` is
+> procedural, so its display list varies run to run. The claim was challenged by
+> the project owner ("doesn't feel 9.5x faster") and re-measured properly. The
+> corrected numbers are below. Method: build the pre-change commit in a separate
+> git worktree, flash it, drive all six scripts via the serial console twice,
+> reflash HEAD, repeat identically. Medians per script.
 
-| phase | before | after | note |
+| script | rasterize before | rasterize after | speedup |
 |---|---|---|---|
-| rasterize | **8037 ms** | **844 ms** | 9.5x |
-| display-list generation | 2276 ms | 2288 ms | unchanged — this is the interpreter |
-| interrupt abort latency | not measurable (mechanism inert) | **~100 ms** | request -> "Skipping canvas push" |
+| circuits | 7888 ms | 1236 ms | 6.4x |
+| city-2-by-telohtrab | 7576 ms | 828 ms | 9.1x |
+| city-by-telohtrab | 6368 ms | 672 ms | 9.5x |
+| eyes | 5144 ms | 513 ms | 10.0x |
+| reconnected | 7252 ms | 1335 ms | 5.4x |
+| thunderstorms | 11983 ms | 2064 ms | 5.8x |
+| **total (sum of medians)** | **46211 ms** | **6648 ms** | **7.0x** |
+
+**Honest headline: ~7x on the rasterize phase, ranging 5.4x-10x by script.**
+Not 9.5x. The host harness's 1.88x remains the only *deterministic* figure; the
+device gain is larger for the reasons in the note below, but device numbers
+carry real run-to-run noise (`circuits` measured 835 ms and 1638 ms on
+consecutive runs of the same firmware, because the generated content differs).
+
+Display-list generation also improved substantially where it was dominated by
+item count (`circuits` 3146 ms -> 98 ms), but that is a **side effect of the
+procedural script generating fewer items on those runs**, not an interpreter
+optimisation. No interpreter work was done. Do not quote it as one.
+
+Interrupt abort latency: not measurable before (the mechanism was inert),
+**~100 ms** after — request to "Skipping canvas push".
+
+### Why it does not *feel* 7x faster
+
+Because the rasterize phase is not the whole wall clock. Every render also pays:
+
+- **display-list generation** (the interpreter), untouched by this work;
+- **the EPD panel refresh itself** — `pushCanvas(..., UPDATE_MODE_GC16)`. This
+  was observed taking roughly **0.7 s** and is a hardware floor: no amount of
+  rasterizer optimisation removes it.
+
+So for a script like `reconnected`, end-to-end goes from roughly
+`62 + 7252 + ~700` ms to `33 + 1335 + ~700` ms — about **3-4x perceived**, not
+7x. That gap between "7x on the phase I optimised" and "3-4x on the thing you
+actually watch" is the honest answer, and it is why the panel refresh and the
+interpreter are the next targets rather than more rasterizer work.
 
 Host harness medians improved 1.88x. The device gain is much larger, as
 predicted: the host under-represents soft-float divide and PSRAM latency, both

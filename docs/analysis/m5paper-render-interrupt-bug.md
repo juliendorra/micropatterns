@@ -196,8 +196,8 @@ This was reported by the user as "seem stuck, not responding to the buttons comm
 **Partially corrected later:** it is only *partly* a consequence of this fix. The indicators that
 should have provided feedback were themselves broken by a pre-existing locking bug -- they were
 starved of a mutex held for the whole render and drew nothing. See
-`m5paper-responsiveness-work.md` §2. All three follow-ups below are now DONE (rasterize 8037ms ->
-844ms, interrupt abort ~100ms); results and dead ends are in that document.
+`m5paper-responsiveness-work.md` §2. All three follow-ups below are now DONE (rasterize ~7x faster overall,
+interrupt abort ~100ms); results and dead ends are in that document.
 
 The agreed follow-ups were:
 
