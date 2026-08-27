@@ -601,3 +601,80 @@ the others since it's orthogonal.
 - **Commit `45d6a66` "compute optimizations"** was not diffed in detail during this pass — recommend
   reading its full diff before starting new optimization work, to avoid duplicating or contradicting
   whatever it already changed.
+
+
+---
+
+# Resolution (2026-08-27): 21x on the host
+
+## Result
+
+Host harness medians, like-for-like against a scratch build of the pre-change
+commit (the harness's dependency tracking had to be fixed first — see below):
+
+| case | generation before | after | speedup |
+|---|---|---|---|
+| city (20,737 items) | 242.5 ms | **11.3 ms** | **21.4x** |
+| emulator_welcome (103 items) | 0.072 ms | 0.006 ms | 12x |
+| artdeco_default (7-13 items) | 0.015-0.028 ms | 0.003-0.004 ms | ~5x |
+
+Corpus phase split moved from **96.5% generation / 3.4% raster** to
+**64.5% / 34.0%**. Rasterization also got ~1.7x faster on `city` for free: the
+per-item cull loop no longer does `stringParams.at("NAME")` plus an asset-map
+lookup per item.
+
+Heap allocations during generation, counted by interposing global `operator
+new`: **city 3,566,180 -> 58**. Per-item size **120 -> 40 bytes** (measured with
+the actual xtensa-esp32 g++), and the 2-5 per-item heap map nodes — each with an
+Arduino `String` key buffer — are gone entirely.
+
+## What changed
+
+`DisplayListItem` is now a trivially-copyable POD: `int32_t p[4]` slots with
+named accessors, a resolved asset pointer for DRAW, and a pointer to a pooled
+`TransformSnapshot` instead of an inline `matrix[6] + inverseMatrix[6] + scale`.
+Snapshots are appended only when the transform changed **and** differs bitwise
+from the last, so every item still sees exactly the floats it saw before.
+
+Runtime variables moved from `std::map<String,int>` to interned integer slots.
+Params resolve by `const char*` + a linear `strcmp` over the (<=4-entry) params
+map — no `String` temporary, no `count()`+`at()` double tree walk. Non-drawing
+commands (VAR/LET/IF/REPEAT/state) no longer construct an item at all.
+
+## Rejected
+
+- **`int16_t` coordinates**, proposed in §4.2 above. Kept `int32_t`: expression
+  results are not canvas-bounded and truncating would change output for extreme
+  scripts. Costs 8 bytes/item versus the int16 design. **§4.2's recommendation
+  is therefore superseded** — do not implement it without revisiting this.
+- **Flattening `std::list<MicroPatternsCommand>` into a bytecode stream.** After
+  the slot work the profile shows generation is genuinely *interpretation*
+  (evaluateExpression / processCommand / evaluateCondition / resolveValue), not
+  container overhead. Flattening is the next real lever, not a cleanup.
+- **Caching `resolveIntParam` param pointers.** Profile puts it at ~1% after the
+  linear-scan change.
+
+## Two things this exposed
+
+**A coverage gap.** The corpus exercised **none** of LINE/RECT/CIRCLE/PIXEL —
+precisely the commands whose parameter slots were remapped. The 9/9 gate stayed
+green throughout while testing none of the code most likely to break. Those were
+covered by byte-comparing baseline against new with purpose-written scripts, and
+the corpus now includes them (15 goldens).
+
+**A tooling bug.** The harness tracked objects only against their `.cpp`, so a
+header-only change left stale objects in `build/`. It surfaced as a bus error
+from a mixed binary; it could as easily have surfaced as a silently wrong
+measurement. Fixed with `-MMD -MP`.
+
+## Needs device confirmation
+
+Host `String` is `std::string` with SSO; ESP32 `String` **always** heap-allocates
+on a slower allocator. The 3.57M -> 58 allocation delta should therefore be worth
+**more** on device than the 21x host figure suggests — but that is an argument,
+not a measurement. Check `circuits` (3146 ms baseline), `city-2-by-telohtrab`
+(~740 ms) and `eyes` (~450 ms) via the existing `log_i` generation/render split.
+
+**Lifetime caveat:** display-list items now point into the runtime's snapshot
+pool. Both current callers render before the runtime dies, but any future code
+that kept a display list past its runtime would dangle.
