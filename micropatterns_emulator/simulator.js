@@ -4,6 +4,7 @@ import { MicroPatternsParser } from './parser.js';
 import { MicroPatternsRuntime } from './runtime.js';
 import { DisplayListGenerator } from './display_list_generator.js';
 import { DisplayListRenderer } from './display_list_renderer.js';
+import { initProvisioning } from './provisioning.js';
 
 document.addEventListener('DOMContentLoaded', async () => {
 
@@ -290,6 +291,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             currentUserId = userIdInput.value.trim();
             localStorage.setItem(LOCAL_STORAGE_USER_ID_KEY, currentUserId);
             console.log("User ID updated and saved to local storage:", currentUserId);
+            const provUserId = document.getElementById('provUserId');
+            if (provUserId) provUserId.value = currentUserId; // keep the provisioning panel in sync
             // Optionally, re-fetch script list if user ID changes significantly
             // For now, user needs to manually click load/save after changing ID.
             fetchScriptList(); // Re-fetch script list for the new user ID
@@ -1755,8 +1758,25 @@ FILL_RECT X=0 Y=0 WIDTH=$WIDTH HEIGHT=$HEIGHT
     }
     // --- End Profiling System ---
 
+    // --- Device Provisioning (Web Bluetooth) ---
+    // Shares the editor's User ID: prefilled from it, and a rotated ID written back.
+    function initializeProvisioningPanel() {
+        initProvisioning({
+            getUserId: () => currentUserId,
+            setUserId: (id) => {
+                currentUserId = id;
+                localStorage.setItem(LOCAL_STORAGE_USER_ID_KEY, currentUserId);
+                if (userIdInput) userIdInput.value = currentUserId;
+                fetchScriptList(); // scripts are keyed by user ID
+            },
+            generateUserId: generatePeerId
+        });
+    }
+    // --- End Device Provisioning ---
+
     // Run once on load
     initializeUserId(); // Initialize User ID first
+    initializeProvisioningPanel(); // Provisioning panel reads the User ID above
     setupOptimizationUI(); // Set up optimization UI controls
     runScript();
     fetchScriptList(); // Fetch scripts when the page loads (will use currentUserId)

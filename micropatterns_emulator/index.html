@@ -11,6 +11,89 @@
     <!-- CodeMirror show-hint addon CSS -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.15/addon/hint/show-hint.min.css">
     <link id="themeStylesheet" rel="stylesheet" href="style.css"> <!-- Changed ID and default -->
+    <!-- Structural-only rules for the provisioning panel, so it works with every theme above. -->
+    <style>
+        #provisioningPanel summary {
+            cursor: pointer;
+            font-size: 0.9em;
+            margin-bottom: 8px;
+        }
+
+        #provisioningPanel .prov-notice {
+            font-size: 0.85em;
+            line-height: 1.4;
+            margin: 8px 0;
+        }
+
+        #provisioningPanel .prov-notice-blocked {
+            font-weight: bold;
+        }
+
+        #provisioningPanel .prov-hint {
+            font-size: 0.8em;
+            line-height: 1.4;
+            margin: 10px 0 6px;
+            opacity: 0.8;
+        }
+
+        #provisioningPanel .prov-network-row {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            margin-bottom: 6px;
+            flex-wrap: wrap;
+        }
+
+        #provisioningPanel .prov-network-rank {
+            min-width: 1.5em;
+            font-size: 0.85em;
+            opacity: 0.7;
+        }
+
+        #provisioningPanel .prov-ssid,
+        #provisioningPanel .prov-psk {
+            flex: 1 1 6em;
+            min-width: 5em;
+            width: 5em;
+        }
+
+        #provisioningPanel .prov-network-buttons {
+            display: flex;
+            gap: 4px;
+            flex: 0 0 auto;
+        }
+
+        #provisioningPanel .prov-network-row button {
+            padding: 2px 6px;
+            min-width: 1.8em;
+        }
+
+        #provisioningPanel .prov-actions {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin: 8px 0;
+        }
+
+        #provisioningPanel .prov-inline-check {
+            font-size: 0.8em;
+        }
+
+        #provisioningPanel .prov-log {
+            font-family: ui-monospace, Menlo, Consolas, monospace;
+            font-size: 0.75em;
+            line-height: 1.4;
+            white-space: pre-wrap;
+            word-break: break-word;
+            max-height: 160px;
+            overflow-y: auto;
+            margin: 8px 0 0;
+            padding: 6px;
+            border: 1px solid currentColor;
+            opacity: 0.9;
+        }
+    </style>
 </head>
 
 <body>
@@ -261,6 +344,50 @@ ENDREPEAT
             </div>
         </div>
         <!-- End Device Sync Scripts Section -->
+
+        <!-- Device Provisioning Section (Web Bluetooth) -->
+        <div class="controls-group" id="provisioningPanel">
+            <h3>Provision a Device</h3>
+            <details id="provisioningDetails">
+                <summary>Send WiFi networks and your User ID to an M5Paper or Watchy over Bluetooth</summary>
+
+                <p id="provNotice" class="prov-notice"></p>
+
+                <div id="provBody">
+                    <div class="script-mgmt-row">
+                        <label for="provUserId">User ID:</label>
+                        <input type="text" id="provUserId" placeholder="User ID to write to the device" autocomplete="off">
+                        <button id="provRotateIdButton" class="secondary" title="Generate a fresh random User ID">New ID</button>
+                    </div>
+
+                    <p class="prov-hint">
+                        Networks are tried in this order, so put the one you are usually on first.
+                        Names and their order are remembered in this browser; passwords are not stored here
+                        and are never read back from the device.
+                    </p>
+                    <div id="provNetworkList"></div>
+                    <div class="prov-actions">
+                        <button id="provAddNetworkButton" class="secondary">Add network</button>
+                    </div>
+
+                    <div class="prov-actions">
+                        <button id="provConnectButton">Connect device</button>
+                        <button id="provDisconnectButton" class="secondary">Disconnect</button>
+                    </div>
+                    <div class="prov-actions">
+                        <label class="prov-inline-check"><input type="checkbox" id="provShowAllDevices"> Show all Bluetooth devices</label>
+                    </div>
+                    <div class="prov-actions">
+                        <button id="provSendButton">Send to device</button>
+                        <button id="provStatusButton" class="secondary">Check status</button>
+                        <button id="provForgetButton" class="secondary">Forget credentials</button>
+                    </div>
+
+                    <pre id="provLog" class="prov-log"></pre>
+                </div>
+            </details>
+        </div>
+        <!-- End Device Provisioning Section -->
 
     </div>
 
