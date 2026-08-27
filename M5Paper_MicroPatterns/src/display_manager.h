@@ -36,8 +36,37 @@ enum ActivityIndicatorType {
 // the panel lock is what makes them instant during a render, and staying off
 // _canvas is what stops them racing the in-flight rasterizer (and what stops
 // the indicator being baked into the script image that gets pushed later).
+//
+// WAVEFORM POLICY -- see the long comment above pushScriptCanvasLocked() in
+// display_manager.cpp for the reasoning and the measurement caveat.
 class DisplayManager {
 public:
+    // The MicroPatterns DSL is effectively 1 bit per pixel: micropatterns_drawing.h
+    // defines DRAWING_COLOR_WHITE = 0 and DRAWING_COLOR_BLACK = 15 and no script can
+    // ever produce any of the 14 intermediate greys. GC16 (16-grey waveform) is
+    // therefore paying for tones that are never on screen.
+    //
+    // DU: "transitions from any graytone to black or white only", Low ghosting,
+    // ~260 ms panel time vs GC16's ~450 ms (M5EPD_Driver.h, from the IT8951
+    // waveform documentation). It is exactly the mode this content wants.
+    // DU4 (~120 ms, Medium ghosting) is also legal for us -- it supports pixel
+    // states [0 10 20 30], and our two values 0 and 15 map to the two endpoints
+    // of that set -- and is what the indicator/banner paths already use. It is
+    // left as the documented faster/dirtier alternative; flip this constant to
+    // UPDATE_MODE_DU4 to try it on device.
+    static constexpr m5epd_update_mode_t SCRIPT_FAST_UPDATE_MODE = UPDATE_MODE_DU;
+
+    // Fast 1-bit waveforms do not fully settle the pigment, so residue from
+    // previous frames accumulates. Every SCRIPT_DEGHOST_INTERVAL-th *fast* panel
+    // update, the next full-canvas script push uses GC16 instead, which repaints
+    // the whole panel and clears the accumulated ghost. Indicator and banner
+    // pushes count toward the same budget: they are fast waveforms too, and the
+    // GC16 that eventually lands is full-screen, so it cleans their regions as
+    // well. 8 is a deliberately conservative starting point -- with DU's "Low"
+    // ghosting it costs ~450/8 = ~56 ms amortised per render while saving
+    // ~190 ms of panel time on each of the other seven.
+    static constexpr uint16_t SCRIPT_DEGHOST_INTERVAL = 8;
+
     DisplayManager();
     ~DisplayManager();
 
@@ -52,6 +81,12 @@ public:
     // (RenderTask). Takes only the panel lock, so it cannot self-deadlock the
     // way pushCanvasUpdate() would from inside a lockEPD() section.
     void pushMainCanvasLocked(m5epd_update_mode_t mode, int32_t x = 0, int32_t y = 0);
+
+    // Push a FINISHED SCRIPT RENDER. Same locking contract as
+    // pushMainCanvasLocked() (caller already holds the canvas lock), but picks
+    // the waveform itself according to the de-ghosting policy above instead of
+    // hardcoding GC16. This is the RenderTask path.
+    void pushScriptCanvasLocked();
 
     // True if BOTH locks are free right now. MainControlTask uses this before
     // light sleep; with a single mutex the old lockEPD(5ms) probe covered the
@@ -91,6 +126,16 @@ private:
     // touching _canvas (which may be locked by an in-flight render).
     int _canvasW;
     int _canvasH;
+
+    // Number of fast (non-GC16) panel updates issued since the last full-panel
+    // GC16. Only ever touched while holding _panelMutex. Seeded to the interval
+    // so the FIRST script push after boot is a GC16 -- we do not know what the
+    // panel was showing before (the boot path deliberately does not Clear()).
+    uint16_t _fastUpdatesSinceRefresh;
+
+    // Counter maintenance. Both require _panelMutex held.
+    void noteFastUpdateLocked();
+    void noteFullRefreshLocked();
 
     // Draws `text` into _indicatorCanvas and pushes it. Caller MUST hold _panelMutex.
     void drawBannerLocked(const String& text, int y_offset, uint16_t color);

@@ -847,7 +847,14 @@ void RenderTask_Function(void *pvParameters) {
                     // Panel transactions are serialized separately from the canvas
                     // lock we are holding, so an activity indicator pushed during
                     // this render cannot collide with this push.
-                    g_displayManager->pushMainCanvasLocked(UPDATE_MODE_GC16);
+                    //
+                    // Was a hardcoded UPDATE_MODE_GC16. Script output is pure
+                    // black/white (DRAWING_COLOR_WHITE=0 / DRAWING_COLOR_BLACK=15,
+                    // nothing in between), so the 16-grey waveform was paying for
+                    // tones that never appear. pushScriptCanvasLocked() uses the
+                    // fast 1-bit waveform and folds in the periodic full GC16
+                    // de-ghost -- see DisplayManager::SCRIPT_FAST_UPDATE_MODE.
+                    g_displayManager->pushScriptCanvasLocked();
                 }
                 
                 g_displayManager->unlockEPD(); // Unlock EPD

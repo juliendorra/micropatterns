@@ -2,7 +2,8 @@
 #include "esp32-hal-log.h"
 
 DisplayManager::DisplayManager() : _canvas(&M5.EPD), _indicatorCanvas(&M5.EPD), _isInitialized(false),
-                                   _canvasW(540), _canvasH(960)
+                                   _canvasW(540), _canvasH(960),
+                                   _fastUpdatesSinceRefresh(SCRIPT_DEGHOST_INTERVAL)
 {
     _canvasMutex = xSemaphoreCreateMutex();
     _panelMutex = xSemaphoreCreateMutex();
@@ -58,6 +59,40 @@ bool DisplayManager::initializeEPD()
     return false;
 }
 
+// --- De-ghosting budget ------------------------------------------------------
+//
+// Both helpers require _panelMutex held; the counter is only ever read or
+// written inside a panel transaction, so no extra synchronisation is needed.
+
+void DisplayManager::noteFastUpdateLocked()
+{
+    if (_fastUpdatesSinceRefresh < 0xFFFF)
+    {
+        _fastUpdatesSinceRefresh++;
+    }
+}
+
+void DisplayManager::noteFullRefreshLocked()
+{
+    _fastUpdatesSinceRefresh = 0;
+}
+
+static const char *updateModeName(m5epd_update_mode_t mode)
+{
+    switch (mode)
+    {
+    case UPDATE_MODE_INIT:  return "INIT";
+    case UPDATE_MODE_DU:    return "DU";
+    case UPDATE_MODE_GC16:  return "GC16";
+    case UPDATE_MODE_GL16:  return "GL16";
+    case UPDATE_MODE_GLR16: return "GLR16";
+    case UPDATE_MODE_GLD16: return "GLD16";
+    case UPDATE_MODE_DU4:   return "DU4";
+    case UPDATE_MODE_A2:    return "A2";
+    default:                return "?";
+    }
+}
+
 // --- Banner: text straight to the panel, no script framebuffer involved ------
 //
 // Caller MUST hold _panelMutex. Draws one line of text into the scratch canvas
@@ -95,6 +130,7 @@ void DisplayManager::drawBannerLocked(const String &text, int y_offset, uint16_t
     _indicatorCanvas.drawString(text, band_w / 2, padding);
     // DU4 is the fast waveform; a banner is transient text, it does not need GC16.
     _indicatorCanvas.pushCanvas(0, band_y, UPDATE_MODE_DU4);
+    noteFastUpdateLocked();
     _indicatorCanvas.deleteCanvas();
     log_i("DisplayManager: Banner \"%s\" pushed at y=%d.", text.c_str(), (int)band_y);
 }
@@ -196,6 +232,70 @@ void DisplayManager::pushMainCanvasLocked(m5epd_update_mode_t mode, int32_t x, i
     if (xSemaphoreTake(_panelMutex, portMAX_DELAY) == pdTRUE)
     {
         _canvas.pushCanvas(x, y, mode);
+        // Keep the de-ghosting budget honest for callers that pick their own
+        // mode. Only a GC16 covering the WHOLE panel actually clears accumulated
+        // residue, so only that resets the counter.
+        if (mode == UPDATE_MODE_GC16 && x == 0 && y == 0)
+        {
+            noteFullRefreshLocked();
+        }
+        else
+        {
+            noteFastUpdateLocked();
+        }
+        xSemaphoreGive(_panelMutex);
+    }
+}
+
+// --- The script render push --------------------------------------------------
+//
+// WHAT THIS BUYS, AND WHAT IT DOES NOT. Be careful reading device logs here.
+//
+// M5EPD_Canvas::pushCanvas() does two things:
+//   1. WritePartGram4bpp() -- shift the 4bpp framebuffer to the IT8951 over SPI.
+//      For the full 540x960 panel that is 129600 iterations of "toggle CS, send
+//      one 32-bit SPI word carrying 16 bits of pixel data" at 10 MHz. This is
+//      synchronous and it is what the ~666 ms in docs/measurements shows.
+//   2. UpdateArea() -- CheckAFSR() (blocks until the PREVIOUS waveform is done,
+//      normally already true) then fire-and-forget the display command.
+//
+// So the waveform mode does NOT change the number the existing log-delta
+// measurement reports. What it changes is the panel's own settle time AFTER
+// pushCanvas() returns -- ~450 ms for GC16 against ~260 ms for DU -- which is
+// dead time the user spends staring at a half-flipped screen at the end of a
+// render, plus the CheckAFSR() wait the NEXT push would otherwise inherit.
+// The gain is real and visible; it is just not visible in the push timer.
+// The gram transfer is the actual floor, and it is inside the M5EPD library.
+void DisplayManager::pushScriptCanvasLocked()
+{
+    if (!_isInitialized)
+    {
+        log_e("DisplayManager not initialized, cannot push script canvas.");
+        return;
+    }
+    if (xSemaphoreTake(_panelMutex, portMAX_DELAY) == pdTRUE)
+    {
+        const bool deghost = (_fastUpdatesSinceRefresh >= SCRIPT_DEGHOST_INTERVAL);
+        const m5epd_update_mode_t mode = deghost ? UPDATE_MODE_GC16 : SCRIPT_FAST_UPDATE_MODE;
+
+        const uint32_t t0 = millis();
+        _canvas.pushCanvas(0, 0, mode);
+        const uint32_t xfer_ms = millis() - t0;
+
+        if (deghost)
+        {
+            noteFullRefreshLocked();
+        }
+        else
+        {
+            noteFastUpdateLocked();
+        }
+
+        log_i("DisplayManager: script push mode=%s%s, gram transfer %lu ms, fast updates since de-ghost=%u/%u",
+              updateModeName(mode), deghost ? " (periodic de-ghost)" : "",
+              (unsigned long)xfer_ms,
+              (unsigned)_fastUpdatesSinceRefresh, (unsigned)SCRIPT_DEGHOST_INTERVAL);
+
         xSemaphoreGive(_panelMutex);
     }
 }
@@ -267,6 +367,10 @@ void DisplayManager::drawStartupIndicator()
                                       region_w - (2 * outline_thickness),
                                       region_h - outline_thickness,
                                       0); // WHITE
+            // GC16 on purpose: this is the one-off boot acknowledgement and it
+            // should look clean. It is a REGION push, so it does not clear the
+            // rest of the panel and deliberately does not reset the de-ghosting
+            // budget.
             _indicatorCanvas.pushCanvas(region_screen_x, region_screen_y, UPDATE_MODE_GC16);
             _indicatorCanvas.deleteCanvas();
             log_i("DisplayManager: Drew startup indicator rectangle (region push).");
@@ -350,6 +454,7 @@ void DisplayManager::drawActivityIndicator(ActivityIndicatorType type)
                                       region_h - (2 * outline_thickness),
                                       0); // WHITE
             _indicatorCanvas.pushCanvas(region_screen_x, region_screen_y, UPDATE_MODE_DU4);
+            noteFastUpdateLocked();
             _indicatorCanvas.deleteCanvas();
             log_i("DisplayManager: Drew activity indicator (type %d at Y:%d) as a region push.", type, region_screen_y);
         }
