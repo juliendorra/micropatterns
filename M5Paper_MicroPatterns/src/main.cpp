@@ -60,6 +60,15 @@ void setup() {
     M5.begin(true, false, true, true, true);
     log_i("M5.begin() completed.");
 
+#if MP_BENCH
+    // Benchmark firmware (env:m5paper-bench) only. Diverts the whole device
+    // into the deterministic on-device benchmark: no WiFi, no S3 fetch, no
+    // SPIFFS, no input handling -- just the render path, timed.
+    // Compiled out entirely in the normal build.
+    MPBench_Start();
+    return; // loop() is a no-op; the bench task owns the device from here.
+#endif
+
     // Perform minimal early hardware setup (NVS, ISR service) after M5.begin ensures Serial is up.
     SysInit_EarlyHardware();
 
