@@ -1,7 +1,6 @@
 #ifndef MICROPATTERNS_RUNTIME_H
 #define MICROPATTERNS_RUNTIME_H
 
-#include <M5EPD.h>
 #include <vector>
 #include <list> // Added for std::list
 #include <map>

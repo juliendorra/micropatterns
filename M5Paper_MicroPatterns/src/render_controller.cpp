@@ -92,7 +92,7 @@ RenderResultData RenderController::renderScript(const String& script_id, const S
 
     // 3. Prepare and Run DisplayListRenderer
     if (_renderer) delete _renderer;
-    _renderer = new DisplayListRenderer(_displayMgr, _parser.getAssets(), _displayMgr.getWidth(), _displayMgr.getHeight());
+    _renderer = new DisplayListRenderer(_displayMgr.getCanvas(), _parser.getAssets(), _displayMgr.getWidth(), _displayMgr.getHeight());
     _renderer->setInterruptCheckCallback([this]() { return this->checkInterrupt(); });
     
     unsigned long renderStartTime = millis();

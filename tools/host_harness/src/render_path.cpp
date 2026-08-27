@@ -58,7 +58,10 @@ public:
         out.timings.displayListMs = msSince(t0);
 
         // --- Phase 3: rasterization ------------------------------------------
-        DisplayListRenderer renderer(displayMgr, parser.getAssets(),
+        // DisplayListRenderer now takes the canvas directly (MPCanvas*) rather
+        // than a DisplayManager& it stored but never read -- that decoupling is
+        // what lets the Watchy firmware reuse this same renderer.
+        DisplayListRenderer renderer(displayMgr.getCanvas(), parser.getAssets(),
                                      displayMgr.getWidth(), displayMgr.getHeight());
         t0 = std::chrono::steady_clock::now();
         renderer.render(runtime.getDisplayList());

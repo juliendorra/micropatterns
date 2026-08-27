@@ -3,7 +3,7 @@
 #include <cmath> // For round, floor, ceil, sinf, cosf, fabs, sqrtf
 #include <algorithm> // For std::min, std::max
 
-MicroPatternsDrawing::MicroPatternsDrawing(M5EPD_Canvas* canvas)
+MicroPatternsDrawing::MicroPatternsDrawing(MPCanvas* canvas)
     : _canvas(canvas), _interrupt_check_cb(nullptr), _usePixelOccupationMap(false), _overdrawSkippedPixels(0) {
     if (_canvas) {
         _canvasWidth = _canvas->width();
@@ -14,7 +14,7 @@ MicroPatternsDrawing::MicroPatternsDrawing(M5EPD_Canvas* canvas)
     }
 }
 
-void MicroPatternsDrawing::setCanvas(M5EPD_Canvas* canvas) {
+void MicroPatternsDrawing::setCanvas(MPCanvas* canvas) {
     _canvas = canvas;
      if (_canvas) {
         _canvasWidth = _canvas->width();

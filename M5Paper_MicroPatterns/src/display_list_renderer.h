@@ -6,7 +6,7 @@
 #include "micropatterns_command.h" // For DisplayListItem, MicroPatternsAsset
 #include "micropatterns_drawing.h"
 #include "occlusion_buffer.h"
-#include "display_manager.h" // For M5EPD_Canvas
+#include "mp_canvas.h" // MPCanvas -- the renderer needs a canvas, not a DisplayManager
 
 struct ScreenBounds {
     int minX, minY, maxX, maxY;
@@ -18,7 +18,11 @@ struct ScreenBounds {
 
 class DisplayListRenderer {
 public:
-    DisplayListRenderer(DisplayManager& displayMgr,
+    // Takes the canvas directly. It previously took a DisplayManager& purely to
+    // call getCanvas() once in the initializer list -- the member was stored and
+    // then never read again, which coupled the renderer to M5Paper-only display
+    // code for no benefit. Passing MPCanvas* makes it platform-agnostic.
+    DisplayListRenderer(MPCanvas* canvas,
                         const std::map<String, MicroPatternsAsset>& assets,
                         int canvasWidth, int canvasHeight);
 

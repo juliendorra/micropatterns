@@ -3,18 +3,17 @@
 #include <algorithm> // For std::min, std::max
 #include <cmath>     // For sqrtf, floor, ceil, round
 
-DisplayListRenderer::DisplayListRenderer(DisplayManager& displayMgr,
+DisplayListRenderer::DisplayListRenderer(MPCanvas* canvas,
                                        const std::map<String, MicroPatternsAsset>& assets,
                                        int canvasWidth, int canvasHeight)
-    : _displayMgr(displayMgr),
-      _drawing(displayMgr.getCanvas()), // Initialize _drawing with the canvas
+    : _drawing(canvas),
       _assets(assets),
       _occlusionBuffer(canvasWidth, canvasHeight, 16), // Default block size 16
       _canvasWidth(canvasWidth),
       _canvasHeight(canvasHeight),
       _totalItems(0), _renderedItems(0), _culledOffScreen(0), _culledByOcclusion(0),
       _interrupt_check_cb(nullptr) {
-    _drawing.setCanvas(displayMgr.getCanvas()); // Ensure drawing module has the correct canvas
+    _drawing.setCanvas(canvas); // Ensure drawing module has the correct canvas
 }
 
 void DisplayListRenderer::setInterruptCheckCallback(std::function<bool()> cb) {

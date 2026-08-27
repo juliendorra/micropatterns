@@ -1,7 +1,7 @@
 #ifndef MICROPATTERNS_DRAWING_H
 #define MICROPATTERNS_DRAWING_H
 
-#include <M5EPD.h>
+#include "mp_canvas.h" // MPCanvas: the 4-method platform canvas (M5EPD or Watchy)
 #include <esp_task_wdt.h> // For watchdog reset functions
 #include <functional> // For std::function
 #include "micropatterns_command.h" // For DisplayListItem, MicroPatternsAsset, MicroPatternsState
@@ -13,9 +13,9 @@ const uint8_t DRAWING_COLOR_BLACK = 15;
 
 class MicroPatternsDrawing {
 public:
-    MicroPatternsDrawing(M5EPD_Canvas* canvas);
+    MicroPatternsDrawing(MPCanvas* canvas);
 
-    void setCanvas(M5EPD_Canvas* canvas);
+    void setCanvas(MPCanvas* canvas);
     void setInterruptCheckCallback(std::function<bool()> cb);
     void clearCanvas();
 
@@ -30,7 +30,7 @@ public:
     void drawFilledPixel(const DisplayListItem& item);
 
 private:
-    M5EPD_Canvas* _canvas;
+    MPCanvas* _canvas;
     int _canvasWidth;
     int _canvasHeight;
     std::function<bool()> _interrupt_check_cb;
