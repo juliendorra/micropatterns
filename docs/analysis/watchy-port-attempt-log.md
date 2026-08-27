@@ -130,6 +130,58 @@ was ever drawn, not that drawing failed.
    process held the port, it produced **0 bytes**. So the "your monitor clamped
    EN" explanation is plausible for some runs but does not close the case.
 
+### 4.2b Second investigation round (same day, after a full erase)
+
+Everything in this round is negative evidence, which is why it is recorded:
+each item removes a hypothesis that would otherwise be re-tried.
+
+- **`erase_flash` did NOT help.** This was the top untried recovery step
+  suggested by the session that later revived the watch. Full chip erase, then
+  reflash: still zero serial bytes. Rules out a stale partition table or stale
+  NVS confusing the bootloader.
+- **The flash contents are correct.** `esptool verify_flash` digest-matched both
+  the bootloader at `0x1000` and the app at `0x10000`. So this was never a
+  corrupt, truncated or mis-offset image, and "reflash it again" is not the fix.
+- **The panel is proof of ABSENCE, not presence.** After the erase the e-ink
+  still showed InkWatchy's last frame. That is expected — e-ink holds its image
+  with no power behind it — and it means nothing has drawn since InkWatchy last
+  ran. Do not read an unchanged panel as "the app drew something wrong"; read it
+  as "nothing drew at all".
+- **No static line state runs the app.** With a 5-second heartbeat compiled into
+  the firmware (the reason that heartbeat exists), all four static DTR/RTS
+  combinations were held for 11 s each. Silence in all four. A static line state
+  cannot reboot the chip, so this test was only meaningful once the heartbeat
+  existed — before that, silence was ambiguous.
+- **No reset pulse runs the app either.** For each boot-mode line held in each
+  state, the other line was pulsed as EN. All four combinations: silence.
+
+### 4.2c The most concrete lead: the chip sits in DOWNLOAD MODE
+
+```
+esptool.py --port /dev/cu.usbserial-110 --before no_reset flash_id   # connects instantly
+```
+
+`--before no_reset` connecting means the chip is **already in the ROM loader**,
+with no reset performed. An ESP32 does that when **GPIO0 is held low**.
+
+This reframes the entire investigation and is the single best lead:
+
+> Every flash "succeeded" because esptool kept finding the chip already sitting
+> in the ROM loader — not because any host-issued reset ever reached it. The
+> application was therefore never once started, which is exactly consistent with
+> no serial output, no ROM banner, no panel update, and no crash-loop banners
+> (a crash loop would produce a *flood* of banners, not silence).
+
+If true, the remaining question is what holds GPIO0 low — the USB bridge's
+auto-reset circuit, or something physical such as a stuck or case-pressed
+button. A cold power-cycle with no button contact would distinguish these; it
+had not been performed at the time of writing.
+
+**Caveat, stated because it matters:** this is a hypothesis that fits all the
+evidence, not a proven cause. It is contradicted by the fact that another
+session flashed AND ran InkWatchy on this same device on the same day. Whatever
+that session does differently is the answer, and it is not yet known.
+
 ### 4.3 Unresolved
 
 The device was subsequently unbricked and reflashed to InkWatchy by another
