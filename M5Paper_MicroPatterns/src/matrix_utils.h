@@ -23,7 +23,15 @@ void matrix_multiply(float R[6], const float A[6], const float B[6]);
 bool matrix_invert(float Inv[6], const float M[6]);
 
 // Applies matrix M to point (x,y) -> (outx, outy)
-void matrix_apply_to_point(const float M[6], float x, float y, float& outx, float& outy);
+// Defined inline in the header on purpose: this is called once (often twice) per
+// rasterized pixel. With the firmware built without LTO, an out-of-line definition
+// in matrix_utils.cpp meant a real windowed call per pixel on the ESP32.
+// The expression is byte-for-byte the one that used to live in matrix_utils.cpp,
+// so results are unchanged.
+inline void matrix_apply_to_point(const float M[6], float x, float y, float& outx, float& outy) {
+    outx = M[0] * x + M[2] * y + M[4];
+    outy = M[1] * x + M[3] * y + M[5];
+}
 
 // Creates a translation matrix in M
 void matrix_make_translation(float M[6], float dx, float dy);

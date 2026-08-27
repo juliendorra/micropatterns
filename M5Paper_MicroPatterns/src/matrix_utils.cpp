@@ -42,11 +42,6 @@ bool matrix_invert(float Inv[6], const float M[6]) {
     return true;
 }
 
-void matrix_apply_to_point(const float M[6], float x, float y, float& outx, float& outy) {
-    outx = M[0] * x + M[2] * y + M[4];
-    outy = M[1] * x + M[3] * y + M[5];
-}
-
 void matrix_make_translation(float M[6], float dx, float dy) {
     matrix_identity(M);
     M[4] = dx;

@@ -2,6 +2,94 @@
 #include "micropatterns_drawing.h"
 #include <cmath> // For round, floor, ceil, sinf, cosf, fabs, sqrtf
 #include <algorithm> // For std::min, std::max
+#include <cstring>   // For memcpy
+#include <cstdint>
+
+namespace {
+
+// If `v` is a power of two, 1/v is representable exactly and `x * (1/v)` gives
+// bit-for-bit the same result as `x / v` for every x. SCALE in the DSL resolves
+// to std::max(1, <int>) so scaleFactor is always a positive integer -- 1, 2, 4,
+// 8 ... hit this path, and 1 (the default, by far the most common) always does.
+// This matters much more on the ESP32 than on the host: the LX6 has no
+// single-precision divide instruction, so every `x / scaleFactor` in a pixel
+// loop was a libgcc __divsf3 software call. When v is not a power of two we
+// keep dividing rather than accept a 1-ulp change in the rendered image.
+inline bool exactReciprocal(float v, float& r) {
+    uint32_t b;
+    memcpy(&b, &v, sizeof(b));
+    const uint32_t exp = (b >> 23) & 0xFFu;
+    if (exp == 0u || exp == 0xFFu) return false;   // zero, subnormal, inf, NaN
+    if (b & 0x007FFFFFu) return false;             // mantissa set -> not a power of two
+    r = 1.0f / v;
+    uint32_t rb;
+    memcpy(&rb, &r, sizeof(rb));
+    const uint32_t rexp = (rb >> 23) & 0xFFu;
+    if (rexp == 0u || rexp == 0xFFu) return false; // reciprocal over/underflowed
+    return true;
+}
+
+// Exact floor-to-int, no libm call. On the ESP32 `floor()` was a real (windowed)
+// call to floorf per pixel; this is two instructions and gives the identical
+// result for every value representable as an int.
+inline int ifloor_i(float v) {
+    int i = static_cast<int>(v);
+    return i - (v < static_cast<float>(i));
+}
+
+// --- Span narrowing -------------------------------------------------------
+//
+// Every fill primitive used to walk the whole screen-space AABB and run a
+// rejection test on each pixel. For a rotated rect that wastes up to half the
+// AABB; for a circle about 21%; and the "test" is the expensive part (a full
+// inverse transform, sometimes two divides).
+//
+// All the per-axis tests in this file have the same shape: a quantity g(x) that
+// is *monotone* in the pixel index x along a scanline must lie in [t0, t1).
+// g(x) is an affine function of (float)x evaluated in float, optionally divided
+// by a constant -- and float multiply, add and divide are all monotone, so the
+// set of accepted x is a contiguous run. narrowSpan finds its two ends by
+// bisecting on the *same expression* the per-pixel test would have evaluated,
+// so the accepted pixel set is bit-identical; only the rejected pixels stop
+// being visited, in O(log n) evaluations instead of O(n).
+//
+// NaN safety: if the transform is degenerate every comparison is false, both
+// searches return `hi`, and the span collapses to empty -- which is what the
+// old per-pixel test did too (all its comparisons were false as well).
+template <typename G>
+inline int firstTrueGE(G g, float t, int lo, int hi) {
+    while (lo < hi) { int m = lo + ((hi - lo) >> 1); if (g(m) >= t) hi = m; else lo = m + 1; }
+    return lo;
+}
+template <typename G>
+inline int firstTrueLT(G g, float t, int lo, int hi) {
+    while (lo < hi) { int m = lo + ((hi - lo) >> 1); if (g(m) < t) hi = m; else lo = m + 1; }
+    return lo;
+}
+
+template <typename G>
+inline void narrowSpan(G g, float t0, float t1, int& lo, int& hi) {
+    if (lo >= hi) return;
+    const float gLo = g(lo);
+    const float gHi = g(hi - 1);
+    if (gLo == gHi) {                       // constant along this scanline
+        if (!(gLo >= t0 && gLo < t1)) hi = lo;
+        return;
+    }
+    int newLo, newHi;
+    if (gHi > gLo) {                        // non-decreasing
+        newLo = firstTrueGE(g, t0, lo, hi); // first x with g >= t0
+        newHi = firstTrueGE(g, t1, lo, hi); // first x with g >= t1
+    } else {                                // non-increasing
+        newLo = firstTrueLT(g, t1, lo, hi); // first x with g <  t1
+        newHi = firstTrueLT(g, t0, lo, hi); // first x with g <  t0
+    }
+    if (newLo > lo) lo = newLo;
+    if (newHi < hi) hi = newHi;
+    if (hi < lo) hi = lo;
+}
+
+} // namespace
 
 MicroPatternsDrawing::MicroPatternsDrawing(MPCanvas* canvas)
     : _canvas(canvas), _interrupt_check_cb(nullptr), _usePixelOccupationMap(false), _overdrawSkippedPixels(0) {
@@ -53,23 +141,6 @@ void MicroPatternsDrawing::resetPixelOccupationMap() {
         std::fill(_pixelOccupationMap.begin(), _pixelOccupationMap.end(), 0);
     }
     _overdrawSkippedPixels = 0;
-}
-
-bool MicroPatternsDrawing::isPixelOccupied(int sx, int sy) const {
-    if (!_usePixelOccupationMap || sx < 0 || sx >= _canvasWidth || sy < 0 || sy >= _canvasHeight) {
-        return false; // Not using map or out of bounds
-    }
-    // Map should be initialized and sized correctly if _usePixelOccupationMap is true
-    if (_pixelOccupationMap.empty()) return false;
-    return _pixelOccupationMap[sy * _canvasWidth + sx] != 0;
-}
-
-void MicroPatternsDrawing::markPixelOccupied(int sx, int sy) {
-    if (!_usePixelOccupationMap || sx < 0 || sx >= _canvasWidth || sy < 0 || sy >= _canvasHeight) {
-        return; // Not using map or out of bounds
-    }
-    if (_pixelOccupationMap.empty()) return;
-    _pixelOccupationMap[sy * _canvasWidth + sx] = 1; // Mark as occupied (1 is sufficient)
 }
 
 void MicroPatternsDrawing::clearCanvas() {
@@ -150,29 +221,44 @@ void MicroPatternsDrawing::rawLine(int sx1, int sy1, int sx2, int sy2, uint8_t c
 uint8_t MicroPatternsDrawing::getFillColor(float screen_pixel_center_x, float screen_pixel_center_y, const DisplayListItem& item) {
     if (!item.fillAsset) {
         return item.color; // Solid fill
-    } else {
-        const MicroPatternsAsset& asset = *item.fillAsset;
-        if (asset.width <= 0 || asset.height <= 0 || asset.data.empty()) return DRAWING_COLOR_WHITE; // Default to white if asset invalid
-
-        float base_lx, base_ly;
-        screenToLogicalBase(screen_pixel_center_x, screen_pixel_center_y, item, base_lx, base_ly);
-
-        int assetX = static_cast<int>(floor(base_lx)) % asset.width;
-        int assetY = static_cast<int>(floor(base_ly)) % asset.height;
-        if (assetX < 0) assetX += asset.width;
-        if (assetY < 0) assetY += asset.height;
-
-        int index = assetY * asset.width + assetX;
-        if (index >= 0 && index < (int)asset.data.size()) {
-            uint8_t patternBit = asset.data[index]; // 0 or 1
-            if (item.color == DRAWING_COLOR_WHITE) { // Inverted mode for FILL
-                return patternBit == 1 ? DRAWING_COLOR_WHITE : DRAWING_COLOR_BLACK;
-            } else { // Normal mode (item.color is DRAWING_COLOR_BLACK) for FILL
-                return patternBit == 1 ? DRAWING_COLOR_BLACK : DRAWING_COLOR_WHITE;
-            }
-        }
-        return item.color == DRAWING_COLOR_WHITE ? DRAWING_COLOR_BLACK : DRAWING_COLOR_WHITE; // Default on error
     }
+    float scaled_logical_x, scaled_logical_y;
+    matrix_apply_to_point(item.inverseMatrix, screen_pixel_center_x, screen_pixel_center_y,
+                          scaled_logical_x, scaled_logical_y);
+    return fillColorFromScaled(scaled_logical_x, scaled_logical_y, item);
+}
+
+uint8_t MicroPatternsDrawing::fillColorFromScaled(float scaled_logical_x, float scaled_logical_y, const DisplayListItem& item) const {
+    float base_lx, base_ly;
+    if (item.scaleFactor == 0.0f) {
+        base_lx = scaled_logical_x;
+        base_ly = scaled_logical_y;
+    } else {
+        base_lx = scaled_logical_x / item.scaleFactor;
+        base_ly = scaled_logical_y / item.scaleFactor;
+    }
+    return fillColorFromBase(base_lx, base_ly, item);
+}
+
+uint8_t MicroPatternsDrawing::fillColorFromBase(float base_lx, float base_ly, const DisplayListItem& item) const {
+    const MicroPatternsAsset& asset = *item.fillAsset;
+    if (asset.width <= 0 || asset.height <= 0 || asset.data.empty()) return DRAWING_COLOR_WHITE;
+
+    int assetX = ifloor_i(base_lx) % asset.width;
+    int assetY = ifloor_i(base_ly) % asset.height;
+    if (assetX < 0) assetX += asset.width;
+    if (assetY < 0) assetY += asset.height;
+
+    int index = assetY * asset.width + assetX;
+    if (index >= 0 && index < (int)asset.data.size()) {
+        uint8_t patternBit = asset.data[index]; // 0 or 1
+        if (item.color == DRAWING_COLOR_WHITE) { // Inverted mode for FILL
+            return patternBit == 1 ? DRAWING_COLOR_WHITE : DRAWING_COLOR_BLACK;
+        } else { // Normal mode (item.color is DRAWING_COLOR_BLACK) for FILL
+            return patternBit == 1 ? DRAWING_COLOR_BLACK : DRAWING_COLOR_WHITE;
+        }
+    }
+    return item.color == DRAWING_COLOR_WHITE ? DRAWING_COLOR_BLACK : DRAWING_COLOR_WHITE; // Default on error
 }
 
 // --- Drawing Primitives ---
@@ -322,40 +408,107 @@ void MicroPatternsDrawing::fillRect(const DisplayListItem& item) {
     min_sy = std::max(0, min_sy);
     max_sx = std::min(_canvasWidth, max_sx);
     max_sy = std::min(_canvasHeight, max_sy);
+    if (min_sx >= max_sx || min_sy >= max_sy) return;
 
-    int pixelCount = 0;
+    // Loop invariants, hoisted. These four products used to be recomputed on
+    // every single pixel; the compiler could not hoist them itself because the
+    // canvas write in the loop body may alias `item`.
+    const float* IM = item.inverseMatrix;
+    const float im0 = IM[0], im1 = IM[1], im2 = IM[2], im3 = IM[3], im4 = IM[4], im5 = IM[5];
+    const float sf = item.scaleFactor;
+    const float rect_x0 = static_cast<float>(lx) * sf;
+    const float rect_x1 = static_cast<float>(lx + lw) * sf;
+    const float rect_y0 = static_cast<float>(ly) * sf;
+    const float rect_y1 = static_cast<float>(ly + lh) * sf;
+
+    const MicroPatternsAsset* fa = item.fillAsset;
+    bool patterned = false;
+    uint8_t flatColor = item.color;
+    if (fa) {
+        if (fa->width <= 0 || fa->height <= 0 || fa->data.empty()) flatColor = DRAWING_COLOR_WHITE;
+        else patterned = true;
+    }
+
+    float rcp = 0.0f;
+    const bool useRcp = exactReciprocal(sf, rcp);
+
+    const uint8_t* patData = patterned ? fa->data.data() : nullptr;
+    const int patW    = patterned ? fa->width : 0;
+    const int patH    = patterned ? fa->height : 0;
+    const int patSize = patterned ? (int)fa->data.size() : 0;
+    const uint8_t patOn  = (item.color == DRAWING_COLOR_WHITE) ? DRAWING_COLOR_WHITE : DRAWING_COLOR_BLACK;
+    const uint8_t patOff = (item.color == DRAWING_COLOR_WHITE) ? DRAWING_COLOR_BLACK : DRAWING_COLOR_WHITE;
+
+    uint8_t* occ = occupancyBase();
+    const int cw = _canvasWidth;
+    unsigned int skipped = 0;
+
     for (int sy_iter = min_sy; sy_iter < max_sy; ++sy_iter) {
-        if (_interrupt_check_cb && _interrupt_check_cb()) return; // Check interrupt
-        for (int sx_iter = min_sx; sx_iter < max_sx; ++sx_iter) {
-            if (_interrupt_check_cb && _interrupt_check_cb()) return; // Check interrupt
-    
-            if (pixelCount > 0 && pixelCount % 2000 == 0) { // Yield less frequently for fillRect
-                yield();
-                if (pixelCount % 8000 == 0) {
-                    esp_task_wdt_reset();
-                }
+        // Interrupt is now checked once per scanline rather than once per pixel:
+        // the callback was a std::function dispatch in the innermost loop. A
+        // scanline is bounded by the canvas width, so responsiveness is unchanged
+        // in any way a user can perceive.
+        if (_interrupt_check_cb && _interrupt_check_cb()) { _overdrawSkippedPixels += skipped; return; }
+        if ((sy_iter & 7) == 0) { yield(); esp_task_wdt_reset(); }
+
+        const float fy = static_cast<float>(sy_iter) + 0.5f;
+        // m2y / m3y are the only parts of the inverse transform that depend on y.
+        // Keeping the +im4 / +im5 separate preserves the exact association
+        // ((a*x) + (b*y)) + c that matrix_apply_to_point evaluates.
+        const float m2y = im2 * fy;
+        const float m3y = im3 * fy;
+        auto gx = [&](int x) { return im0 * (static_cast<float>(x) + 0.5f) + m2y + im4; };
+        auto gy = [&](int x) { return im1 * (static_cast<float>(x) + 0.5f) + m3y + im5; };
+
+        int x0 = min_sx, x1 = max_sx;
+        narrowSpan(gx, rect_x0, rect_x1, x0, x1);
+        if (x0 >= x1) continue;
+        narrowSpan(gy, rect_y0, rect_y1, x0, x1);
+        if (x0 >= x1) continue;
+
+        uint8_t* occRow = occ ? occ + (size_t)sy_iter * cw : nullptr;
+        if (!patterned) {
+            for (int sx_iter = x0; sx_iter < x1; ++sx_iter) {
+                emitPixel(sx_iter, sy_iter, flatColor, occRow, skipped);
             }
-            pixelCount++;
-    
-            float screen_center_x = static_cast<float>(sx_iter) + 0.5f;
-            float screen_center_y = static_cast<float>(sy_iter) + 0.5f;
+            continue;
+        }
 
-            float scaled_logical_x, scaled_logical_y;
-            matrix_apply_to_point(item.inverseMatrix, screen_center_x, screen_center_y, scaled_logical_x, scaled_logical_y);
+        // Same hoist as drawAsset: with no x->y coupling the pattern row is
+        // constant across the scanline, so its transform / unscale / floor /
+        // modulo happen once per row instead of once per pixel.
+        const uint8_t* patRow = nullptr;
+        if (im1 == 0.0f && patW > 0) {
+            float v = im1 * (static_cast<float>(x0) + 0.5f) + m3y + im5;
+            if (sf != 0.0f) v = useRcp ? v * rcp : v / sf;
+            int py = ifloor_i(v) % patH;
+            if (py < 0) py += patH;
+            if ((long)py * patW + patW <= (long)patSize) patRow = patData + (size_t)py * patW;
+        }
 
-            float logical_rect_start_x_scaled = static_cast<float>(lx) * item.scaleFactor;
-            float logical_rect_end_x_scaled = static_cast<float>(lx + lw) * item.scaleFactor;
-            float logical_rect_start_y_scaled = static_cast<float>(ly) * item.scaleFactor;
-            float logical_rect_end_y_scaled = static_cast<float>(ly + lh) * item.scaleFactor;
-
-            if (scaled_logical_x >= logical_rect_start_x_scaled && scaled_logical_x < logical_rect_end_x_scaled &&
-                scaled_logical_y >= logical_rect_start_y_scaled && scaled_logical_y < logical_rect_end_y_scaled) {
-                uint8_t fillColor = getFillColor(screen_center_x, screen_center_y, item);
-                // No check for DRAWING_COLOR_WHITE, draw all pixels for fill.
-                rawPixel(sx_iter, sy_iter, fillColor);
+        if (patRow) {
+            for (int sx_iter = x0; sx_iter < x1; ++sx_iter) {
+                float blx = im0 * (static_cast<float>(sx_iter) + 0.5f) + m2y + im4;
+                if (sf != 0.0f) blx = useRcp ? blx * rcp : blx / sf;
+                int px = ifloor_i(blx) % patW;
+                if (px < 0) px += patW;
+                emitPixel(sx_iter, sy_iter, patRow[px] == 1 ? patOn : patOff, occRow, skipped);
             }
+            continue;
+        }
+
+        for (int sx_iter = x0; sx_iter < x1; ++sx_iter) {
+            const float fx = static_cast<float>(sx_iter) + 0.5f;
+            float blx = im0 * fx + m2y + im4;
+            float bly = im1 * fx + m3y + im5;
+            if (sf != 0.0f) {
+                if (useRcp) { blx *= rcp; bly *= rcp; }
+                else        { blx /= sf;  bly /= sf;  }
+            }
+            emitPixel(sx_iter, sy_iter, fillColorFromBase(blx, bly, item), occRow, skipped);
         }
     }
+    _overdrawSkippedPixels += skipped;
     esp_task_wdt_reset(); // Ensure WDT is reset after the loop
 }
 
@@ -433,37 +586,79 @@ void MicroPatternsDrawing::fillCircle(const DisplayListItem& item) {
     max_sx = std::min(_canvasWidth, max_sx);
     max_sy = std::min(_canvasHeight, max_sy);
 
-    float logical_radius_sq = logical_radius * logical_radius;
-    int pixelCount = 0;
-    
+    if (min_sx >= max_sx || min_sy >= max_sy) return;
+
+    const float logical_radius_sq = logical_radius * logical_radius;
+    const float* IM = item.inverseMatrix;
+    const float im0 = IM[0], im1 = IM[1], im2 = IM[2], im3 = IM[3], im4 = IM[4], im5 = IM[5];
+    const float sf = item.scaleFactor;
+    const float flcx = static_cast<float>(lcx);
+    const float flcy = static_cast<float>(lcy);
+
+    const MicroPatternsAsset* fa = item.fillAsset;
+    bool patterned = false;
+    uint8_t flatColor = item.color;
+    if (fa) {
+        if (fa->width <= 0 || fa->height <= 0 || fa->data.empty()) flatColor = DRAWING_COLOR_WHITE;
+        else patterned = true;
+    }
+
+    float rcp = 0.0f;
+    const bool useRcp = exactReciprocal(sf, rcp);
+
+    uint8_t* occ = occupancyBase();
+    const int cw = _canvasWidth;
+    unsigned int skipped = 0;
+
     for (int sy_iter = min_sy; sy_iter < max_sy; ++sy_iter) {
-        if (_interrupt_check_cb && _interrupt_check_cb()) return; // Check interrupt
-        for (int sx_iter = min_sx; sx_iter < max_sx; ++sx_iter) {
-            if (_interrupt_check_cb && _interrupt_check_cb()) return; // Check interrupt
-    
-            if (pixelCount > 0 && pixelCount % 2000 == 0) {
-                yield();
-                if (pixelCount % 8000 == 0) {
-                    esp_task_wdt_reset();
-                }
+        if (_interrupt_check_cb && _interrupt_check_cb()) { _overdrawSkippedPixels += skipped; return; }
+        if ((sy_iter & 7) == 0) { yield(); esp_task_wdt_reset(); }
+
+        const float fy = static_cast<float>(sy_iter) + 0.5f;
+        const float m2y = im2 * fy;
+        const float m3y = im3 * fy;
+
+        // The disk test dx*dx + dy*dy <= r*r is not monotone in x, so it cannot
+        // be inverted directly. But |dx| <= r and |dy| <= r are *necessary*
+        // conditions and both are monotone, so they give a conservative span --
+        // one pixel of slack is added on each side, and the exact disk test still
+        // runs inside the span. Nothing that used to be drawn can be dropped;
+        // what disappears is the ~21% of the AABB (much more when rotated) that
+        // the disk never covers.
+        auto blx = [&](int x) {
+            const float v = im0 * (static_cast<float>(x) + 0.5f) + m2y + im4;
+            return (sf == 0.0f) ? v : (useRcp ? v * rcp : v / sf);
+        };
+        auto bly = [&](int x) {
+            const float v = im1 * (static_cast<float>(x) + 0.5f) + m3y + im5;
+            return (sf == 0.0f) ? v : (useRcp ? v * rcp : v / sf);
+        };
+
+        int x0 = min_sx, x1 = max_sx;
+        narrowSpan(blx, flcx - logical_radius - 1.0f, flcx + logical_radius + 1.0f, x0, x1);
+        if (x0 >= x1) continue;
+        narrowSpan(bly, flcy - logical_radius - 1.0f, flcy + logical_radius + 1.0f, x0, x1);
+        if (x0 >= x1) continue;
+
+        uint8_t* occRow = occ ? occ + (size_t)sy_iter * cw : nullptr;
+        for (int sx_iter = x0; sx_iter < x1; ++sx_iter) {
+            const float fx = static_cast<float>(sx_iter) + 0.5f;
+            float base_logical_x = im0 * fx + m2y + im4;
+            float base_logical_y = im1 * fx + m3y + im5;
+            if (sf != 0.0f) {
+                if (useRcp) { base_logical_x *= rcp; base_logical_y *= rcp; }
+                else        { base_logical_x /= sf;  base_logical_y /= sf;  }
             }
-            pixelCount++;
-    
-            float screen_center_x = static_cast<float>(sx_iter) + 0.5f;
-            float screen_center_y = static_cast<float>(sy_iter) + 0.5f;
 
-            float base_logical_x, base_logical_y;
-            screenToLogicalBase(screen_center_x, screen_center_y, item, base_logical_x, base_logical_y);
-
-            float dx = base_logical_x - lcx;
-            float dy = base_logical_y - lcy;
-
+            const float dx = base_logical_x - flcx;
+            const float dy = base_logical_y - flcy;
             if (dx * dx + dy * dy <= logical_radius_sq) {
-                uint8_t fillColor = getFillColor(screen_center_x, screen_center_y, item);
-                rawPixel(sx_iter, sy_iter, fillColor);
+                const uint8_t c = patterned ? fillColorFromBase(base_logical_x, base_logical_y, item) : flatColor;
+                emitPixel(sx_iter, sy_iter, c, occRow, skipped);
             }
         }
     }
+    _overdrawSkippedPixels += skipped;
     esp_task_wdt_reset();
 }
 
@@ -488,41 +683,102 @@ void MicroPatternsDrawing::drawAsset(const DisplayListItem& item, const MicroPat
     max_sx = std::min(_canvasWidth, max_sx);
     max_sy = std::min(_canvasHeight, max_sy);
 
-    int pixelCount = 0;
+    if (min_sx >= max_sx || min_sy >= max_sy) return;
+
+    const float* IM = item.inverseMatrix;
+    const float im0 = IM[0], im1 = IM[1], im2 = IM[2], im3 = IM[3], im4 = IM[4], im5 = IM[5];
+    const float sf = item.scaleFactor;
+    const float forigin_x = static_cast<float>(lx_asset_origin);
+    const float forigin_y = static_cast<float>(ly_asset_origin);
+    const float fasset_w = static_cast<float>(asset.width);
+    const float fasset_h = static_cast<float>(asset.height);
+    const uint8_t* adata = asset.data.data();
+    const int adata_size = (int)asset.data.size();
+    const int aw = asset.width;
+    const uint8_t color = item.color;
+
+    float rcp = 0.0f;
+    const bool useRcp = exactReciprocal(sf, rcp);
+
+    uint8_t* occ = occupancyBase();
+    const int cw = _canvasWidth;
+    unsigned int skipped = 0;
+
     for (int sy_iter = min_sy; sy_iter < max_sy; ++sy_iter) {
-        if (_interrupt_check_cb && _interrupt_check_cb()) return;
-        for (int sx_iter = min_sx; sx_iter < max_sx; ++sx_iter) {
-            if (_interrupt_check_cb && _interrupt_check_cb()) return;
-            
-             if (pixelCount > 0 && pixelCount % 1000 == 0) {
-                yield();
-                 if (pixelCount % 4000 == 0) {
-                    esp_task_wdt_reset();
+        if (_interrupt_check_cb && _interrupt_check_cb()) { _overdrawSkippedPixels += skipped; return; }
+        if ((sy_iter & 7) == 0) { yield(); esp_task_wdt_reset(); }
+
+        const float fy = static_cast<float>(sy_iter) + 0.5f;
+        const float m2y = im2 * fy;
+        const float m3y = im3 * fy;
+
+        // Both bounds tests are monotone in x, so the exact span is found by
+        // bisection on the same expressions the per-pixel test evaluated.
+        auto alx = [&](int x) {
+            const float v = im0 * (static_cast<float>(x) + 0.5f) + m2y + im4;
+            return ((sf == 0.0f) ? v : (useRcp ? v * rcp : v / sf)) - forigin_x;
+        };
+        auto aly = [&](int x) {
+            const float v = im1 * (static_cast<float>(x) + 0.5f) + m3y + im5;
+            return ((sf == 0.0f) ? v : (useRcp ? v * rcp : v / sf)) - forigin_y;
+        };
+
+        int x0 = min_sx, x1 = max_sx;
+        narrowSpan(alx, 0.0f, fasset_w, x0, x1);
+        if (x0 >= x1) continue;
+        narrowSpan(aly, 0.0f, fasset_h, x0, x1);
+        if (x0 >= x1) continue;
+
+        uint8_t* occRow = occ ? occ + (size_t)sy_iter * cw : nullptr;
+
+        // When the inverse transform has no x->y coupling (im1 == 0, i.e. no
+        // rotation or shear) the asset row is the same for the whole scanline,
+        // so the y half of the work -- transform, unscale, floor, row offset --
+        // is hoisted out of the pixel loop. im1 * fx is exactly +0 for every
+        // finite fx, so this is the identical value the general path computes.
+        const uint8_t* assetRow = nullptr;
+        if (im1 == 0.0f) {
+            float v = im1 * (static_cast<float>(x0) + 0.5f) + m3y + im5;
+            if (sf != 0.0f) v = useRcp ? v * rcp : v / sf;
+            const float aly_v = v - forigin_y;
+            if (!(aly_v >= 0 && aly_v < fasset_h)) continue;   // whole scanline misses the asset
+            const int iy = ifloor_i(aly_v);
+            if (iy >= 0 && (long)iy * aw + aw <= (long)adata_size) assetRow = adata + (size_t)iy * aw;
+        }
+
+        if (assetRow) {
+            for (int sx_iter = x0; sx_iter < x1; ++sx_iter) {
+                float blx = im0 * (static_cast<float>(sx_iter) + 0.5f) + m2y + im4;
+                if (sf != 0.0f) blx = useRcp ? blx * rcp : blx / sf;
+                const int ix = ifloor_i(blx - forigin_x);
+                if (ix >= 0 && ix < aw && assetRow[ix] == 1) {
+                    emitPixel(sx_iter, sy_iter, color, occRow, skipped);
                 }
             }
-            pixelCount++;
-    
-            float screen_center_x = static_cast<float>(sx_iter) + 0.5f;
-            float screen_center_y = static_cast<float>(sy_iter) + 0.5f;
+            continue;
+        }
 
-            float base_logical_x, base_logical_y;
-            screenToLogicalBase(screen_center_x, screen_center_y, item, base_logical_x, base_logical_y);
+        for (int sx_iter = x0; sx_iter < x1; ++sx_iter) {
+            const float fx = static_cast<float>(sx_iter) + 0.5f;
+            float base_logical_x = im0 * fx + m2y + im4;
+            float base_logical_y = im1 * fx + m3y + im5;
+            if (sf != 0.0f) {
+                if (useRcp) { base_logical_x *= rcp; base_logical_y *= rcp; }
+                else        { base_logical_x /= sf;  base_logical_y /= sf;  }
+            }
 
-            float asset_local_x = base_logical_x - lx_asset_origin;
-            float asset_local_y = base_logical_y - ly_asset_origin;
+            const float asset_local_x = base_logical_x - forigin_x;
+            const float asset_local_y = base_logical_y - forigin_y;
 
-            if (asset_local_x >= 0 && asset_local_x < asset.width &&
-                asset_local_y >= 0 && asset_local_y < asset.height) {
-                
-                int asset_ix = static_cast<int>(floor(asset_local_x));
-                int asset_iy = static_cast<int>(floor(asset_local_y));
-                int asset_data_index = asset_iy * asset.width + asset_ix;
-
-                if (asset_data_index >= 0 && asset_data_index < (int)asset.data.size() && asset.data[asset_data_index] == 1) {
-                    rawPixel(sx_iter, sy_iter, item.color); // DRAW uses item.color
-                }
+            // No range test here: narrowSpan already restricted [x0,x1) to exactly
+            // the pixels that pass it, using the same expressions. The index
+            // bounds check below is kept as the memory-safety backstop.
+            const int asset_data_index = ifloor_i(asset_local_y) * aw + ifloor_i(asset_local_x);
+            if (asset_data_index >= 0 && asset_data_index < adata_size && adata[asset_data_index] == 1) {
+                emitPixel(sx_iter, sy_iter, color, occRow, skipped);
             }
         }
     }
+    _overdrawSkippedPixels += skipped;
     esp_task_wdt_reset();
 }
