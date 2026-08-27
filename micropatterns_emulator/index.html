@@ -36,6 +36,40 @@
             opacity: 0.8;
         }
 
+        #provisioningPanel .prov-section {
+            margin: 10px 0;
+            padding: 8px 0 2px;
+            border-top: 1px solid currentColor;
+        }
+
+        #provisioningPanel .prov-section-toggle {
+            display: block;
+            font-size: 0.85em;
+            font-weight: bold;
+            margin-bottom: 6px;
+        }
+
+        /* A section that will not be sent is dimmed, but stays readable and editable. */
+        #provisioningPanel .prov-section-off .script-mgmt-row,
+        #provisioningPanel .prov-section-off .prov-hint,
+        #provisioningPanel .prov-section-off #provNetworkList,
+        #provisioningPanel .prov-section-off .prov-actions {
+            opacity: 0.45;
+        }
+
+        #provisioningPanel .prov-network-note {
+            flex: 1 0 100%;
+            margin: 0 0 2px 2em;
+            font-size: 0.75em;
+            line-height: 1.3;
+            opacity: 0.8;
+        }
+
+        #provisioningPanel .prov-network-note-warn {
+            opacity: 1;
+            font-weight: bold;
+        }
+
         #provisioningPanel .prov-network-row {
             display: flex;
             align-items: center;
@@ -354,20 +388,41 @@ ENDREPEAT
                 <p id="provNotice" class="prov-notice"></p>
 
                 <div id="provBody">
-                    <div class="script-mgmt-row">
-                        <label for="provUserId">User ID:</label>
-                        <input type="text" id="provUserId" placeholder="User ID to write to the device" autocomplete="off">
-                        <button id="provRotateIdButton" class="secondary" title="Generate a fresh random User ID">New ID</button>
+                    <p class="prov-hint">
+                        The user ID and the WiFi networks are written independently. Tick only what you
+                        want to change: anything left unticked is not touched on the device.
+                    </p>
+
+                    <div class="prov-section">
+                        <label class="prov-section-toggle">
+                            <input type="checkbox" id="provSendUserId" checked> Write the user ID
+                        </label>
+                        <div class="script-mgmt-row">
+                            <label for="provUserId">User ID:</label>
+                            <input type="text" id="provUserId" placeholder="User ID to write to the device" autocomplete="off">
+                            <button id="provRotateIdButton" class="secondary" title="Generate a fresh random User ID">New ID</button>
+                        </div>
+                        <p class="prov-hint">
+                            Rotating the ID on its own is the fix for an ID that leaked: tick this, untick
+                            the networks below, and the stored WiFi passwords are left exactly as they are.
+                        </p>
                     </div>
 
-                    <p class="prov-hint">
-                        Networks are tried in this order, so put the one you are usually on first.
-                        Names and their order are remembered in this browser; passwords are not stored here
-                        and are never read back from the device.
-                    </p>
-                    <div id="provNetworkList"></div>
-                    <div class="prov-actions">
-                        <button id="provAddNetworkButton" class="secondary">Add network</button>
+                    <div class="prov-section">
+                        <label class="prov-section-toggle">
+                            <input type="checkbox" id="provSendNetworks" checked> Write the WiFi networks
+                        </label>
+                        <p class="prov-hint">
+                            The list below <em>replaces</em> the one on the device, and networks are tried in this
+                            order, so put the one you are usually on first. Names and their order are remembered
+                            in this browser; passwords are not stored here and are never read back from the device.
+                            A blank password means "keep whatever the device already has for that name" — each row
+                            says which way it will be read. To clear the device entirely, use "Forget credentials".
+                        </p>
+                        <div id="provNetworkList"></div>
+                        <div class="prov-actions">
+                            <button id="provAddNetworkButton" class="secondary">Add network</button>
+                        </div>
                     </div>
 
                     <div class="prov-actions">

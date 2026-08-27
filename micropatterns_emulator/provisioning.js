@@ -7,7 +7,22 @@
 //   editor -> device   {"cmd":"provision","userId":"...","networks":[{"ssid":"...","psk":"..."}]}
 //                      {"cmd":"status"}
 //                      {"cmd":"forget"}
+//                      {"cmd":"diag"}
 //   device -> editor   JSON reply
+//
+// "provision" semantics, as the firmware implements them today:
+//   * userId and networks are both OPTIONAL, but at least one must be present.
+//     userId alone rotates the ID and leaves the networks alone; networks alone
+//     replaces the list and leaves the ID alone. Neither is an error.
+//   * "networks":[] is REFUSED — clearing is what "forget" is for — so an empty
+//     list must never be sent; omit the key instead.
+//   * A network sent with an empty psk means "keep the password already stored
+//     for that SSID". The device matches by SSID and carries the stored password
+//     forward; with no stored match the password really is blank (open network).
+//     This is what makes it safe to resend the list after a page reload, since
+//     passwords are deliberately never persisted in the browser.
+//   * Reply: {"ok":true,"networks":N,"keptPasswords":K,"blankPasswords":B}
+//     or on failure {"ok":false,"error":"...","stored":N}
 // Messages are newline-terminated in BOTH directions and chunked, because the
 // negotiated MTU is around 185 bytes and a three-network payload is bigger.
 
@@ -330,6 +345,8 @@ export function initProvisioning(opts = {}) {
     const bodyEl = document.getElementById('provBody');
     const userIdInput = document.getElementById('provUserId');
     const rotateButton = document.getElementById('provRotateIdButton');
+    const sendUserIdToggle = document.getElementById('provSendUserId');
+    const sendNetworksToggle = document.getElementById('provSendNetworks');
     const networkList = document.getElementById('provNetworkList');
     const addNetworkButton = document.getElementById('provAddNetworkButton');
     const connectButton = document.getElementById('provConnectButton');
@@ -386,8 +403,46 @@ export function initProvisioning(opts = {}) {
         const fresh = generateUserId();
         userIdInput.value = fresh;
         setUserId(fresh);
-        log(`Generated a fresh user ID. Provision the device to apply it, and make sure your scripts are saved under the new ID.`);
+        if (sendUserIdToggle) sendUserIdToggle.checked = true;
+        updateSendUi();
+        log('Generated a fresh user ID. Send it to the device to apply it, and make sure your scripts are ' +
+            'saved under the new ID. Untick "Write the WiFi networks" to rotate the ID on its own — the ' +
+            'stored WiFi passwords are then left untouched.');
     });
+
+    // --- what a "Send" will actually write ----------------------------------
+    // The two parts of a provision command are independent on the device, so the
+    // form says out loud which of them this click would change.
+    function wantsUserId() {
+        return !sendUserIdToggle || sendUserIdToggle.checked;
+    }
+    function wantsNetworks() {
+        return !sendNetworksToggle || sendNetworksToggle.checked;
+    }
+
+    function updateSendUi() {
+        const id = wantsUserId();
+        const nets = wantsNetworks();
+        if (provisionButton) {
+            provisionButton.textContent = id && nets
+                ? 'Send ID + networks'
+                : (id ? 'Send user ID only' : (nets ? 'Send networks only' : 'Nothing selected'));
+            provisionButton.title = id && nets
+                ? 'Write the user ID and replace the stored network list'
+                : (id ? 'Rotate the user ID; the stored networks and passwords are left untouched'
+                    : (nets ? 'Replace the stored network list; the user ID is left untouched'
+                        : 'Tick the user ID, the networks, or both'));
+        }
+        [[sendUserIdToggle, id], [sendNetworksToggle, nets]].forEach(([toggle, on]) => {
+            if (!toggle) return;
+            const section = toggle.closest('.prov-section');
+            if (section) section.classList.toggle('prov-section-off', !on);
+        });
+        setConnectedUi(client.connected);
+    }
+
+    if (sendUserIdToggle) sendUserIdToggle.addEventListener('change', updateSendUi);
+    if (sendNetworksToggle) sendNetworksToggle.addEventListener('change', updateSendUi);
 
     // --- ordered network list ----------------------------------------------
     // SSIDs and their order are remembered locally; passwords never are.
@@ -400,6 +455,16 @@ export function initProvisioning(opts = {}) {
     } catch (e) { /* ignore malformed storage */ }
     if (networks.length === 0) networks.push({ ssid: '', psk: '' });
 
+    // SSIDs the device told us it already stores, from the last status/provision
+    // reply. Names only — the device never reveals a password. Until we have
+    // heard from a device this stays null, meaning "we cannot yet tell whether a
+    // blank password would be kept or would genuinely be blank".
+    let deviceSsids = null;
+
+    function deviceKnows(ssid) {
+        return !!(deviceSsids && ssid && deviceSsids.indexOf(ssid) !== -1);
+    }
+
     function persistSsids() {
         try {
             localStorage.setItem(
@@ -409,8 +474,17 @@ export function initProvisioning(opts = {}) {
         } catch (e) { /* storage may be unavailable */ }
     }
 
+    // Per-row "what does a blank password mean here" updaters, so a fresh status
+    // reply can refresh the notes without re-rendering (and stealing focus).
+    let noteUpdaters = [];
+
+    function refreshNetworkNotes() {
+        noteUpdaters.forEach((update) => update());
+    }
+
     function renderNetworks() {
         networkList.textContent = '';
+        noteUpdaters = [];
         networks.forEach((net, index) => {
             const row = document.createElement('div');
             row.className = 'prov-network-row';
@@ -436,10 +510,45 @@ export function initProvisioning(opts = {}) {
             psk.type = 'password';
             psk.className = 'prov-psk';
             psk.placeholder = 'Password';
+            psk.title = 'Leave blank to keep the password already stored on the device for this name.';
             psk.value = net.psk;
             psk.autocomplete = 'new-password';
-            psk.addEventListener('input', () => { net.psk = psk.value; });
             row.appendChild(psk);
+
+            // What an empty password field means depends on whether the device
+            // already stores this SSID, so spell it out per row instead of
+            // letting a blank field read as a forgotten one.
+            const note = document.createElement('p');
+            note.className = 'prov-network-note';
+
+            function updateNote() {
+                const name = net.ssid.trim();
+                note.classList.remove('prov-network-note-warn');
+                if (!name) {
+                    note.textContent = 'Empty row — it will not be sent.';
+                    return;
+                }
+                if (net.psk !== '') {
+                    note.textContent = deviceKnows(name)
+                        ? `Replaces the password stored on the device for "${name}".`
+                        : `Sends a new password for "${name}".`;
+                    return;
+                }
+                if (deviceKnows(name)) {
+                    note.textContent = `Blank: the device keeps the password it already stores for "${name}".`;
+                    return;
+                }
+                note.classList.add('prov-network-note-warn');
+                note.textContent = deviceSsids
+                    ? `Blank, and the device does not store "${name}" — it will be saved as an open network with no password.`
+                    : `Blank: the device keeps its stored password for "${name}" if it has one, otherwise this is saved ` +
+                    'as an open network. Use "Check status" to see which names the device already has.';
+            }
+
+            ssid.addEventListener('input', updateNote);
+            psk.addEventListener('input', () => { net.psk = psk.value; updateNote(); });
+            updateNote();
+            noteUpdaters.push(updateNote);
 
             const buttons = document.createElement('div');
             buttons.className = 'prov-network-buttons';
@@ -476,6 +585,7 @@ export function initProvisioning(opts = {}) {
             buttons.appendChild(remove);
 
             row.appendChild(buttons);
+            row.appendChild(note);
             networkList.appendChild(row);
         });
         addNetworkButton.disabled = networks.length >= MAX_NETWORKS;
@@ -506,30 +616,40 @@ export function initProvisioning(opts = {}) {
     function setConnectedUi(connected) {
         connectButton.disabled = connected;
         disconnectButton.disabled = !connected;
-        provisionButton.disabled = !connected;
+        // A provision with neither part ticked is refused by the device, so the
+        // button is simply not offered in that state.
+        provisionButton.disabled = !connected || (!wantsUserId() && !wantsNetworks());
         statusButton.disabled = !connected;
         forgetButton.disabled = !connected;
+        if (diagButton) diagButton.disabled = !connected;
     }
     setConnectedUi(false);
+    updateSendUi();
 
     function setBusy(busy) {
-        [connectButton, disconnectButton, provisionButton, statusButton, forgetButton]
-            .forEach((b) => { if (busy) b.disabled = true; });
+        [connectButton, disconnectButton, provisionButton, statusButton, forgetButton, diagButton]
+            .forEach((b) => { if (busy && b) b.disabled = true; });
         if (!busy) setConnectedUi(client.connected);
     }
 
     connectButton.addEventListener('click', async () => {
         setBusy(true);
+        let connectedNow = false;
         try {
             const name = await client.connect({ acceptAllDevices: showAllToggle.checked });
             log(`Ready to talk to ${name}.`);
             setConnectedUi(true);
+            connectedNow = true;
         } catch (err) {
             log(await describeConnectError(err));
             setConnectedUi(false);
         } finally {
             setBusy(false);
         }
+        // Read the stored state immediately: without the device's SSID list we
+        // cannot tell the user whether a blank password field would be kept or
+        // would be written as an open network.
+        if (connectedNow) await send({ cmd: 'status' });
     });
 
     disconnectButton.addEventListener('click', () => {
@@ -537,9 +657,32 @@ export function initProvisioning(opts = {}) {
         setConnectedUi(false);
     });
 
+    // The next device may store something else entirely, so stop claiming to
+    // know what a blank password would do once we are no longer connected.
+    const clearDeviceSsids = () => { deviceSsids = null; refreshNetworkNotes(); };
+    const previousOnDisconnected = client.onDisconnected;
+    client.onDisconnected = () => { previousOnDisconnected(); clearDeviceSsids(); };
+    disconnectButton.addEventListener('click', clearDeviceSsids);
+
+    // Remember the SSIDs the device reports, so the form can say whether a blank
+    // password field would be kept or would genuinely be blank.
+    function noteDeviceSsids(reply) {
+        if (!reply) return;
+        if (Array.isArray(reply.ssids)) {
+            deviceSsids = reply.ssids.filter((s) => typeof s === 'string');
+            refreshNetworkNotes();
+        }
+    }
+
     function describeReply(reply) {
         if (reply && reply.ok === false) {
-            return `Device reported an error: ${reply.error || 'unknown'}`;
+            let line = `Device reported an error: ${reply.error || 'unknown'}`;
+            // "stored" says how many networks survived the refusal, which is the
+            // reassuring half of a failed provision.
+            if (typeof reply.stored === 'number') {
+                line += ` (${reply.stored} network(s) still stored on the device)`;
+            }
+            return line;
         }
         const parts = [];
         // status returns the CURRENT SSID only — stored passwords are never readable back.
@@ -558,7 +701,18 @@ export function initProvisioning(opts = {}) {
             parts.push(`last connected #${reply.lastGood + 1}`);
         }
         if (reply.provisioned === false) parts.push('not provisioned yet');
-        if (typeof reply.networks === 'number') parts.push(`${reply.networks} network(s) written`);
+        if (typeof reply.networks === 'number') parts.push(`${reply.networks} network(s) stored`);
+        // A kept password is worth saying; a blank one is worth saying loudly,
+        // because a network saved with no password will silently fail to join
+        // anything that is not actually open.
+        if (typeof reply.keptPasswords === 'number' && reply.keptPasswords > 0) {
+            parts.push(`${reply.keptPasswords} password(s) kept from device`);
+        }
+        if (typeof reply.blankPasswords === 'number') {
+            parts.push(reply.blankPasswords > 0
+                ? `${reply.blankPasswords} left blank (open network)`
+                : 'none left blank');
+        }
         if (reply.forgotten) parts.push('credentials wiped');
         return parts.length ? parts.join(', ') : JSON.stringify(reply);
     }
@@ -568,6 +722,7 @@ export function initProvisioning(opts = {}) {
         try {
             const reply = await client.request(command, timeout);
             log(`< ${describeReply(reply)}`);
+            noteDeviceSsids(reply);
             return reply;
         } catch (err) {
             log(await describeConnectError(err));
@@ -578,65 +733,137 @@ export function initProvisioning(opts = {}) {
     }
 
     provisionButton.addEventListener('click', async () => {
-        const userId = userIdInput.value.trim();
-        if (!userId) {
-            log('Enter a user ID first, or generate one.');
+        const sendId = wantsUserId();
+        const sendNets = wantsNetworks();
+        if (!sendId && !sendNets) {
+            log('Nothing selected. Tick "Write the user ID", "Write the WiFi networks", or both.');
             return;
         }
-        const payload = networks
-            .map((n) => ({ ssid: n.ssid.trim(), psk: n.psk }))
-            .filter((n) => n.ssid !== '');
-        if (payload.length === 0) {
-            log('Add at least one network with a name.');
-            return;
+
+        const command = { cmd: 'provision' };
+        const summary = [];
+
+        if (sendId) {
+            const userId = userIdInput.value.trim();
+            if (!userId) {
+                log('Enter a user ID first, or generate one — or untick "Write the user ID" to send only the networks.');
+                return;
+            }
+            command.userId = userId;
+            summary.push('the user ID');
         }
-        log(`Sending ${payload.length} network(s) in order: ${payload.map((n) => n.ssid).join(' -> ')}`);
-        const reply = await send({ cmd: 'provision', userId, networks: payload }, TIMEOUT_PROVISION);
+
+        let payload = [];
+        if (sendNets) {
+            payload = networks
+                .map((n) => ({ ssid: n.ssid.trim(), psk: n.psk }))
+                .filter((n) => n.ssid !== '');
+            if (payload.length === 0) {
+                // The device refuses "networks":[] on purpose, so never send it.
+                log('The network list is empty. The device will not accept an empty list — add a network, ' +
+                    'untick "Write the WiFi networks" to change only the user ID, or use "Forget credentials" ' +
+                    'to clear the device.');
+                return;
+            }
+
+            // Blank password + an SSID the device does not already store = an open
+            // network. That is occasionally what someone means and usually not, so
+            // it is confirmed rather than logged after the fact.
+            const willBeBlank = payload.filter((n) => n.psk === '' && !deviceKnows(n.ssid));
+            if (willBeBlank.length) {
+                const names = willBeBlank.map((n) => `"${n.ssid}"`).join(', ');
+                const known = deviceSsids
+                    ? `The device does not currently store ${names}, so ${willBeBlank.length === 1 ? 'it' : 'they'} ` +
+                    'will be saved with no password at all (an open network).'
+                    : `We have not read this device's stored list yet, so ${names} may be saved with no password ` +
+                    'at all. "Check status" first if you want to be sure.';
+                if (!window.confirm(`${known}\n\nSend anyway?`)) {
+                    log('Cancelled. Type the password, or run "Check status" to see which names the device already stores.');
+                    return;
+                }
+            }
+
+            command.networks = payload;
+            summary.push(`${payload.length} network(s)`);
+        }
+
+        if (sendNets) {
+            log(`Sending ${summary.join(' and ')}, networks in order: ${payload.map((n) => n.ssid).join(' -> ')}`);
+        } else {
+            log('Sending the user ID only. The stored networks and their passwords are left untouched.');
+        }
+
+        const reply = await send(command, TIMEOUT_PROVISION);
         if (reply && reply.ok !== false) {
-            log('Device provisioned. Passwords are stored on the device and are never read back.');
+            const notes = [];
+            if (sendId) notes.push('User ID written.');
+            if (sendNets) {
+                notes.push('Networks written. Passwords are stored on the device and are never read back.');
+            } else {
+                notes.push('Networks were not part of this write and are unchanged.');
+            }
+            if (!sendId) notes.push('The user ID was not part of this write and is unchanged.');
+            log(notes.join(' '));
+            // A successful network write means the device now stores exactly what
+            // we sent, so the per-row notes can be trusted again straight away.
+            if (sendNets && !Array.isArray(reply.ssids)) {
+                deviceSsids = payload.map((n) => n.ssid);
+                refreshNetworkNotes();
+            }
         }
     });
 
-    // Raw diagnostics. Prints the device's reply verbatim rather than through
+    // Raw diagnostics. Every field is shown, including ones we do not recognise,
+    // because when provisioning fails the exact values are the point -- and on
+    // the Watchy, whose serial emits nothing, this is the only way to see NVS
+    // state at all. Labels are cosmetic; unknown keys fall through verbatim.
+    const DIAG_LABELS = {
+        nvsInit: 'NVS init',
+        openRW: 'namespace open (read/write)',
+        probeWrote: 'probe write',
+        probeRead: 'probe read back',
+        nvsUsed: 'NVS entries used',
+        nvsFree: 'NVS entries free',
+        nvsTotal: 'NVS entries total',
+        heap: 'free heap (bytes)'
+    };
 
-    // describeReply(), because when provisioning fails the exact fields are
-
-    // the point -- and on the Watchy, whose serial emits nothing, this is the
-
-    // only way to see NVS state at all.
-
-    if (diagButton) {
-
-        diagButton.addEventListener('click', async () => {
-
-            setBusy(true);
-
-            try {
-
-                const reply = await client.request({ cmd: 'diag' }, 10000);
-
-                log('< diag ' + JSON.stringify(reply));
-
-            } catch (err) {
-
-                log(await describeConnectError(err));
-
-            } finally {
-
-                setBusy(false);
-
-            }
-
-        });
-
+    function describeDiag(reply) {
+        if (!reply || typeof reply !== 'object') return String(reply);
+        const lines = Object.keys(reply)
+            .filter((key) => key !== 'ok')
+            .map((key) => {
+                const value = reply[key];
+                const shown = typeof value === 'boolean' ? (value ? 'yes' : 'NO') : JSON.stringify(value);
+                return `    ${DIAG_LABELS[key] || key}: ${shown}`;
+            });
+        if (reply.ok === false) lines.unshift('    reported failure');
+        return lines.length ? `diagnostics\n${lines.join('\n')}` : 'diagnostics: empty reply';
     }
 
+    if (diagButton) {
+        diagButton.addEventListener('click', async () => {
+            setBusy(true);
+            try {
+                const reply = await client.request({ cmd: 'diag' }, TIMEOUT_DEFAULT);
+                log(`< ${describeDiag(reply)}`);
+            } catch (err) {
+                log(await describeConnectError(err));
+            } finally {
+                setBusy(false);
+            }
+        });
+    }
 
     statusButton.addEventListener('click', () => send({ cmd: 'status' }));
 
     forgetButton.addEventListener('click', async () => {
         if (!window.confirm('Wipe the WiFi credentials and user ID stored on the device?')) return;
         const reply = await send({ cmd: 'forget' });
-        if (reply && reply.ok !== false) log('Device credentials wiped.');
+        if (reply && reply.ok !== false) {
+            log('Device credentials wiped. A blank password field now means an open network, not a kept one.');
+            deviceSsids = [];
+            refreshNetworkNotes();
+        }
     });
 }
