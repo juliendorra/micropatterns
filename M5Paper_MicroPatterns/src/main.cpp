@@ -156,11 +156,10 @@ void setup() {
         while(1) vTaskDelay(portMAX_DELAY);
     }
 
-    // BLE provisioning window. Booting is a deliberate physical act, which is
-    // the confirmation the design requires; the window closes itself after two
-    // minutes and tears the BLE stack down, freeing the radio for WiFi.
+    // Loads stored credentials only. NO advertising window at boot: a boot is
+    // not a request to provision, and a timer wake even less so. The window is
+    // opened by a real button press -- see MainControlTask.
     MPProvisioning::begin();
-    MPProvisioning::openWindow(120000);
 
     log_i("Setup complete. Tasks created. Managers initialized.");
     // g_displayManager->showMessage("Setup OK", 200, 15, false, false); // Removed to preserve screen
@@ -405,6 +404,12 @@ void MainControlTask_Function(void *pvParameters) {
         // Check Input Queue (non-blocking)
         if (xQueueReceive(g_inputEventQueue, &inputEvent, 0) == pdTRUE) {
             lastActivityTime = xTaskGetTickCount();
+
+            // A button press is a person standing at the device, so it is the
+            // moment to be discoverable. Timer wakes never reach here, so the
+            // radio never comes up unasked. Repeated presses extend rather than
+            // stack: the window always ends 20s after the LAST press.
+            MPProvisioning::openWindow();
             log_i("MainCtrl: Received input event: %d", (int)inputEvent.type);
             
             // Activity indicator is now drawn by InputManager::taskFunction with specific type
@@ -647,7 +652,19 @@ void MainControlTask_Function(void *pvParameters) {
         }
         
         // Sleep Management
-        if (currentState == AppState::IDLE && (xTaskGetTickCount() - lastActivityTime) > pdMS_TO_TICKS(SLEEP_IDLE_THRESHOLD_MS)) {
+        // Do NOT sleep while the BLE provisioning window is open.
+        //
+        // Light sleep suspends the radio, so advertising stops -- but millis()
+        // keeps running, so the window expires anyway. With a 3s idle timeout
+        // that left a window measured in seconds, which is not something a
+        // person can connect to. Provisioning is rare and explicitly requested,
+        // so staying awake for it is the right trade.
+        if (MPProvisioning::windowOpen()) {
+            lastActivityTime = xTaskGetTickCount();   // hold off the idle timer
+        }
+
+        if (currentState == AppState::IDLE && !MPProvisioning::windowOpen() &&
+            (xTaskGetTickCount() - lastActivityTime) > pdMS_TO_TICKS(SLEEP_IDLE_THRESHOLD_MS)) {
             log_i("MainCtrl: Idle timeout. Checking EPD mutex before light sleep.");
 
             // Probe BOTH display locks with a very short timeout: the canvas lock

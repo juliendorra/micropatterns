@@ -167,10 +167,14 @@ void openWindow(uint32_t ms)
         adv->setScanResponse(true);
         g_bleInited = true;
     }
+    // Absolute deadline, deliberately REPLACED on each call rather than added
+    // to: pressing five buttons must not leave the radio up for five windows.
+    const bool wasOpen = g_windowOpen;
     BLEDevice::startAdvertising();
     g_windowOpen = true;
     g_windowEndsAt = millis() + ms;
-    log_i("Provisioning: window OPEN for %lus", (unsigned long)(ms / 1000));
+    log_i("Provisioning: window %s, closes in %lus",
+          wasOpen ? "EXTENDED" : "OPEN", (unsigned long)(ms / 1000));
 }
 
 void closeWindow()

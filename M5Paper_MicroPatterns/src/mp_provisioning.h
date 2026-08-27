@@ -44,7 +44,14 @@ void begin();
 // Starts advertising for `ms`, then stops on its own. Provisioning is a
 // deliberate act: the window should be opened by a physical button, otherwise
 // anyone in range could repoint the device at their own scripts.
-void openWindow(uint32_t ms = 120000);
+// Opens (or EXTENDS) the advertising window. Calling this again replaces the
+// deadline rather than stacking, so repeated presses end the window 20s after
+// the LAST press, never later.
+//
+// Must only be called from a real button press. A timer wake is not a request
+// to provision, and opening a radio window nobody asked for costs awake time on
+// a battery device for nothing.
+void openWindow(uint32_t ms = 20000);
 void closeWindow();
 bool windowOpen();
 

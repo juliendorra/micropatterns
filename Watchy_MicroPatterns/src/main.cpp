@@ -460,11 +460,9 @@ void setup()
     delay(2500);   // hold it long enough to be seen before the first script
 #endif
 
-    // BLE provisioning window at boot. Booting is itself a deliberate physical
-    // act, which is the confirmation the design asks for; the window closes
-    // itself and tears the BLE stack down afterwards.
+    // Loads stored credentials only. NO advertising window at boot -- the
+    // window is opened by a real button press, below.
     MPProvisioning::begin();
-    MPProvisioning::openWindow(120000);
 
     showScript(0, true);
     g_stage = 5;                                  // first script rendered; loop() runs
@@ -529,6 +527,12 @@ void loop()
             b.wasDown = true;
             b.downAt  = millis();
             drawCornerIndicator(b.corner, true);
+
+            // A press means someone is holding the watch, so make it
+            // discoverable. Extends rather than stacks: the window always ends
+            // 20s after the LAST press. The automatic 77s re-render does not
+            // come through here, so the radio never comes up unasked.
+            MPProvisioning::openWindow();
             continue;
         }
 
