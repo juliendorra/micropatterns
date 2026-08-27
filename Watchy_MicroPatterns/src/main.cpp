@@ -120,6 +120,49 @@ static void drawCornerIndicator(Corner c, bool filled);
 static void showScriptName(const char* name);
 static void fullRefresh();
 
+// --- Panel update policy --------------------------------------------------
+//
+// GxEPD2_154_D67 reports full_refresh_time = 2600ms and
+// partial_refresh_time = 500ms, and hasFastPartialUpdate = true. A full refresh
+// drives every pixel through black and white -- that is the flashing -- and is
+// 5x slower. A fast partial update rewrites only what changed, with no flash.
+//
+// We can use the fast path almost always because the content is PURE BLACK AND
+// WHITE: there are no grey levels to degrade, which is exactly the condition
+// fast waveforms are safe under. Same reasoning as the M5Paper's move from
+// GC16 to DU -- see docs/analysis/m5paper-panel-refresh.md.
+//
+// Fast updates still accumulate ghosting, so every WATCHY_DEGHOST_INTERVAL-th
+// update is a full refresh that cleans the panel. The first update after boot
+// is ALSO forced full: the panel's prior contents are unknown, and InkWatchy
+// carries the same first-boot workaround (SCREEN_PARTIAL_GREY_WORKAROUND)
+// because partial updates issued onto an uninitialised panel can leave it grey.
+// Raised from 8 to 24 after checking on the device: the panel stayed visibly
+// clean through a full cycle of 8, so the budget was needlessly conservative.
+// This is a MEASURED value, unlike the M5Paper's equivalent (still 8, and still
+// a guess -- that is a different panel driven by a different waveform, so do not
+// copy this number across without looking at it).
+//
+// Symptom if it is too high: grey residue of previous frames building up. Lower
+// it. Cost of it being too low: an unnecessary 2.6s flashing refresh.
+static const int WATCHY_DEGHOST_INTERVAL = 24;
+static int g_updatesSinceFull = WATCHY_DEGHOST_INTERVAL;  // force full on first use
+
+// Selects the window mode for the next page loop. Returns true if this update
+// will be a full (flashing) refresh.
+static bool beginPanelUpdate(bool forceFull)
+{
+    const bool full = forceFull || (g_updatesSinceFull >= WATCHY_DEGHOST_INTERVAL);
+    if (full) {
+        g_display.setFullWindow();
+        g_updatesSinceFull = 0;
+    } else {
+        g_display.setPartialWindow(0, 0, g_display.width(), g_display.height());
+        g_updatesSinceFull++;
+    }
+    return full;
+}
+
 static void logHeap(const char* stage)
 {
     // RAM is the headline risk on a PICO-D4: no PSRAM, and the display list
@@ -171,13 +214,16 @@ static bool renderScript(int index)
     // exactly once; the display list is built outside it so the expensive work
     // is not repeated per page.
     t0 = millis();
-    g_display.setFullWindow();
+    const bool fullRefreshThisTime = beginPanelUpdate(false);
     g_display.firstPage();
     do {
         DisplayListRenderer renderer(&g_canvas, parser.getAssets(), W, H);
         renderer.render(dl);
     } while (g_display.nextPage());
     unsigned long tRender = millis() - t0;
+    log_i("Panel update: %s (%d/%d until de-ghost)",
+          fullRefreshThisTime ? "FULL (de-ghost)" : "fast partial",
+          g_updatesSinceFull, WATCHY_DEGHOST_INTERVAL);
 
     log_i("Rendered '%s' in %lu ms (gen %lu + raster %lu)",
           scr.name, tGen + tRender, tGen, tRender);
@@ -185,11 +231,14 @@ static bool renderScript(int index)
     return true;
 }
 
-static void showScript(int index)
+// `announce` shows the script name on its own frame first. Only worth doing
+// when the script actually CHANGES -- on a re-run you already know what you are
+// looking at, and the title frame is a whole extra panel update.
+static void showScript(int index, bool announce)
 {
     g_currentScript = (index % EMBEDDED_SCRIPT_COUNT + EMBEDDED_SCRIPT_COUNT) % EMBEDDED_SCRIPT_COUNT;
     g_counter++;
-    showScriptName(EMBEDDED_SCRIPTS[g_currentScript].name);
+    if (announce) showScriptName(EMBEDDED_SCRIPTS[g_currentScript].name);
     if (!renderScript(g_currentScript)) {
         log_e("Render failed for index %d", g_currentScript);
     }
@@ -215,11 +264,11 @@ static void pollSerial()
                 Serial.printf("MPCON|%d script(s)\n", EMBEDDED_SCRIPT_COUNT);
             } else if (cmd == "next") {
                 Serial.println("MPCON|ok next");
-                showScript(g_currentScript + 1);
+                showScript(g_currentScript + 1, true);
             } else if (cmd.startsWith("run ")) {
                 int idx = cmd.substring(4).toInt();
                 Serial.printf("MPCON|ok run %d\n", idx);
-                showScript(idx);
+                showScript(idx, true);
             } else {
                 Serial.println("MPCON|commands: list | run <index> | next");
             }
@@ -260,7 +309,7 @@ static void drawCornerIndicator(Corner c, bool filled)
 static void showScriptName(const char* name)
 {
     const int W = g_display.width();
-    g_display.setFullWindow();
+    beginPanelUpdate(false);   // fast partial: announcing a switch must not flash
     g_display.firstPage();
     do {
         g_display.fillScreen(GxEPD_WHITE);
@@ -282,6 +331,7 @@ static void showScriptName(const char* name)
 // implemented. See docs/analysis/watchy-port-attempt-log.md.
 static void fullRefresh()
 {
+    g_updatesSinceFull = WATCHY_DEGHOST_INTERVAL;  // next render is a full refresh
     g_display.setFullWindow();
     for (int pass = 0; pass < 2; ++pass) {
         g_display.firstPage();
@@ -375,7 +425,7 @@ void setup()
     Serial.println("MPCON|probe pattern pushed"); Serial.flush();
     delay(2500); // hold it long enough to be seen before the first script draws
 
-    showScript(0);
+    showScript(0, true);
     g_stage = 5;                                  // first script rendered; loop() runs
     Serial.println("MPCON|ready -- commands: list | run <index> | next");
 }
@@ -437,7 +487,7 @@ void loop()
             // Long press fires while still held, then swallows the release.
             log_i("Button: top-left held %dms -> full refresh", BTN_LONG_PRESS_MS);
             fullRefresh();
-            showScript(g_currentScript);
+            showScript(g_currentScript, false);   // re-run: no title
             b.wasDown = false;
             continue;
         }
@@ -451,15 +501,15 @@ void loop()
             switch (b.corner) {
                 case CORNER_TR:
                     log_i("Button: top-right -> previous script");
-                    showScript(g_currentScript - 1);
+                    showScript(g_currentScript - 1, true);   // changed: announce
                     break;
                 case CORNER_BR:
                     log_i("Button: bottom-right -> next script");
-                    showScript(g_currentScript + 1);
+                    showScript(g_currentScript + 1, true);   // changed: announce
                     break;
                 case CORNER_BL:
                     log_i("Button: bottom-left -> re-run current script");
-                    showScript(g_currentScript);
+                    showScript(g_currentScript, false);      // same script: no title
                     break;
                 case CORNER_TL:
                     // Short press: no action -- this is the full-refresh button.
