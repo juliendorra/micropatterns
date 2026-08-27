@@ -3,6 +3,7 @@
 #include "esp_task_wdt.h" // For watchdog
 #include "esp_heap_caps.h" // heap integrity probe in RenderTask
 #include "serial_console.h" // Serial command channel (list/run scripts over USB)
+#include "mp_provisioning.h"   // BLE provisioning, shared with the Watchy firmware
 
 #if MP_BENCH
 #include "bench/mp_bench.h" // env:m5paper-bench only; compiled out otherwise
@@ -154,6 +155,12 @@ void setup() {
         g_displayManager->showMessage("Task Fail!", 150, 15, false, false);
         while(1) vTaskDelay(portMAX_DELAY);
     }
+
+    // BLE provisioning window. Booting is a deliberate physical act, which is
+    // the confirmation the design requires; the window closes itself after two
+    // minutes and tears the BLE stack down, freeing the radio for WiFi.
+    MPProvisioning::begin();
+    MPProvisioning::openWindow(120000);
 
     log_i("Setup complete. Tasks created. Managers initialized.");
     // g_displayManager->showMessage("Setup OK", 200, 15, false, false); // Removed to preserve screen
@@ -392,6 +399,8 @@ void MainControlTask_Function(void *pvParameters) {
             log_i("MainCtrl: State=%d, CurrentScript='%s'", (int)currentState, currentLoadedScriptId.c_str());
             lastLogTime = now;
         }
+
+        MPProvisioning::tick();   // closes the provisioning window when it expires
 
         // Check Input Queue (non-blocking)
         if (xQueueReceive(g_inputEventQueue, &inputEvent, 0) == pdTRUE) {

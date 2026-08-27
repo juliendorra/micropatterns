@@ -18,6 +18,7 @@
 #include "micropatterns_runtime.h"
 #include "display_list_renderer.h"
 #include "watchy_canvas.h"
+#include "mp_provisioning.h"
 
 // --- Watchy 2.0 pinout (docs/analysis/watchy-hardware-and-references.md) ---
 // EPD wiring is identical across Watchy v1/v1.5/v2; only the battery ADC and
@@ -459,6 +460,12 @@ void setup()
     delay(2500);   // hold it long enough to be seen before the first script
 #endif
 
+    // BLE provisioning window at boot. Booting is itself a deliberate physical
+    // act, which is the confirmation the design asks for; the window closes
+    // itself and tears the BLE stack down afterwards.
+    MPProvisioning::begin();
+    MPProvisioning::openWindow(120000);
+
     showScript(0, true);
     g_stage = 5;                                  // first script rendered; loop() runs
     Serial.println("MPCON|ready -- commands: list | run <index> | next");
@@ -467,6 +474,7 @@ void setup()
 void loop()
 {
     pollSerial();
+    MPProvisioning::tick();
 
     // Heartbeat. Without it, a device whose boot output was simply missed looks
     // exactly like a hung one -- which cost real time diagnosing this port. Any
