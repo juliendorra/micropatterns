@@ -23,3 +23,10 @@ M5Paper_MicroPatterns/.vscode/.browse.c_cpp.db*
 M5Paper_MicroPatterns/.vscode/c_cpp_properties.json
 M5Paper_MicroPatterns/.vscode/launch.json
 M5Paper_MicroPatterns/.vscode/ipch
+# macOS Finder droppings. These also break the ESP-IDF component manager with
+# NotADirectoryError once Finder has browsed a project directory.
+.DS_Store
+
+# PlatformIO build output for the Watchy firmware (M5Paper's is listed above).
+Watchy_MicroPatterns/.pio
+tools/device/hello_watchy/.pio
