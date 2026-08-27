@@ -337,6 +337,7 @@ export function initProvisioning(opts = {}) {
     const provisionButton = document.getElementById('provSendButton');
     const statusButton = document.getElementById('provStatusButton');
     const forgetButton = document.getElementById('provForgetButton');
+    const diagButton = document.getElementById('provDiagButton');
     const showAllToggle = document.getElementById('provShowAllDevices');
     const logEl = document.getElementById('provLog');
 
@@ -595,6 +596,41 @@ export function initProvisioning(opts = {}) {
             log('Device provisioned. Passwords are stored on the device and are never read back.');
         }
     });
+
+    // Raw diagnostics. Prints the device's reply verbatim rather than through
+
+    // describeReply(), because when provisioning fails the exact fields are
+
+    // the point -- and on the Watchy, whose serial emits nothing, this is the
+
+    // only way to see NVS state at all.
+
+    if (diagButton) {
+
+        diagButton.addEventListener('click', async () => {
+
+            setBusy(true);
+
+            try {
+
+                const reply = await client.request({ cmd: 'diag' }, 10000);
+
+                log('< diag ' + JSON.stringify(reply));
+
+            } catch (err) {
+
+                log(await describeConnectError(err));
+
+            } finally {
+
+                setBusy(false);
+
+            }
+
+        });
+
+    }
+
 
     statusButton.addEventListener('click', () => send({ cmd: 'status' }));
 
