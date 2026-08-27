@@ -1,6 +1,7 @@
 #include "main.h"
 #include "esp32-hal-log.h"
 #include "esp_task_wdt.h" // For watchdog
+#include "esp_heap_caps.h" // heap integrity probe in RenderTask
 #include "serial_console.h" // Serial command channel (list/run scripts over USB)
 
 #if MP_BENCH
@@ -828,6 +829,33 @@ void RenderTask_Function(void *pvParameters) {
                 // determined by RenderController (likely false), and resultData.success also remains as determined.
 
 
+                // --- Post-render health probe -----------------------------
+                // RenderTask has a RENDER_TASK_STACK_SIZE-byte stack (bytes, not
+                // words -- the ESP32 FreeRTOS port takes usStackDepth in bytes,
+                // despite the comment in main.h). Rendering recurses through
+                // MicroPatternsRuntime::processCommandForDisplayList and calls
+                // into the rasterizer's deep-frame primitives, so the margin is
+                // worth knowing rather than guessing. heap_caps_check_integrity_all
+                // then says whether anything has stomped an allocator header --
+                // which is the difference between "a task blocked" and "memory
+                // was corrupted", the two hypotheses a task-watchdog abort with a
+                // corrupted backtrace cannot distinguish on its own.
+                {
+                    UBaseType_t stackFreeWords = uxTaskGetStackHighWaterMark(NULL);
+                    bool heapOk = heap_caps_check_integrity_all(true);
+                    log_i("RenderTask: post-render probe -- stack high-water %u bytes free of %u, "
+                          "free heap %u (largest block %u), heap integrity %s",
+                          (unsigned)(stackFreeWords * sizeof(StackType_t)),
+                          (unsigned)RENDER_TASK_STACK_SIZE,
+                          (unsigned)esp_get_free_heap_size(),
+                          (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT),
+                          heapOk ? "OK" : "CORRUPT");
+                    if (!heapOk) {
+                        log_e("RenderTask: HEAP CORRUPTION detected after rendering '%s'.",
+                              resultData.script_id.c_str());
+                    }
+                }
+
                 // After rendering is complete (or interrupted), push the canvas
                 // The DisplayListRenderer now handles clearing the canvas.
                 // The final push to EPD happens here.
@@ -854,7 +882,14 @@ void RenderTask_Function(void *pvParameters) {
                     // tones that never appear. pushScriptCanvasLocked() uses the
                     // fast 1-bit waveform and folds in the periodic full GC16
                     // de-ghost -- see DisplayManager::SCRIPT_FAST_UPDATE_MODE.
+                    // Bracketed so the serial log says whether a stall is in
+                    // compute or in the panel transaction. Without both lines a
+                    // hang after the last RenderController message is ambiguous.
+                    log_i("RenderTask: pushing canvas for '%s'...", resultData.script_id.c_str());
+                    unsigned long pushStart = millis();
                     g_displayManager->pushScriptCanvasLocked();
+                    log_i("RenderTask: canvas push for '%s' took %lu ms.",
+                          resultData.script_id.c_str(), millis() - pushStart);
                 }
                 
                 g_displayManager->unlockEPD(); // Unlock EPD
