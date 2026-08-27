@@ -1,10 +1,16 @@
 #include "main.h"
 #include "esp32-hal-log.h"
 #include "esp_task_wdt.h" // For watchdog
+#include "serial_console.h" // Serial command channel (list/run scripts over USB)
+
+#if MP_BENCH
+#include "bench/mp_bench.h" // env:m5paper-bench only; compiled out otherwise
+#endif
 
 // --- Task Handles ---
 TaskHandle_t g_mainControlTaskHandle = NULL;
 TaskHandle_t g_inputTaskHandle = NULL;
+TaskHandle_t g_serialConsoleTaskHandle = NULL;
 TaskHandle_t g_renderTaskHandle = NULL;
 TaskHandle_t g_fetchTaskHandle = NULL;
 
@@ -127,8 +133,9 @@ void setup() {
     xTaskCreatePinnedToCore(InputTask_Function, "InputTask", INPUT_TASK_STACK_SIZE, NULL, INPUT_TASK_PRIORITY, &g_inputTaskHandle, 1); // Core 1 for responsiveness
     xTaskCreatePinnedToCore(RenderTask_Function, "RenderTask", RENDER_TASK_STACK_SIZE, NULL, RENDER_TASK_PRIORITY, &g_renderTaskHandle, 0); // Core 0 for rendering
     xTaskCreatePinnedToCore(FetchTask_Function, "FetchTask", FETCH_TASK_STACK_SIZE, NULL, FETCH_TASK_PRIORITY, &g_fetchTaskHandle, 0);    // Core 0 for network
+    xTaskCreatePinnedToCore(SerialConsoleTask_Function, "SerialConTask", SERIAL_CONSOLE_TASK_STACK_SIZE, NULL, SERIAL_CONSOLE_TASK_PRIORITY, &g_serialConsoleTaskHandle, 1); // Core 1, alongside input
 
-    if (!g_mainControlTaskHandle || !g_inputTaskHandle || !g_renderTaskHandle || !g_fetchTaskHandle) {
+    if (!g_mainControlTaskHandle || !g_inputTaskHandle || !g_renderTaskHandle || !g_fetchTaskHandle || !g_serialConsoleTaskHandle) {
         log_e("FATAL: Failed to create one or more tasks. Halting.");
         g_displayManager->showMessage("Task Fail!", 150, 15, false, false);
         while(1) vTaskDelay(portMAX_DELAY);
@@ -413,6 +420,18 @@ void MainControlTask_Function(void *pvParameters) {
                     if (!selectedHumanId.isEmpty()){ // If selectNextScript provided an ID (even default)
                          triggerScriptRender(selectedHumanId, false, currentState, currentLoadedScriptId);
                     }
+                }
+            } else if (inputEvent.type == InputEventType::RUN_SCRIPT_BY_ID) {
+                // Serial console asked for a specific script by human id.
+                String requestedId(inputEvent.script_id);
+                if (requestedId.isEmpty()) {
+                    log_w("MainCtrl: RUN_SCRIPT_BY_ID with empty id. Ignoring.");
+                } else {
+                    log_i("MainCtrl: Serial console requested script '%s'. Triggering render.", requestedId.c_str());
+                    // Persist it so a later wake/reboot resumes the same script,
+                    // matching what button-driven selection does.
+                    g_scriptManager->saveCurrentScriptId(requestedId);
+                    triggerScriptRender(requestedId, false, currentState, currentLoadedScriptId);
                 }
             } else if (inputEvent.type == InputEventType::CONFIRM_ACTION) {
                 log_i("MainCtrl: Confirm action received. Attempting to re-render current script '%s'.", currentLoadedScriptId.c_str());

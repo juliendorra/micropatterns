@@ -4,6 +4,7 @@
 #include "time.h"          // For NTP time struct
 #include "esp32-hal-log.h"
 #include "esp_task_wdt.h"  // For esp_task_wdt_reset()
+#include "driver/uart.h"   // For uart_set_wakeup_threshold (serial console wakeup)
 
 // NVS Keys
 const char* SystemManager::NVS_NAMESPACE = "sys_mgr";
@@ -202,6 +203,16 @@ void SystemManager::configureWakeupSources() {
     gpio_wakeup_enable(GPIO_NUM_38, GPIO_INTR_LOW_LEVEL); // BUTTON_PUSH_PIN
     esp_sleep_enable_gpio_wakeup();
     log_i("Setup ESP32 to wake up on LOW level for GPIOs 37, 39, 38.");
+
+    // 3. UART0 -- so the serial command console can reach a sleeping device.
+    // The idle timeout is only a few seconds, so without this the device is
+    // asleep almost all the time and typed commands are simply never read.
+    // The threshold is in RX edges: the wakeup fires partway through the first
+    // character, which is therefore corrupted and dropped. Commands are newline
+    // terminated, so send a bare newline first to wake it, then the command.
+    uart_set_wakeup_threshold(UART_NUM_0, 3);
+    esp_sleep_enable_uart_wakeup(UART_NUM_0);
+    log_i("Setup ESP32 to wake up on UART0 RX activity (serial console).");
 }
 
 void SystemManager::goToLightSleep(TickType_t sleepDurationSec, WakeupCallback onWakeup) {
@@ -259,7 +270,8 @@ void SystemManager::disableWakeupSources() {
     gpio_wakeup_disable(GPIO_NUM_39);
     gpio_wakeup_disable(GPIO_NUM_38);
     esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_GPIO);
-    log_i("Disabled GPIO wakeup sources.");
+    esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_UART);
+    log_i("Disabled GPIO and UART wakeup sources.");
 }
 
 

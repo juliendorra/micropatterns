@@ -34,6 +34,7 @@
 // --- Task Handles (defined in main.cpp) ---
 extern TaskHandle_t g_mainControlTaskHandle;
 extern TaskHandle_t g_inputTaskHandle;
+extern TaskHandle_t g_serialConsoleTaskHandle;
 extern TaskHandle_t g_renderTaskHandle;
 extern TaskHandle_t g_fetchTaskHandle;
 

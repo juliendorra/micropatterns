@@ -26,12 +26,18 @@ enum class InputEventType {
     NEXT_SCRIPT,
     PREVIOUS_SCRIPT,
     CONFIRM_ACTION, // E.g., PUSH button
+    RUN_SCRIPT_BY_ID, // Serial console: run the script named in InputEvent::script_id
+    LIST_SCRIPTS,     // Serial console: print the script list to Serial
     // Add more specific events if needed
 };
 
 struct InputEvent {
     InputEventType type;
     // uint8_t raw_gpio; // Optional: if MainControlTask needs the raw pin
+
+    // Payload for RUN_SCRIPT_BY_ID. Empty for every button-sourced event, so
+    // existing producers (InputManager) need no change.
+    char script_id[MAX_SCRIPT_ID_LEN] = {0};
 };
 
 
