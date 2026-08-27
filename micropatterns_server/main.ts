@@ -1,7 +1,11 @@
-import { serve } from "std/http/server.ts";
 import * as s3 from "./s3.ts";
 
-const PORT = 8000; // Default Deno Deploy port
+// Deno Deploy (the current platform, not Classic) assigns the port and probes
+// it during the "warming" step. Classic ignored this and wired the handler up
+// directly, so a hardcoded 8000 used to work and now fails the health check
+// with a REVISION_FAILED at warming -- while the app itself starts perfectly
+// and logs "Listening on http://localhost:8000/". Honour PORT when present.
+const PORT = Number(Deno.env.get("PORT") ?? 8000);
 
 async function handler(req: Request): Promise<Response> {
     const url = new URL(req.url);
@@ -179,5 +183,21 @@ async function handler(req: Request): Promise<Response> {
     }
 }
 
-console.log(`[Server] MicroPatterns API server running on http://localhost:${PORT}`);
-serve(handler, { port: PORT });
+// Deno.serve() rather than std/http's serve():
+//
+// On Deno Deploy Classic the handler was wired up for us and a hardcoded port
+// was harmless. The current platform assigns the listener and probes it during
+// the "warming" step, and it does NOT set a PORT env var -- so an app that
+// binds a fixed port starts happily, logs "Listening on ...:8000", never
+// answers the probe, and the revision fails with REVISION_FAILED at warming.
+// That failure mode is silent in the logs, which is what made it slow to find.
+//
+// Deno.serve() is the runtime-native API the platform integrates with. Locally
+// it still defaults to 8000, so `deno task start` is unchanged.
+if (Deno.env.get("DENO_DEPLOYMENT_ID")) {
+    console.log("[Server] MicroPatterns API starting on Deno Deploy");
+    Deno.serve(handler);
+} else {
+    console.log(`[Server] MicroPatterns API server running on http://localhost:${PORT}`);
+    Deno.serve({ port: PORT }, handler);
+}

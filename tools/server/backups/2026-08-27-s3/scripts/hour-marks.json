@@ -1,0 +1,6 @@
+{
+  "id": "hour-marks",
+  "name": "Hour marks",
+  "content": "# --- Draw Hour Markers ---\nCOLOR NAME=BLACK\n# Use solid color for markers\nFILL NAME=SOLID \nVAR $hourDegree\nVAR $centerX\nVAR $centerY\nLET $centerX=$width/2\nLET $centerY=$height/2\nREPEAT COUNT=12 TIMES\n   RESET_TRANSFORMS\n   # Center origin (assuming 200x200 display)\n   TRANSLATE DX=$centerX DY=$centerY \n   # Rotate per hour (uses $INDEX and 30º)\n   LET $hourDegree=$index*30\n   ROTATE DEGREES=$hourDegree\n   # Move out\n   TRANSLATE DX=0 DY=-90 \n   # Draw marker\n   FILL_RECT X=0 Y=0 WIDTH=6 HEIGHT=10 \nENDREPEAT",
+  "lastModified": "2025-04-30T17:00:44.697Z"
+}

@@ -1,0 +1,6 @@
+{
+  "id": "sun-and-sea",
+  "name": "Sun and sea",
+  "content": "# Sun and sea \n\nDEFINE PATTERN NAME=\"noise\" WIDTH=8 HEIGHT=8 DATA=\"1011010101001101110100100011010110101011011100101100101001011100\"\nDEFINE PATTERN NAME=\"grass\" WIDTH=4 HEIGHT=4 DATA=\"0100101001000100\"\n\nVAR $ground_level\nVAR $sky_level\nVAR $sun_x\nVAR $sun_y\nVAR $tree_x\nVAR $tree_y\nVAR $tree_scale\n\nLET $ground_level = $HEIGHT / 3 * 2\nLET $sky_level = $HEIGHT / 3\n\n# Sky (Solid White)\nCOLOR NAME=WHITE\nFILL NAME=SOLID\nFILL_RECT X=0 Y=0 WIDTH=$WIDTH HEIGHT=$sky_level\n\n# Sun (Solid Black Circle)\nCOLOR NAME=BLACK\nFILL NAME=SOLID\n# Simplified position\nLET $sun_x = $WIDTH / 4 \n# Simplified position\nLET $sun_y = $HEIGHT / 5 \nFILL_CIRCLE X=$sun_x Y=$sun_y RADIUS=20\n\n# Ground (Noise Pattern Fill)\nCOLOR NAME=BLACK\nFILL NAME=\"noise\"\nFILL_RECT X=0 Y=$sky_level WIDTH=$WIDTH HEIGHT=$ground_level\n\n# Grass (Draw Pattern Repeatedly)\n# Grass color\nCOLOR NAME=BLACK \n # Re-use variable\nLET $tree_x = 0\n\nREPEAT COUNT=50 TIMES \n    LET $tree_x = $INDEX * 10 \n    TRANSLATE DX=$tree_x DY=$ground_level\n    # Draw at ground level\n    SCALE FACTOR=3\n    DRAW NAME=\"grass\" X=0 Y=0\n    RESET_TRANSFORMS   \nENDREPEAT\n\n\n\n",
+  "lastModified": "2025-05-01T21:46:02.942Z"
+}

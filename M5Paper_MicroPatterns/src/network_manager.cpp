@@ -9,7 +9,7 @@ const int FETCH_INTERRUPTED_BY_USER = -9999;
 // Define default credentials and API URL (can be overridden by NVS or SystemManager later)
 const char *NetworkManager::WIFI_SSID_DEFAULT = "OpenWrt2.4";
 const char *NetworkManager::WIFI_PASSWORD_DEFAULT = "hudohudo";
-const char *NetworkManager::API_BASE_URL_DEFAULT = "https://micropatterns-api.deno.dev";
+const char *NetworkManager::API_BASE_URL_DEFAULT = "https://micropatterns-api.juliendorra.deno.net";
 const char *NetworkManager::USER_ID_DEFAULT = "kksh2hjtkb"; // Added User ID
 
 // ISRG Root X1 CA Certificate

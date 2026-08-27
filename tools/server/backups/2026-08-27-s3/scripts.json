@@ -1,0 +1,70 @@
+[
+  {
+    "id": "art-deco",
+    "name": "Art Deco"
+  },
+  {
+    "id": "art-deco-3",
+    "name": "Art Deco 3"
+  },
+  {
+    "id": "art-deco-4",
+    "name": "Art Deco 4"
+  },
+  {
+    "id": "art-deco2",
+    "name": "Art Deco2"
+  },
+  {
+    "id": "black-sun",
+    "name": "Black Sun"
+  },
+  {
+    "id": "confetti",
+    "name": "Confetti"
+  },
+  {
+    "id": "diamonds",
+    "name": "Diamonds"
+  },
+  {
+    "id": "eyes",
+    "name": "Eyes"
+  },
+  {
+    "id": "hour-marks",
+    "name": "Hour marks"
+  },
+  {
+    "id": "leaf",
+    "name": "Leaf"
+  },
+  {
+    "id": "memphis-milano",
+    "name": "Memphis Milano"
+  },
+  {
+    "id": "memphis-milano-2",
+    "name": "Memphis Milano 2"
+  },
+  {
+    "id": "savanna",
+    "name": "Savanna"
+  },
+  {
+    "id": "sun-and-sea",
+    "name": "Sun and sea"
+  },
+  {
+    "id": "thunderstorm",
+    "name": "Thunderstorm"
+  },
+  {
+    "id": "welcome-script",
+    "name": "Welcome Script"
+  },
+  {
+    "id": "zig-zag",
+    "name": "Zig Zag"
+  }
+]

@@ -36,3 +36,9 @@ tools/host_harness/build_asan/
 
 # Sanitizer/null-shim build trees for the host harness.
 tools/host_harness/build_null/
+
+# Production credentials for the micropatterns API (S3 + Deno Deploy).
+# NEVER commit. Local reference only; the deployed app gets these as Deno
+# Deploy secrets, not from this file.
+envprod
+.envprod

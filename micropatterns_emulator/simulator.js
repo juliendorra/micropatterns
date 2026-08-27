@@ -131,7 +131,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (window.location.hostname === 'localhost' || window.location.hostname.startsWith("127")) {
         API_BASE_URL = 'http://localhost:8000';
     } else {
-        API_BASE_URL = 'https://micropatterns-api.deno.dev';
+        API_BASE_URL = 'https://micropatterns-api.juliendorra.deno.net';
     }
     
     // Compiler optimization configuration

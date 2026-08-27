@@ -1,0 +1,6 @@
+{
+  "id": "diamonds",
+  "name": "Diamonds",
+  "content": "# New MicroPatterns Script\n# Display is 200x200\n\nDEFINE PATTERN NAME=\"diamond\" WIDTH=8 HEIGHT=8 DATA=\"0011110001100110110000111000000110000001110000110110011000111100\"\n\nVAR $CENTERX = $WIDTH / 2\nVAR $CENTERY = $HEIGHT / 2\nVAR $NegativeCENTERX = -1 * $WIDTH / 2\nVAR $NegativeCENTERY = -1 * $HEIGHT / 2\nVAR $SECONDPLUSONE = $SECOND + 1\nVAR $SIZE = 3\nVAR $biggerWidth = $width * 4\n\nCOLOR NAME=BLACK\nFILL NAME=\"diamond\"\n\nSCALE FACTOR=10\nFILL_RECT X=0 Y=0 WIDTH=$WIDTH HEIGHT=$HEIGHT\n\nTRANSLATE DX=$CENTERX  DY=$CENTERY\nVAR $counter10times = 36 * $counter\n\nREPEAT COUNT=5\n  LET $size = $size * 3\n  SCALE FACTOR=$size\n  ROTATE DEGREES=$counter10times\n  TRANSLATE DX=-90  DY=-90\n  FILL_RECT X=0 Y=0 WIDTH=200 HEIGHT=200\nENDREPEAT\n\n",
+  "lastModified": "2025-05-13T19:40:19.310Z"
+}

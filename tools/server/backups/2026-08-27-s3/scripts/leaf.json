@@ -1,0 +1,6 @@
+{
+  "id": "leaf",
+  "name": "Leaf",
+  "content": "# Welcome to MicroPatterns!\n# Display is 200x200\n\n# Define patterns using DEFINE PATTERN\nDEFINE PATTERN NAME=\"dither\" WIDTH=8 HEIGHT=8 DATA=\"1011111111110101010000111100001111000110101110111111111110110111\"\n\nVAR $rotation\nLET $rotation=13+ $second%7\n\n# Draw a line using FILL_PIXEL\n# It will only draw where the background 'checker' pattern is 1\nCOLOR NAME=BLACK\nFILL NAME=\"dither\" \n\nVAR $diag_pos\n\nREPEAT COUNT=200 TIMES\n    LET $diag_pos = $INDEX\n    translate DX=$diag_pos DY=$diag_pos\n        \n    REPEAT COUNT=400 TIMES\n       ROTATE DEGREES=$rotation\n       TRANSLATE DX=0 DY=1\n       FILL_PIXEL X=$diag_pos Y=$diag_pos\n    ENDREPEAT\n   \n     RESET_TRANSFORMS\nENDREPEAT\n                    \n        ",
+  "lastModified": "2025-05-07T07:59:28.693Z"
+}
