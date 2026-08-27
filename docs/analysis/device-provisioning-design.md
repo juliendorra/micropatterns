@@ -65,6 +65,48 @@ Chrome/Edge feature. If provisioning must work from an iPhone, the fallback is a
 **SoftAP captive portal** on the device — worth designing for, not building
 first.
 
+## Telling the user when their browser cannot do this
+
+Feature-detect on load and **never render a button that cannot work**. The two
+APIs fail on different platforms, so one generic "unsupported browser" message
+is wrong in both directions — a Chrome user on Android has Web Bluetooth but not
+Web Serial, and can therefore provision the Watchy but not the M5Paper.
+
+```js
+const canSerial    = "serial"    in navigator;   // Chrome/Edge desktop only
+const canBluetooth = "bluetooth" in navigator;   // + Chrome Android
+```
+
+Rules:
+
+1. **Detect per transport, not per page.** Show the M5Paper option only if
+   `canSerial`, the Watchy option only if `canBluetooth`. If neither, replace
+   the whole panel with the explanation rather than disabled controls.
+2. **Say what to do, not what is missing.** "Connecting a device needs Chrome or
+   Edge on a computer" beats "navigator.serial is undefined".
+3. **Name iOS explicitly.** Neither API exists in ANY iOS browser — including
+   Chrome on iOS, which is Safari underneath. A user who installs Chrome on
+   their iPhone to fix this will fail again and blame the page. Detect iOS and
+   say so directly.
+4. **Distinguish the three failure modes**, because they look identical to a
+   user and have different fixes:
+   - browser cannot (wrong browser/platform) -> switch browser or use SoftAP
+   - user dismissed the chooser (`NotFoundError`) -> retry, no drama
+   - device not responding after a port/device was picked -> the device-side
+     problem; for the M5Paper, note it sleeps after 3 s and the bridge powers
+     down with it (`tools/device/SERIAL-TROUBLESHOOTING.md`)
+5. **`navigator.bluetooth` can exist and still be unusable** — Bluetooth off at
+   the OS level, or no permission. Present that as "turn on Bluetooth", not as
+   an unsupported browser.
+6. Both APIs require **HTTPS and a user gesture**. The deployed editor is HTTPS,
+   but a `file://` copy will silently lack both — worth detecting, since editing
+   locally is a normal thing to do here.
+
+The honest summary for the UI: this works in **Chrome or Edge on a computer**,
+Web Bluetooth also works in **Chrome on Android**, and **nothing works on
+iPhone or iPad**. If that matrix is too narrow, the SoftAP captive portal is the
+only route that reaches every device.
+
 ## Wire format
 
 One schema, two transports, so the editor has a single code path:
