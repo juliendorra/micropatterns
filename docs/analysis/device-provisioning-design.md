@@ -7,13 +7,16 @@ Status: **design, not implemented.** Written 2026-08-27.
 Credentials are compile-time constants in `network_manager.cpp`:
 
 ```cpp
-const char *NetworkManager::WIFI_SSID_DEFAULT     = "OpenWrt2.4";
-const char *NetworkManager::WIFI_PASSWORD_DEFAULT = "hudohudo";
-const char *NetworkManager::USER_ID_DEFAULT       = "kksh2hjtkb";
+const char *NetworkManager::WIFI_SSID_DEFAULT     = "<an SSID>";
+const char *NetworkManager::WIFI_PASSWORD_DEFAULT = "<a plaintext password>";
+const char *NetworkManager::USER_ID_DEFAULT       = "<the secret user ID>";
 ```
 
-`github.com/juliendorra/micropatterns` is **public**, and those values are in
-git history across several commits. So:
+`github.com/juliendorra/micropatterns` is **public**, and the real values are in
+git history. Exposed in `8e911e7` (2025-05-06), `6c1b5cd` (2025-05-21) and
+`536e62b` (2025-05-26), all already pushed. The user ID additionally appears in
+`8759166`. Values are redacted above so this document does not add another copy.
+So:
 
 - **The WiFi password is publicly readable and must be rotated.** Deleting the
   line does not help; the history holds it.
