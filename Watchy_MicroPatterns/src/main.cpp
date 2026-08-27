@@ -146,6 +146,22 @@ static void fullRefresh();
 // Symptom if it is too high: grey residue of previous frames building up. Lower
 // it. Cost of it being too low: an unnecessary 2.6s flashing refresh.
 static const int WATCHY_DEGHOST_INTERVAL = 24;
+
+// Periodic automatic re-render, mirroring the M5Paper, which wakes from light
+// sleep every SystemManager::DEFAULT_SLEEP_DURATION_S (77s) and re-renders the
+// current script. Scripts are time- and counter-dependent -- $COUNTER advances
+// and $HOUR/$MINUTE/$SECOND move -- so a static panel is a script frozen in
+// time rather than a finished picture.
+//
+// Matched to 77s deliberately: the same script should evolve at the same rate
+// on both devices.
+//
+// NOT power-optimised. The M5Paper spends this interval in light sleep; this
+// firmware stays awake in loop(). Battery life is a known open item for the
+// Watchy port -- the design doc puts the sustainable autonomous cadence at
+// roughly hourly, which this does not respect.
+static const unsigned long AUTO_RERUN_INTERVAL_MS = 77UL * 1000UL;
+static unsigned long g_lastRenderMs = 0;
 static int g_updatesSinceFull = WATCHY_DEGHOST_INTERVAL;  // force full on first use
 
 // Selects the window mode for the next page loop. Returns true if this update
@@ -239,6 +255,7 @@ static void showScript(int index, bool announce)
     g_currentScript = (index % EMBEDDED_SCRIPT_COUNT + EMBEDDED_SCRIPT_COUNT) % EMBEDDED_SCRIPT_COUNT;
     g_counter++;
     if (announce) showScriptName(EMBEDDED_SCRIPTS[g_currentScript].name);
+    g_lastRenderMs = millis();
     if (!renderScript(g_currentScript)) {
         log_e("Render failed for index %d", g_currentScript);
     }
@@ -445,6 +462,14 @@ void loop()
                       millis() / 1000, g_currentScript, EMBEDDED_SCRIPT_COUNT,
                       ESP.getFreeHeap());
         Serial.flush();
+    }
+
+    // Periodic re-render, so time-dependent scripts keep advancing on their own.
+    // Deliberately checked BEFORE the buttons: if a press arrives during the
+    // render the button handler simply sees it on the next pass.
+    if (millis() - g_lastRenderMs >= AUTO_RERUN_INTERVAL_MS) {
+        log_i("Auto re-render after %lus idle", AUTO_RERUN_INTERVAL_MS / 1000);
+        showScript(g_currentScript, false);   // no title: same script
     }
 
     // --- Buttons ----------------------------------------------------------
