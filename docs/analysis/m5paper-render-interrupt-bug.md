@@ -191,8 +191,15 @@ render. Previously the abandoned partial frame was painted, so the panel visibly
 button press. Now the panel holds its previous image for the full duration of the *new* render —
 8-10 s measured — and the device reads as unresponsive even though it is working correctly.
 
-This was reported by the user as "seem stuck, not responding to the buttons commands" and is a
-direct consequence of this fix. It is not a reason to revert it. The agreed follow-ups are:
+This was reported by the user as "seem stuck, not responding to the buttons commands".
+
+**Partially corrected later:** it is only *partly* a consequence of this fix. The indicators that
+should have provided feedback were themselves broken by a pre-existing locking bug -- they were
+starved of a mutex held for the whole render and drew nothing. See
+`m5paper-responsiveness-work.md` §2. All three follow-ups below are now DONE (rasterize 8037ms ->
+844ms, interrupt abort ~100ms); results and dead ends are in that document.
+
+The agreed follow-ups were:
 
 1. Button-press indicators must be as instant as possible (they already exist; they need to survive
    and appear immediately).
