@@ -7,6 +7,7 @@
 #include <BLEUtils.h>
 #include <BLE2902.h>
 #include <WiFi.h>
+#include "nvs_flash.h"
 #include "esp32-hal-log.h"
 
 namespace MPProvisioning {
@@ -92,7 +93,11 @@ void handleCommand(const String& line)
             reply("{\"ok\":false,\"error\":\"userId and networks required\"}");
             return;
         }
-        prefs.begin(NVS_NS, false);
+        if (!prefs.begin(NVS_NS, false)) {
+            log_e("Provisioning: could not open NVS for writing");
+            reply("{\"ok\":false,\"error\":\"nvs open failed\"}");
+            return;
+        }
         prefs.putString("user.id", uid);
         int n = 0;
         for (JsonObject net : nets) {
@@ -107,8 +112,23 @@ void handleCommand(const String& line)
         prefs.putUChar("w.count", (uint8_t)n);
         prefs.putChar("w.last", -1);   // force a fresh scan on the new list
         prefs.end();
-        log_i("Provisioning: stored %d network(s) and a user ID", n);
-        String s = String("{\"ok\":true,\"networks\":") + n + "}";
+
+        // READ BACK before claiming success. The previous version reported the
+        // number of networks it had PARSED, so a completely failed write still
+        // answered "2 network(s) written" -- and the next status call then said
+        // "0 stored, not provisioned", which is how this bug surfaced.
+        const int verified = networkCount();
+        const bool idOk = isProvisioned();
+        if (verified != n || !idOk) {
+            log_e("Provisioning: write did not persist (asked %d, stored %d, id=%s)",
+                  n, verified, idOk ? "yes" : "no");
+            String e = String("{\"ok\":false,\"error\":\"write did not persist\",\"stored\":")
+                     + verified + "}";
+            reply(e);
+            return;
+        }
+        log_i("Provisioning: stored and verified %d network(s) and a user ID", verified);
+        String s = String("{\"ok\":true,\"networks\":") + verified + "}";
         reply(s);
         return;
     }
@@ -138,6 +158,24 @@ class ServerCB : public BLEServerCallbacks {
 
 void begin()
 {
+    // Initialise NVS here rather than assuming the caller did.
+    //
+    // The M5Paper does this in systeminit.cpp; the Watchy firmware never did,
+    // so Preferences::begin() failed there and EVERY WRITE SILENTLY DID
+    // NOTHING -- provisioning reported success and stored nothing. Doing it in
+    // the shared module means both devices get it, which is the point of the
+    // module being shared.
+    esp_err_t nvsErr = nvs_flash_init();
+    if (nvsErr == ESP_ERR_NVS_NO_FREE_PAGES || nvsErr == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        log_w("Provisioning: NVS needs erasing (%s); erasing and retrying", esp_err_to_name(nvsErr));
+        nvs_flash_erase();
+        nvsErr = nvs_flash_init();
+    }
+    if (nvsErr != ESP_OK) {
+        log_e("Provisioning: nvs_flash_init failed: %s -- credentials CANNOT be stored",
+              esp_err_to_name(nvsErr));
+    }
+
     prefs.begin(NVS_NS, true);
     int n = prefs.getUChar("w.count", 0);
     prefs.end();
