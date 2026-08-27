@@ -35,10 +35,27 @@
 // from the very first instruction of setup().
 #define VIB_MOTOR_PIN 13
 
-#define BTN_MENU 26
-#define BTN_BACK 25
-#define BTN_UP   32
-#define BTN_DOWN 4
+// Watchy 2.0 button pins, from InkWatchy src/defines/condition.h.
+// NOTE UP is 35 on Watchy 2.0 -- 32 is Watchy 1/1.5 only. This firmware had 32,
+// so that button never registered at all.
+// Buttons read HIGH when pressed (InkWatchy's BUT_CLICK_STATE for this board).
+//
+// Physical layout: the four buttons sit at the four corners. Mapping below is
+// the working assumption; the corner press indicator is what verifies it -- if
+// a press lights the wrong corner, swap the entries here.
+//
+// Verified on the device by pressing each button and watching which corner
+// lit up. The first attempt had MENU/BACK swapped -- the names do not match
+// the physical layout, so trust the corners, not the pin names.
+//
+//        top-left  BACK (25)        UP (35)  top-right
+//     bottom-left  MENU (26)      DOWN (4)   bottom-right
+#define BTN_BACK 25   // top-left     -- hold 5s: full refresh
+#define BTN_MENU 26   // bottom-left  -- re-run current script
+#define BTN_UP   35   // top-right    -- previous script
+#define BTN_DOWN 4    // bottom-right -- next script
+
+#define BTN_LONG_PRESS_MS 5000  // hold time for the full-refresh gesture
 
 GxEPD2_BW<GxEPD2_154_D67, GxEPD2_154_D67::HEIGHT> g_display(
     GxEPD2_154_D67(EPD_CS, EPD_DC, EPD_RST, EPD_BUSY));
@@ -97,6 +114,11 @@ static void StageReporterTask(void* pv)
         vTaskDelay(pdMS_TO_TICKS(3500)); // long gap so counts stay countable
     }
 }
+
+enum Corner { CORNER_TL, CORNER_TR, CORNER_BL, CORNER_BR };
+static void drawCornerIndicator(Corner c, bool filled);
+static void showScriptName(const char* name);
+static void fullRefresh();
 
 static void logHeap(const char* stage)
 {
@@ -167,6 +189,7 @@ static void showScript(int index)
 {
     g_currentScript = (index % EMBEDDED_SCRIPT_COUNT + EMBEDDED_SCRIPT_COUNT) % EMBEDDED_SCRIPT_COUNT;
     g_counter++;
+    showScriptName(EMBEDDED_SCRIPTS[g_currentScript].name);
     if (!renderScript(g_currentScript)) {
         log_e("Render failed for index %d", g_currentScript);
     }
@@ -206,6 +229,67 @@ static void pollSerial()
     }
 }
 
+
+// --- Feedback -------------------------------------------------------------
+
+// Corner press indicator. The four buttons are at the four physical corners, so
+// the acknowledgement appears at the corner you actually pressed. Drawn as a
+// partial window so it lands in well under a second and does not disturb the
+// rest of the panel.
+static void drawCornerIndicator(Corner c, bool filled)
+{
+    const int S = 26;                     // indicator box side, px
+    const int W = g_display.width();
+    const int H = g_display.height();
+    int x = (c == CORNER_TL || c == CORNER_BL) ? 0 : W - S;
+    int y = (c == CORNER_TL || c == CORNER_TR) ? 0 : H - S;
+
+    g_display.setPartialWindow(x, y, S, S);
+    g_display.firstPage();
+    do {
+        g_display.fillScreen(GxEPD_WHITE);
+        if (filled) g_display.fillRect(x, y, S, S, GxEPD_BLACK);
+    } while (g_display.nextPage());
+}
+
+// Shows the script name on a CLEARED panel before rendering.
+//
+// Deliberately clears to white first. On the M5Paper the name was being drawn
+// over the outgoing script's still-visible image, so it read as garbage layered
+// on the old art. The name is a transition, so it gets its own clean frame.
+static void showScriptName(const char* name)
+{
+    const int W = g_display.width();
+    g_display.setFullWindow();
+    g_display.firstPage();
+    do {
+        g_display.fillScreen(GxEPD_WHITE);
+        g_display.setTextColor(GxEPD_BLACK);
+        g_display.setTextSize(2);
+        // Default GFX glyphs are 6x8 before scaling, so 12px per char at size 2.
+        int textW = (int)strlen(name) * 12;
+        int x = (textW < W) ? (W - textW) / 2 : 2;
+        g_display.setCursor(x, g_display.height() / 2 - 8);
+        g_display.print(name);
+        g_display.setTextSize(1);
+    } while (g_display.nextPage());
+}
+
+// Full refresh: drive the panel through black and white to clear accumulated
+// ghosting, then re-render. On the M5Paper the equivalent gesture also re-syncs
+// scripts from the server; this firmware has NO networking and the API endpoint
+// is dead (Deno Deploy Classic was sunset 2026-07-20), so the sync half is not
+// implemented. See docs/analysis/watchy-port-attempt-log.md.
+static void fullRefresh()
+{
+    g_display.setFullWindow();
+    for (int pass = 0; pass < 2; ++pass) {
+        g_display.firstPage();
+        do { g_display.fillScreen(pass == 0 ? GxEPD_BLACK : GxEPD_WHITE); }
+        while (g_display.nextPage());
+    }
+}
+
 void setup()
 {
     // Motor FIRST, before anything that could hang, so stage 1 proves the
@@ -226,7 +310,7 @@ void setup()
 
     pinMode(BTN_MENU, INPUT);
     pinMode(BTN_BACK, INPUT);
-    pinMode(BTN_UP,   INPUT);
+    pinMode(BTN_UP,   INPUT);   // GPIO35 is input-only on ESP32; INPUT is correct
     pinMode(BTN_DOWN, INPUT);
 
     // Bracketed deliberately: GxEPD2's init drives RESET and then waits on the
@@ -313,11 +397,75 @@ void loop()
         Serial.flush();
     }
 
-    // Any button steps to the next script. Watchy buttons read HIGH when pressed.
-    if (digitalRead(BTN_MENU) == HIGH || digitalRead(BTN_UP) == HIGH ||
-        digitalRead(BTN_DOWN) == HIGH || digitalRead(BTN_BACK) == HIGH) {
-        showScript(g_currentScript + 1);
-        delay(300); // crude debounce; this build is not power-optimised
+    // --- Buttons ----------------------------------------------------------
+    //
+    // Mirrors the M5Paper's controls onto the four corner buttons:
+    //   top-right    previous script   (M5Paper UP)
+    //   bottom-right next script       (M5Paper DOWN)
+    //   bottom-left  re-run current    (M5Paper PUSH / confirm)
+    //   top-left     hold 5s: full refresh
+    //
+    // Actions are dispatched on CORNER, not on pin name, so the physical layout
+    // lives in exactly one place (the btns[] table) and cannot drift out of sync
+    // with the indicator again.
+    //
+    // Edge-triggered on release so a long press does not also fire the short
+    // action, and so holding a button does not repeat.
+    struct Btn { uint8_t pin; Corner corner; bool wasDown; unsigned long downAt; };
+    static Btn btns[4] = {
+        { BTN_BACK, CORNER_TL, false, 0 },   // top-left
+        { BTN_UP,   CORNER_TR, false, 0 },   // top-right
+        { BTN_MENU, CORNER_BL, false, 0 },   // bottom-left
+        { BTN_DOWN, CORNER_BR, false, 0 },   // bottom-right
+    };
+
+    for (Btn& b : btns) {
+        bool down = (digitalRead(b.pin) == HIGH);
+
+        if (down && !b.wasDown) {
+            // Acknowledge immediately, at the corner actually pressed. This is
+            // the whole point of corner feedback: it must land before the
+            // multi-second render starts, not after.
+            b.wasDown = true;
+            b.downAt  = millis();
+            drawCornerIndicator(b.corner, true);
+            continue;
+        }
+
+        if (down && b.wasDown && b.corner == CORNER_TL &&
+            (millis() - b.downAt) >= BTN_LONG_PRESS_MS) {
+            // Long press fires while still held, then swallows the release.
+            log_i("Button: top-left held %dms -> full refresh", BTN_LONG_PRESS_MS);
+            fullRefresh();
+            showScript(g_currentScript);
+            b.wasDown = false;
+            continue;
+        }
+
+        if (!down && b.wasDown) {
+            b.wasDown = false;
+            drawCornerIndicator(b.corner, false);   // clear the acknowledgement
+            unsigned long held = millis() - b.downAt;
+            if (held < 40) continue;                 // debounce bounce/noise
+
+            switch (b.corner) {
+                case CORNER_TR:
+                    log_i("Button: top-right -> previous script");
+                    showScript(g_currentScript - 1);
+                    break;
+                case CORNER_BR:
+                    log_i("Button: bottom-right -> next script");
+                    showScript(g_currentScript + 1);
+                    break;
+                case CORNER_BL:
+                    log_i("Button: bottom-left -> re-run current script");
+                    showScript(g_currentScript);
+                    break;
+                case CORNER_TL:
+                    // Short press: no action -- this is the full-refresh button.
+                    break;
+            }
+        }
     }
     delay(20);
 }
