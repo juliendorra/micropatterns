@@ -45,6 +45,14 @@
 #ifndef MP_BENCH_PUSH_MODE
 #define MP_BENCH_PUSH_MODE UPDATE_MODE_GC16 // what RenderTask uses in production
 #endif
+#ifndef MP_BENCH_PUSH_1BPP
+// 1 = use the vendored M5EPD 1bpp fast path (packed 8-px-per-byte transfer +
+// IT8951 1bpp display mode) instead of the 4bpp path. Legal because the DSL
+// only emits grey 0 and grey 15. Set to 0 to time the 4bpp path for an A/B.
+// NOTE: with 1bpp, push_xfer_us INCLUDES the host-side transpose+pack, which
+// the 4bpp path does not have to do.
+#define MP_BENCH_PUSH_1BPP 1
+#endif
 #ifndef MP_BENCH_AUTOSTART_MS
 #define MP_BENCH_AUTOSTART_MS 6000 // wait this long for a 'g' before self-starting
 #endif
@@ -195,7 +203,10 @@ bool runOnce(const MPBenchScript& script, const MPBenchSeed& seed, RepResult& r)
     r.displaylist_us = sw.us();
 
     // --- Phase 3: rasterization ---------------------------------------------
-    DisplayListRenderer renderer(dm, parser.getAssets(), W, H);
+    // DisplayListRenderer takes the canvas directly (it used to take a
+    // DisplayManager& only to call getCanvas() once). Matches
+    // RenderController::RenderController().
+    DisplayListRenderer renderer(dm.getCanvas(), parser.getAssets(), W, H);
     sw.restart();
     renderer.render(runtime.getDisplayList()); // clears the canvas, then draws
     r.rasterize_us = sw.us();
@@ -215,7 +226,13 @@ bool runOnce(const MPBenchScript& script, const MPBenchSeed& seed, RepResult& r)
     // --- Phase 4: canvas push / e-paper waveform -----------------------------
 #if MP_BENCH_PUSH
     sw.restart();
-    canvas->pushCanvas(0, 0, MP_BENCH_PUSH_MODE);
+    bool pushed_1bpp = false;
+#if MP_BENCH_PUSH_1BPP
+    pushed_1bpp = canvas->pushCanvas1bpp(0, 0, MP_BENCH_PUSH_MODE);
+#endif
+    if (!pushed_1bpp) {
+        canvas->pushCanvas(0, 0, MP_BENCH_PUSH_MODE);
+    }
     r.push_xfer_us = sw.us();
     // pushCanvas() returns as soon as the update is ISSUED: M5EPD_Driver::
     // UpdateArea() waits for the PREVIOUS waveform (CheckAFSR) and then fires

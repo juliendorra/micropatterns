@@ -67,6 +67,24 @@ public:
     // ~190 ms of panel time on each of the other seven.
     static constexpr uint16_t SCRIPT_DEGHOST_INTERVAL = 8;
 
+    // Ship the script framebuffer to the panel as 1 bit per pixel instead of
+    // 4. Legal for exactly the same reason SCRIPT_FAST_UPDATE_MODE is: the DSL
+    // only ever emits DRAWING_COLOR_WHITE (0) and DRAWING_COLOR_BLACK (15).
+    //
+    // This is a QUARTER of the bytes over SPI. Combined with the bulk-transfer
+    // fix in the vendored M5EPD (lib/M5EPD/README-VENDORED.md), the full-screen
+    // gram transfer should drop from the measured ~666 ms to well under 100 ms.
+    //
+    // Set this to false to fall straight back to the 4bpp path -- it is the
+    // first thing to try if the panel shows anything wrong after a script
+    // render. M5EPD_Canvas::pushCanvas1bpp() also falls back on its own if the
+    // geometry is unsupported, so the 4bpp path is never dead code.
+    //
+    // NOT used for the periodic de-ghost push: that one wants a genuine 16-grey
+    // GC16 sweep, and going through 4bpp is also what clears the controller's
+    // latched 1bpp display mode.
+    static constexpr bool SCRIPT_PUSH_1BPP = true;
+
     DisplayManager();
     ~DisplayManager();
 

@@ -279,7 +279,18 @@ void DisplayManager::pushScriptCanvasLocked()
         const m5epd_update_mode_t mode = deghost ? UPDATE_MODE_GC16 : SCRIPT_FAST_UPDATE_MODE;
 
         const uint32_t t0 = millis();
-        _canvas.pushCanvas(0, 0, mode);
+        // 1bpp for the fast path (see SCRIPT_PUSH_1BPP in the header); the
+        // periodic de-ghost deliberately goes through 4bpp/GC16, which also
+        // takes the controller back out of 1bpp display mode.
+        bool used_1bpp = false;
+        if (SCRIPT_PUSH_1BPP && !deghost)
+        {
+            used_1bpp = _canvas.pushCanvas1bpp(0, 0, mode);
+        }
+        if (!used_1bpp)
+        {
+            _canvas.pushCanvas(0, 0, mode);
+        }
         const uint32_t xfer_ms = millis() - t0;
 
         if (deghost)
@@ -291,8 +302,9 @@ void DisplayManager::pushScriptCanvasLocked()
             noteFastUpdateLocked();
         }
 
-        log_i("DisplayManager: script push mode=%s%s, gram transfer %lu ms, fast updates since de-ghost=%u/%u",
+        log_i("DisplayManager: script push mode=%s%s bpp=%d, gram transfer %lu ms, fast updates since de-ghost=%u/%u",
               updateModeName(mode), deghost ? " (periodic de-ghost)" : "",
+              used_1bpp ? 1 : 4,
               (unsigned long)xfer_ms,
               (unsigned)_fastUpdatesSinceRefresh, (unsigned)SCRIPT_DEGHOST_INTERVAL);
 

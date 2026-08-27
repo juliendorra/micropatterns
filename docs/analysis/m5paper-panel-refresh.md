@@ -83,7 +83,70 @@ only 2/3/4/8 BPP with no 1bpp path, and `_pix_bpp`, `_spi_freq`, `StartSPI()`,
 public, but the address/area setup around the transfer is not, so the transfer
 cannot be driven from outside.
 
-**Decision taken:** vendor M5EPD into the repo and patch it. Not yet done.
+**Decision taken:** vendor M5EPD into the repo and patch it. **Done** —
+`M5Paper_MicroPatterns/lib/M5EPD/`, see `README-VENDORED.md` there for the full
+description of every local modification and `upstream-0.1.5.patch` for the diff.
+
+### What was actually changed
+
+1. **Bulk SPI transfer.** One CS assertion, one `0x0000` pack-write preamble,
+   one `writeBytes()` for the whole payload, instead of 129,600 × {CS low,
+   `write32`, CS high}. Halves the wire traffic (32 bits per 16 bits of payload
+   → 16) and removes 259,200 GPIO toggles. **This alone should take the
+   full-screen 4bpp transfer from ~666 ms to near its ~207 ms clock floor.**
+2. **1bpp path.** `M5EPD_Canvas::pushCanvas1bpp()` +
+   `M5EPD_Driver::Write1bppGram()` / `Update1bppArea()`. 259,200 bytes →
+   **64,800**, so ~207 ms → **~52 ms** of clock. Wired into
+   `DisplayManager::pushScriptCanvasLocked()` behind
+   `DisplayManager::SCRIPT_PUSH_1BPP` (default true), except on the periodic
+   de-ghost push, which stays 4bpp/GC16 on purpose.
+3. **`M5EPD_SPI_FREQ_HZ`**, still 10 MHz. One-line change to raise; corruption
+   is the expected failure mode, and it is now also the expected failure mode of
+   the flow-control-free packed burst.
+
+### The wrinkle the plan missed: rotation forces a host-side transpose
+
+The IT8951 applies `SetRotation()` **during the load** (the rotate field is in
+the `LD_IMG_AREA` info word), so controller DRAM is always panel-native. At 4bpp
+that is fine. At 1bpp it is incoherent: we smuggle 8 pixels through as one "8bpp
+pixel", so the controller would rotate whole *bytes*.
+
+Independently, our canvas is **540** wide and 540 is not a multiple of 8 — there
+is no way to pack 540-pixel rows at all, never mind the 32-pixel alignment some
+LUT versions demand.
+
+Both are solved the same way: transpose to panel-native **960×540** on the host
+(960 = 30 × 32) and hand the driver panel-native coordinates. Cost is a pack pass
+over 518,400 pixels; the loop is written so the only PSRAM-hostile access is one
+strided byte write per output byte (64,800 of them). Budget ~20–30 ms, which
+still leaves the 1bpp push far cheaper than the 4bpp one.
+
+### Device verification checklist for the vendored transfer path
+
+Ordered, because each step's failure explains the next.
+
+1. **Flash `-e m5stack-fire`, render any script.** Watch the serial line
+   `DisplayManager: script push mode=DU bpp=1, gram transfer N ms`. Expect
+   `bpp=1` and N well under 150. `bpp=4` means `pushCanvas1bpp()` bailed —
+   the reason is logged.
+2. **Look at the image.** In order of what each symptom means:
+   inverted → swap `M5EPD_1BPP_FRONT_GREY`/`M5EPD_1BPP_BACK_GREY`;
+   upside down → the transpose reversal, see `README-VENDORED.md`;
+   8-px columns swapped in pairs → flip `M5EPD_1BPP_ENDIAN`;
+   torn bands / noise → SPI or FIFO, lower `M5EPD_SPI_FREQ_HZ`;
+   nothing displayed → this firmware's LUT does not do 1bpp, set
+   `SCRIPT_PUSH_1BPP = false`.
+3. **Check the 4bpp path still works** — it is what indicators, banners and the
+   periodic de-ghost use, and it got the bulk-transfer rewrite too. Press a
+   button mid-render (activity indicator, DU4 region push) and let the de-ghost
+   counter reach 8 (GC16 full-screen). Both must look right.
+4. **Check `Clear()`** — `FillGramBulk()` replaced its loop as well. It runs on
+   `clearScreen()`.
+5. **Then, and only then, try raising `M5EPD_SPI_FREQ_HZ`.** 20 MHz first. If
+   the panel corrupts, put it back; there is no datasheet number to appeal to.
+6. **Numbers:** `-e m5paper-bench` reports `push_xfer_us`. Note that with
+   `MP_BENCH_PUSH_1BPP=1` (default) that figure *includes* the host-side pack,
+   which the 4bpp path does not do. A/B with `-DMP_BENCH_PUSH_1BPP=0`.
 
 ## Rejected: partial / regional updates
 

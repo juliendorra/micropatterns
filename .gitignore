@@ -30,3 +30,6 @@ M5Paper_MicroPatterns/.vscode/ipch
 # PlatformIO build output for the Watchy firmware (M5Paper's is listed above).
 Watchy_MicroPatterns/.pio
 tools/device/hello_watchy/.pio
+
+# Sanitizer build tree for the host harness (see tools/host_harness).
+tools/host_harness/build_asan/

@@ -199,3 +199,40 @@ channel in minutes. `tools/device/buzz_watchy/` exists so this is one command.
 - **Gates**: 15 golden images; both firmwares build.
 - **Approved, not started**: vendoring M5EPD to fix the SPI gram transfer —
   the largest remaining win (~666 ms → possibly ~150 ms).
+
+### 9. M5EPD vendored and the transfer path patched (same day, later)
+
+Done. `M5Paper_MicroPatterns/lib/M5EPD/` is now ours; `m5stack/M5EPD` is out of
+`lib_deps`. Provenance, every local modification, and a complete diff against
+pristine 0.1.5 live in `lib/M5EPD/README-VENDORED.md` and
+`lib/M5EPD/upstream-0.1.5.patch`.
+
+Three fixes, multiplicative:
+
+1. **Bulk SPI.** Upstream shipped one 16-bit word per CS assertion, and
+   `write32(uint16)` emits a `0x0000` preamble first — 32 wire bits per 16 bits
+   of payload, plus two GPIO toggles, 129,600 times per frame. IT8951 pack-write
+   (`I80CPCR` bit 0, which upstream *already enabled*) allows one preamble per CS
+   assertion. Now: CS low, one preamble, one `writeBytes()`, CS high. Wire bytes
+   are bit-identical.
+2. **1bpp.** Load declared `IT8951_8BPP` with `Area_X = X/8`, `Area_W = W/8`;
+   `UP1SR+2 |= 1<<2`; `BGVR = 0xF0<<8 | 0x00`. A quarter of the bytes.
+3. **`M5EPD_SPI_FREQ_HZ`** — still 10 MHz, but now one named constant instead of
+   two magic numbers. Raising it is deliberately left as a measured experiment.
+
+**The thing the plan did not anticipate:** the IT8951 applies rotation *during
+the load*, which is incoherent with 8-pixels-per-byte packing — it would rotate
+whole bytes. And our canvas is 540 wide, which is not a multiple of 8, let alone
+the 32 some LUTs demand. Both problems have the same answer: transpose on the
+host into panel-native 960×540 (960 = 30 × 32) and give the driver panel-native
+coordinates. `M5EPD_Canvas::pushCanvas1bpp()` does that; it returns false and
+changes nothing if the geometry is unsupported, so the 4bpp path is a live
+fallback, not dead code.
+
+Also: `Update1bppArea()` latches 1bpp display mode on and stays fire-and-forget;
+the mode bit is cleared lazily by the next 4bpp transfer, which waits on
+`CheckAFSR()` — exactly where upstream already paid that wait. Waveshare clears
+it inline and blocks on the whole waveform; we would rather not.
+
+**Not verified on device at time of writing.** Builds + 15/15 goldens only. The
+device checklist is in `analysis/m5paper-panel-refresh.md`.

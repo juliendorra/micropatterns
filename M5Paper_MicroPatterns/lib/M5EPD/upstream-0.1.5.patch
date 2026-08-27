@@ -1,0 +1,725 @@
+# Complete diff of lib/M5EPD against pristine upstream m5stack/M5EPD 0.1.5.
+#
+# Reproduce the pristine tree with:
+#   pio pkg install --global --library m5stack/M5EPD@0.1.5
+# (it lands in ~/.platformio/lib/M5EPD). Only these four files differ;
+# examples/, tools/, .piopm and .clang-format were deleted wholesale.
+
+--- upstream/src/M5EPD_Driver.h
++++ vendored/src/M5EPD_Driver.h
+@@ -9,6 +9,56 @@
+ #define M5EPD_PANEL_W 960
+ #define M5EPD_PANEL_H 540
+ 
++// ===========================================================================
++// MicroPatterns LOCAL MODIFICATION -- tunables for the patched transfer path.
++// See lib/M5EPD/README-VENDORED.md for the full rationale.
++// ===========================================================================
++
++// SPI clock for every host->IT8951 transfer.
++//
++// Upstream hard-coded 10 MHz in two places with no comment explaining the
++// choice, and NO IT8951 datasheet maximum could be found. It is deliberately
++// left at 10 MHz here: raising it is a ONE-LINE change, but it is an
++// EMPIRICAL one that must be validated on the actual panel.
++//
++// FAILURE MODE IF TOO HIGH: image corruption -- torn/garbled bands, shifted
++// pixels, or a screen of noise -- because the controller mis-samples MOSI.
++// It will NOT present as a blank screen or a hang. If you raise this and the
++// panel goes garbage, put it back.
++#define M5EPD_SPI_FREQ_HZ 10000000
++
++// Staging buffer for the bulk SPI path (colour inversion / constant fill).
++// Must be a multiple of 4. Lives inside the driver object, in internal DRAM.
++#define M5EPD_SPI_CHUNK_BYTES 2048
++
++// --- 1bpp display-mode parameters ------------------------------------------
++
++// Alignment required of the panel-native X and W of a 1bpp update.
++//
++// Packing alone only needs 8. Waveshare's notes (and several IT8951 bug
++// reports) say some LUT versions need X and W 32-pixel aligned or NOTHING is
++// displayed. We ASSUME that applies and enforce 32; our only real caller is
++// full-panel (x=0, w=960) which satisfies it either way. If you ever need an
++// unaligned window and are confident the LUT does not care, lower this to 8.
++#define M5EPD_1BPP_ALIGN 32
++
++// IT8951 BGVR (0x1000+0x250) colour table: bit[15:8] = grey shown for a SET
++// bit, bit[7:0] = grey shown for a CLEAR bit. Values are 8bpp greys.
++// We pack "1 = white", matching Waveshare's EPD_IT8951_Display_1bp defaults.
++// FAILURE MODE IF SWAPPED: a perfectly sharp but INVERTED image. Swap these
++// two constants to fix; do not go hunting in the packing code.
++#define M5EPD_1BPP_FRONT_GREY 0xF0
++#define M5EPD_1BPP_BACK_GREY  0x00
++
++// Endianness declared to LD_IMG_AREA for the 1bpp (packed-as-8bpp) load.
++// The working 4bpp path ships buffer bytes in order under B_ENDIAN, and we
++// ship bytes in order too, so B_ENDIAN is the consistent choice. (Waveshare
++// declares L_ENDIAN because their SPI layer byte-swaps each 16-bit word on
++// the way out; the net wire order is the same.)
++// FAILURE MODE IF WRONG: every pair of bytes swapped -> the image reads as
++// 8-pixel-wide columns transposed in pairs. Flip to IT8951_LDIMG_L_ENDIAN.
++#define M5EPD_1BPP_ENDIAN IT8951_LDIMG_B_ENDIAN
++
+ typedef enum {
+     M5EPD_OK = 0,
+     M5EPD_BUSYTIMEOUT,
+@@ -125,6 +175,36 @@
+     m5epd_err_t FillPartGram4bpp(uint16_t x, uint16_t y, uint16_t w, uint16_t h,
+                                  uint16_t data);
+ 
++    // --- MicroPatterns LOCAL ADDITION: 1bpp fast path ----------------------
++    //
++    // WARNING: unlike every other method on this class, px/py/pw/ph here are
++    // PANEL-NATIVE (rotate-0) coordinates, NOT canvas coordinates. The
++    // IT8951 applies SetRotation() while it LOADS an image, which is
++    // incoherent with 8-pixels-per-byte packing (it would rotate whole bytes,
++    // not pixels). So the caller must have already transposed the pixels into
++    // panel orientation; M5EPD_Canvas::pushCanvas1bpp() does exactly that.
++    //
++    // `packed` is 8 pixels per byte, MSB = leftmost panel pixel, row stride
++    // pw/8 bytes, ph rows. A SET bit shows M5EPD_1BPP_FRONT_GREY.
++    // px and pw must be multiples of M5EPD_1BPP_ALIGN.
++    m5epd_err_t Write1bppGram(uint16_t px, uint16_t py, uint16_t pw,
++                              uint16_t ph, const uint8_t *packed);
++
++    // Issue the display update for a previously Write1bppGram()'d area, with
++    // the controller in 1bpp display mode. Panel-native coordinates.
++    //
++    // NOTE: this LATCHES 1bpp display mode on and returns without waiting for
++    // the waveform (same fire-and-forget contract as UpdateArea()). The mode
++    // bit is cleared lazily by the next 4bpp transfer, which waits on
++    // CheckAFSR() first. Back-to-back 1bpp pushes therefore pay nothing.
++    m5epd_err_t Update1bppArea(uint16_t px, uint16_t py, uint16_t pw,
++                               uint16_t ph, m5epd_update_mode_t mode);
++
++    // True while the controller is left in 1bpp display mode.
++    bool Is1bppDisplayLatched(void) {
++        return _display_1bpp_latched;
++    }
++
+     m5epd_err_t SetRotation(uint16_t rotate = IT8951_ROTATE_0);
+     m5epd_err_t SetArea(uint16_t x, uint16_t y, uint16_t w, uint16_t h);
+     m5epd_err_t UpdateFull(m5epd_update_mode_t mode);
+@@ -156,7 +236,14 @@
+     m5epd_err_t WriteCommand(uint16_t cmd);
+     m5epd_err_t WriteWord(uint16_t data);
+     m5epd_err_t WriteReg(uint16_t addr, uint16_t data);
++    m5epd_err_t ReadReg(uint16_t addr, uint16_t *data);
+     void WriteGramData(uint16_t data);
++    // MicroPatterns LOCAL ADDITION -- bulk gram transfer helpers.
++    void WriteGramBulk(const uint8_t *data, uint32_t len, bool invert);
++    void FillGramBulk(uint16_t word, uint32_t words);
++    m5epd_err_t SetLoadArea(uint16_t x, uint16_t y, uint16_t w, uint16_t h,
++                            uint16_t bpp, uint16_t rotate);
++    m5epd_err_t LeaveDisplay1bpp(void);
+     m5epd_err_t ReadWords(uint16_t *buf, uint32_t length);
+     m5epd_err_t WriteArgs(uint16_t cmd, uint16_t *args, uint16_t length);
+     m5epd_err_t SetTargetMemoryAddr(uint32_t tar_addr);
+@@ -178,6 +265,14 @@
+ 
+     uint16_t _update_count;
+     uint8_t _is_reverse;
++
++    // MicroPatterns LOCAL ADDITION.
++    bool _display_1bpp_latched;
++    // 4-byte aligned ON PURPOSE: Arduino-ESP32's spiWriteNL() casts the buffer
++    // to uint32_t* and reads it a long at a time. An unaligned buffer here is
++    // an alignment fault (or a very slow exception-handler fixup), not a
++    // wrong-pixels bug -- so it would present as a crash, not as corruption.
++    uint8_t _xfer_buf[M5EPD_SPI_CHUNK_BYTES] __attribute__((aligned(4)));
+ };
+ 
+ #endif
+--- upstream/src/M5EPD_Driver.cpp
++++ vendored/src/M5EPD_Driver.cpp
+@@ -1,5 +1,12 @@
+ #include "M5EPD_Driver.h"
+ 
++#include <string.h>
++
++// ===========================================================================
++// VENDORED + LOCALLY MODIFIED. See lib/M5EPD/README-VENDORED.md.
++// Upstream: m5stack/M5EPD 0.1.5.
++// ===========================================================================
++
+ m5epd_err_t __epdret__;
+ #define CHECK(x)                  \
+     __epdret__ = x;               \
+@@ -19,13 +26,15 @@
+     _pin_mosi = -1;
+     _pin_rst  = -1;
+ 
+-    _spi_freq = 10000000;
++    _spi_freq = M5EPD_SPI_FREQ_HZ;
+ 
+     _rotate    = IT8951_ROTATE_0;
+     _direction = 1;
+ 
+     _update_count = false;
+     _is_reverse   = false;
++
++    _display_1bpp_latched = false;
+ }
+ 
+ M5EPD_Driver::~M5EPD_Driver() {
+@@ -49,7 +58,7 @@
+     pinMode(_pin_cs, OUTPUT);
+     pinMode(_pin_busy, INPUT);
+ 
+-    StartSPI(10000000);
++    StartSPI(M5EPD_SPI_FREQ_HZ);
+ 
+     // CHECK(GetSysInfo());
+     _tar_memaddr   = 0x001236E0;
+@@ -110,6 +119,8 @@
+  * @retval m5epd_err_t
+  */
+ m5epd_err_t M5EPD_Driver::Clear(bool init) {
++    CHECK(LeaveDisplay1bpp());  // LOCAL: back to 4bpp interpretation first
++
+     _endian_type = IT8951_LDIMG_L_ENDIAN;
+     _pix_bpp     = IT8951_4BPP;
+ 
+@@ -121,19 +132,9 @@
+     } else {
+         CHECK(SetArea(0, 0, M5EPD_PANEL_H, M5EPD_PANEL_W));
+     }
+-    if (_is_reverse) {
+-        for (uint32_t x = 0; x < ((M5EPD_PANEL_W * M5EPD_PANEL_H) >> 2); x++) {
+-            digitalWrite(_pin_cs, 0);
+-            _epd_spi->write32(0x00000000);
+-            digitalWrite(_pin_cs, 1);
+-        }
+-    } else {
+-        for (uint32_t x = 0; x < ((M5EPD_PANEL_W * M5EPD_PANEL_H) >> 2); x++) {
+-            digitalWrite(_pin_cs, 0);
+-            _epd_spi->write32(0x0000FFFF);
+-            digitalWrite(_pin_cs, 1);
+-        }
+-    }
++    // LOCAL: was 129600 iterations of {CS low; write32(word); CS high}.
++    FillGramBulk(_is_reverse ? 0x0000 : 0xFFFF,
++                 ((uint32_t)M5EPD_PANEL_W * M5EPD_PANEL_H) >> 2);
+ 
+     CHECK(WriteCommand(IT8951_TCON_LD_IMG_END));
+ 
+@@ -168,6 +169,8 @@
+  */
+ m5epd_err_t M5EPD_Driver::WritePartGram4bpp(uint16_t x, uint16_t y, uint16_t w,
+                                             uint16_t h, const uint8_t *gram) {
++    CHECK(LeaveDisplay1bpp());  // LOCAL: back to 4bpp interpretation first
++
+     _endian_type = IT8951_LDIMG_B_ENDIAN;
+     _pix_bpp     = IT8951_4BPP;
+ 
+@@ -196,34 +199,17 @@
+         }
+     }
+ 
+-    uint32_t pos = 0;
+-    // uint64_t length = (w / 2) * h;
+-
+     StartSPI();
+ 
+-    uint16_t word = 0;
+     CHECK(SetTargetMemoryAddr(_tar_memaddr));
+     CHECK(SetArea(x, y, w, h));
+-    if (_is_reverse) {
+-        for (uint32_t x = 0; x < ((w * h) >> 2); x++) {
+-            word = gram[pos] << 8 | gram[pos + 1];
+-
+-            digitalWrite(_pin_cs, 0);
+-            _epd_spi->write32(word);
+-            digitalWrite(_pin_cs, 1);
+-            pos += 2;
+-        }
+-    } else {
+-        for (uint32_t x = 0; x < ((w * h) >> 2); x++) {
+-            word = gram[pos] << 8 | gram[pos + 1];
+-            word = 0xFFFF - word;
+-
+-            digitalWrite(_pin_cs, 0);
+-            _epd_spi->write32(word);
+-            digitalWrite(_pin_cs, 1);
+-            pos += 2;
+-        }
+-    }
++    // LOCAL: was ((w*h)>>2) iterations of {CS low; write32(word); CS high},
++    // i.e. 32 SPI bits and two GPIO toggles per 16 bits of payload. The wire
++    // bytes produced there are exactly gram[] in order (MSBFIRST, B_ENDIAN),
++    // optionally complemented, so one packed burst is bit-identical.
++    // 0xFFFF - word == ~word for a full 16-bit word, hence the byte-wise
++    // complement below.
++    WriteGramBulk(gram, ((uint32_t)w * h) >> 1, !_is_reverse);
+     CHECK(WriteCommand(IT8951_TCON_LD_IMG_END));
+ 
+     EndSPI();
+@@ -241,6 +227,8 @@
+  */
+ m5epd_err_t M5EPD_Driver::FillPartGram4bpp(uint16_t x, uint16_t y, uint16_t w,
+                                            uint16_t h, uint16_t data) {
++    CHECK(LeaveDisplay1bpp());  // LOCAL: back to 4bpp interpretation first
++
+     _endian_type = IT8951_LDIMG_B_ENDIAN;
+     _pix_bpp     = IT8951_4BPP;
+ 
+@@ -276,11 +264,7 @@
+ 
+     CHECK(SetTargetMemoryAddr(_tar_memaddr));
+     CHECK(SetArea(x, y, w, h));
+-    for (uint32_t x = 0; x < ((w * h) >> 2); x++) {
+-        digitalWrite(_pin_cs, 0);
+-        _epd_spi->write32(data);
+-        digitalWrite(_pin_cs, 1);
+-    }
++    FillGramBulk(data, ((uint32_t)w * h) >> 2);  // LOCAL: bulk, was per-word
+     CHECK(WriteCommand(IT8951_TCON_LD_IMG_END));
+ 
+     EndSPI();
+@@ -418,8 +402,18 @@
+  */
+ m5epd_err_t M5EPD_Driver::SetArea(uint16_t x, uint16_t y, uint16_t w,
+                                   uint16_t h) {
++    // LOCAL: body moved to SetLoadArea() so the 1bpp path can override the
++    // bpp/rotate fields without disturbing the members. Behaviour unchanged.
++    return SetLoadArea(x, y, w, h, _pix_bpp, _rotate);
++}
++
++/** @brief LOCAL ADDITION. Set write area with explicit bpp and rotate.
++ */
++m5epd_err_t M5EPD_Driver::SetLoadArea(uint16_t x, uint16_t y, uint16_t w,
++                                      uint16_t h, uint16_t bpp,
++                                      uint16_t rotate) {
+     uint16_t args[5];
+-    args[0] = (_endian_type << 8 | _pix_bpp << 4 | _rotate);
++    args[0] = (_endian_type << 8 | bpp << 4 | rotate);
+     args[1] = x;
+     args[2] = y;
+     args[3] = w;
+@@ -493,6 +487,17 @@
+     return M5EPD_OK;
+ }
+ 
++/** @brief LOCAL ADDITION. Read one IT8951 register.
++ *  Caller must already be inside a StartSPI()/EndSPI() pair, matching the
++ *  convention of WriteReg() above.
++ */
++m5epd_err_t M5EPD_Driver::ReadReg(uint16_t addr, uint16_t *data) {
++    CHECK(WriteCommand(IT8951_TCON_REG_RD));
++    CHECK(WriteWord(addr));
++    CHECK(ReadWords(data, 1));
++    return M5EPD_OK;
++}
++
+ m5epd_err_t M5EPD_Driver::GetSysInfo(void) {
+     uint16_t infobuf[20];
+     CHECK(WriteCommand(IT8951_I80_CMD_GET_DEV_INFO));
+@@ -594,4 +599,211 @@
+ 
+ void M5EPD_Driver::ResetUpdateCount(void) {
+     _update_count = 0;
++}
++
++// ===========================================================================
++// MicroPatterns LOCAL ADDITIONS
++// ===========================================================================
++
++/** @brief Ship `len` bytes of gram payload in ONE CS assertion.
++ *
++ * UPSTREAM shipped one 16-bit payload word per CS assertion:
++ *     digitalWrite(CS,0); spi->write32(word); digitalWrite(CS,1);
++ * write32() of a 16-bit value emits 0x0000 -- the IT8951 "write data"
++ * preamble -- followed by the 16 payload bits. So every 16 bits of image cost
++ * 32 bits on the wire plus two GPIO toggles, and a full 540x960 4bpp frame
++ * cost 129,600 of those.
++ *
++ * IT8951 pack-write mode (IT8951_I80CPCR bit 0, already enabled by begin())
++ * accepts ONE preamble per CS assertion followed by an arbitrary number of
++ * payload words. That is exactly what Waveshare's
++ * EPD_IT8951_HostAreaPackedPixelWrite() does, and it halves the wire traffic
++ * on top of removing the GPIO churn.
++ *
++ * @param invert byte-wise complement on the way out. Upstream computed
++ *        `0xFFFF - word`, which for a full 16-bit word is `~word`, which is
++ *        the byte-wise complement -- so this is bit-identical.
++ */
++void M5EPD_Driver::WriteGramBulk(const uint8_t *data, uint32_t len,
++                                 bool invert) {
++    if (len == 0) {
++        return;
++    }
++
++    digitalWrite(_pin_cs, 0);
++    _epd_spi->write16(0x0000);  // pack-write preamble, ONCE for the burst
++
++    if (!invert) {
++        _epd_spi->writeBytes(data, len);
++    } else {
++        uint32_t done = 0;
++        while (done < len) {
++            uint32_t n = len - done;
++            if (n > M5EPD_SPI_CHUNK_BYTES) {
++                n = M5EPD_SPI_CHUNK_BYTES;
++            }
++            const uint8_t *src = data + done;
++            const uint32_t n32 = n >> 2;
++            for (uint32_t i = 0; i < n32; i++) {
++                uint32_t v;
++                memcpy(&v, src + (i << 2), 4);
++                v = ~v;
++                memcpy(_xfer_buf + (i << 2), &v, 4);
++            }
++            for (uint32_t i = n32 << 2; i < n; i++) {
++                _xfer_buf[i] = (uint8_t)(~src[i]);
++            }
++            _epd_spi->writeBytes(_xfer_buf, n);
++            done += n;
++        }
++    }
++
++    digitalWrite(_pin_cs, 1);
+ }
++
++/** @brief Ship `words` copies of a constant 16-bit payload word in one burst.
++ */
++void M5EPD_Driver::FillGramBulk(uint16_t word, uint32_t words) {
++    if (words == 0) {
++        return;
++    }
++
++    const uint32_t chunk_words = M5EPD_SPI_CHUNK_BYTES >> 1;
++    for (uint32_t i = 0; i < chunk_words; i++) {
++        _xfer_buf[(i << 1)]     = (uint8_t)(word >> 8);
++        _xfer_buf[(i << 1) + 1] = (uint8_t)(word & 0xFF);
++    }
++
++    digitalWrite(_pin_cs, 0);
++    _epd_spi->write16(0x0000);  // pack-write preamble, ONCE for the burst
++    while (words) {
++        uint32_t n = (words > chunk_words) ? chunk_words : words;
++        _epd_spi->writeBytes(_xfer_buf, n << 1);
++        words -= n;
++    }
++    digitalWrite(_pin_cs, 1);
++}
++
++/** @brief Leave 1bpp display mode if we latched it.
++ *
++ * Update1bppArea() deliberately returns without waiting for the waveform, so
++ * the UP1SR bit is still set while the panel settles. Clearing it mid-update
++ * would make the display engine re-read the same DRAM as 4bpp and garble the
++ * frame, so we wait for the LUT engines to go idle first. This is called at
++ * the top of every 4bpp transfer, which is where the wait belongs: upstream
++ * already paid a CheckAFSR() there via UpdateArea().
++ *
++ * Back-to-back 1bpp pushes never call this, so they pay nothing.
++ */
++m5epd_err_t M5EPD_Driver::LeaveDisplay1bpp(void) {
++    if (!_display_1bpp_latched) {
++        return M5EPD_OK;
++    }
++
++    CHECK(CheckAFSR());
++
++    uint16_t up1sr = 0;
++    StartSPI();
++    CHECK(ReadReg(IT8951_UP1SR + 2, &up1sr));
++    CHECK(WriteReg(IT8951_UP1SR + 2, (uint16_t)(up1sr & ~(1 << 2))));
++    EndSPI();
++
++    _display_1bpp_latched = false;
++    return M5EPD_OK;
++}
++
++/** @brief Load a packed 1bpp image into controller DRAM.
++ *
++ * The trick, straight out of Waveshare's EPD_IT8951.c
++ * (EPD_IT8951_1bp_Refresh): declare the load as IT8951_8BPP but divide X and
++ * W by 8. The controller then stores each byte we send as one "8bpp pixel",
++ * which is really 8 packed 1bpp pixels; the display engine unpacks them when
++ * the UP1SR 1bpp bit is set. Their own comment is "Use 8bpp to set 1bpp".
++ *
++ * px/py/pw/ph are PANEL-NATIVE (rotate-0) coordinates. See the header.
++ */
++m5epd_err_t M5EPD_Driver::Write1bppGram(uint16_t px, uint16_t py, uint16_t pw,
++                                        uint16_t ph, const uint8_t *packed) {
++    if ((px % M5EPD_1BPP_ALIGN) || (pw % M5EPD_1BPP_ALIGN)) {
++        log_e("1bpp area x=%u w=%u not %u-aligned.", px, pw, M5EPD_1BPP_ALIGN);
++        return M5EPD_NOTMULTIPLE4;
++    }
++    if ((uint32_t)px + pw > M5EPD_PANEL_W ||
++        (uint32_t)py + ph > M5EPD_PANEL_H) {
++        log_e("1bpp area (%u,%u,%u,%u) out of bounds.", px, py, pw, ph);
++        return M5EPD_OUTOFBOUNDS;
++    }
++
++    _endian_type = M5EPD_1BPP_ENDIAN;
++    _pix_bpp     = IT8951_8BPP;
++
++    StartSPI();
++    CHECK(SetTargetMemoryAddr(_tar_memaddr));
++    // Rotation is forced to 0: the IT8951 applies rotation during the LOAD,
++    // which would rotate whole packed bytes instead of pixels. The caller has
++    // already transposed.
++    CHECK(SetLoadArea(px >> 3, py, pw >> 3, ph, IT8951_8BPP, IT8951_ROTATE_0));
++    WriteGramBulk(packed, ((uint32_t)pw >> 3) * ph, false);
++    CHECK(WriteCommand(IT8951_TCON_LD_IMG_END));
++    EndSPI();
++
++    return M5EPD_OK;
++}
++
++/** @brief Display a previously Write1bppGram()'d area in 1bpp display mode.
++ *
++ * Sequence per Waveshare EPD_IT8951_Display_1bp():
++ *   1. UP1SR+2 |= (1<<2)          -- enable 1bpp display mode
++ *   2. BGVR = (front<<8) | back   -- the two greys the 0/1 bits map to
++ *   3. DPY_BUF_AREA               -- fire the waveform
++ *   4. (later) clear the UP1SR bit -- done lazily, see LeaveDisplay1bpp()
++ *
++ * px/py/pw/ph are PANEL-NATIVE (rotate-0) coordinates and are passed through
++ * unrotated -- unlike UpdateArea(), which transforms canvas coordinates.
++ */
++m5epd_err_t M5EPD_Driver::Update1bppArea(uint16_t px, uint16_t py, uint16_t pw,
++                                         uint16_t ph,
++                                         m5epd_update_mode_t mode) {
++    if (mode == UPDATE_MODE_NONE) {
++        return M5EPD_OTHERERR;
++    }
++    if ((px % M5EPD_1BPP_ALIGN) || (pw % M5EPD_1BPP_ALIGN)) {
++        return M5EPD_NOTMULTIPLE4;
++    }
++
++    if ((uint32_t)px + pw > M5EPD_PANEL_W) {
++        pw = M5EPD_PANEL_W - px;
++    }
++    if ((uint32_t)py + ph > M5EPD_PANEL_H) {
++        ph = M5EPD_PANEL_H - py;
++    }
++
++    // Retuning UP1SR while a waveform runs would change how the running
++    // update interprets DRAM, so wait for the previous one. UpdateArea() does
++    // the same thing at the same point.
++    CHECK(CheckAFSR());
++
++    uint16_t up1sr = 0;
++    StartSPI();
++    CHECK(ReadReg(IT8951_UP1SR + 2, &up1sr));
++    CHECK(WriteReg(IT8951_UP1SR + 2, (uint16_t)(up1sr | (1 << 2))));
++    CHECK(WriteReg(IT8951_BGVR,
++                   (uint16_t)((M5EPD_1BPP_FRONT_GREY << 8) |
++                              M5EPD_1BPP_BACK_GREY)));
++
++    uint16_t args[7];
++    args[0] = px;
++    args[1] = py;
++    args[2] = pw;
++    args[3] = ph;
++    args[4] = mode;
++    args[5] = _dev_memaddr_l;
++    args[6] = _dev_memaddr_h;
++    CHECK(WriteArgs(IT8951_I80_CMD_DPY_BUF_AREA, args, 7));
++    EndSPI();
++
++    _display_1bpp_latched = true;
++    _update_count++;
++
++    return M5EPD_OK;
++}
+--- upstream/src/M5EPD_Canvas.h
++++ vendored/src/M5EPD_Canvas.h
+@@ -105,6 +105,26 @@
+     void *frameBuffer(int8_t f = 1);
+     void pushCanvas(int32_t x, int32_t y, m5epd_update_mode_t mode);
+     void pushCanvas(m5epd_update_mode_t mode);
++
++    // --- MicroPatterns LOCAL ADDITION -------------------------------------
++    //
++    // Same contract as pushCanvas(x, y, mode), but ships the canvas as 1 bit
++    // per pixel instead of 4: a quarter of the bytes, and the IT8951 is put
++    // into 1bpp display mode for the update.
++    //
++    // ONLY VALID FOR TWO-TONE CONTENT. Every canvas pixel is thresholded at
++    // grey 8; there is no dithering. Use the 4bpp pushCanvas() for anything
++    // with real greys (fonts, indicators, images).
++    //
++    // Returns FALSE and does nothing at all if the geometry is not supported
++    // (rotation other than 0/90, panel-native X or W not a multiple of
++    // M5EPD_1BPP_ALIGN, area off-panel, or the packing buffer could not be
++    // allocated). Callers are expected to fall back to pushCanvas().
++    bool pushCanvas1bpp(int32_t x, int32_t y, m5epd_update_mode_t mode);
++
++    // Release the lazily-allocated 1bpp packing buffer (pw/8 * ph bytes,
++    // 64800 for a full panel). Called by deleteCanvas().
++    void free1bppBuffer(void);
+     void pushToCanvas(int32_t x, int32_t y, M5EPD_Canvas *canvas);
+     uint16_t readPixel(int32_t x, int32_t y);
+     void pushImage(int32_t x, int32_t y, int32_t w, int32_t h,
+@@ -174,6 +194,7 @@
+         return TFT_eSprite::createSprite(width, height, frames);
+     };
+     void deleteCanvas(void) {
++        free1bppBuffer();  // LOCAL
+         TFT_eSprite::deleteSprite();
+     }
+     void setPivot(int16_t x, int16_t y) {
+@@ -491,5 +512,9 @@
+     M5EPD_Driver *_epd_driver;
+     int32_t _bytewidth;  // Bytes per line
+     uint32_t _buffer_size;
++
++    // MicroPatterns LOCAL ADDITION -- lazily allocated 1bpp packing buffer.
++    uint8_t *_bitbuf      = NULL;
++    uint32_t _bitbuf_size = 0;
+ };
+ #endif
+--- upstream/src/M5EPD_Canvas.cpp
++++ vendored/src/M5EPD_Canvas.cpp
+@@ -178,6 +178,146 @@
+     if (!_created) return;
+     _epd_driver->UpdateArea(_last_push_x, _last_push_y, _iwidth, _iheight,
+                             mode);
++}
++
++// --- MicroPatterns LOCAL ADDITION: 1bpp push ------------------------------
++//
++// WHY THIS IS NOT JUST "pushCanvas() with a different bpp".
++//
++// The IT8951 applies SetRotation() while it LOADS an image (the rotate field
++// lives in the LD_IMG_AREA info word), so controller DRAM is always stored
++// panel-native. That is fine at 4bpp, where a byte is 2 pixels and the
++// controller can rotate pixel by pixel. It is incoherent at 1bpp, where we
++// smuggle 8 pixels through as one "8bpp pixel": the controller would rotate
++// whole bytes. So the host has to transpose.
++//
++// It also fixes an alignment problem. Our canvas is 540x960 portrait, and 540
++// is not a multiple of 8, let alone the 32 some IT8951 LUT versions demand --
++// there is no way to pack 540-pixel rows. Panel-native it is 960x540, and 960
++// is 30 * 32. Transposing is what makes 1bpp legal here at all.
++//
++// Mapping, derived from M5EPD_Driver::UpdateArea()'s own ROTATE_90 formula
++// (args = {y, PANEL_H - w - x, h, w}):
++//     panel_x = y + cy
++//     panel_y = (PANEL_H - w - x) + (w - 1 - cx) = PANEL_H - 1 - x - cx
++// i.e. a canvas COLUMN is a panel ROW, with the column order reversed.
++//
++// FAILURE MODE IF THE REVERSAL IS BACKWARDS: the image appears rotated 180
++// degrees (upside down and mirrored), sharp and correct otherwise. Fix by
++// replacing `(_iwidth - 1 - cx)` with `cx` in the ROTATE_90 branch below --
++// do not go looking anywhere else.
++void M5EPD_Canvas::free1bppBuffer(void) {
++    if (_bitbuf) {
++        free(_bitbuf);
++        _bitbuf = NULL;
++    }
++    _bitbuf_size = 0;
++}
++
++bool M5EPD_Canvas::pushCanvas1bpp(int32_t x, int32_t y,
++                                  m5epd_update_mode_t mode) {
++    if (!_created || _epd_driver == NULL) return false;
++
++    const uint8_t rot = _epd_driver->GetRotate();
++    int32_t px, py, pw, ph;
++
++    if (rot == IT8951_ROTATE_0) {
++        px = x;
++        py = y;
++        pw = _iwidth;
++        ph = _iheight;
++    } else if (rot == IT8951_ROTATE_90) {
++        px = y;
++        py = M5EPD_PANEL_H - _iwidth - x;
++        pw = _iheight;
++        ph = _iwidth;
++    } else {
++        return false;  // 180/270 unused by this project; not worked out
++    }
++
++    if (px < 0 || py < 0) return false;
++    if (px + pw > M5EPD_PANEL_W || py + ph > M5EPD_PANEL_H) return false;
++    if ((px % M5EPD_1BPP_ALIGN) || (pw % M5EPD_1BPP_ALIGN)) return false;
++
++    const uint32_t stride = (uint32_t)pw >> 3;
++    const uint32_t need   = stride * (uint32_t)ph;
++
++    if (_bitbuf == NULL || _bitbuf_size < need) {
++        free1bppBuffer();
++        // PSRAM first, deliberately. 64800 bytes of internal DRAM would be a
++        // permanent bite out of the same pool WiFi needs. The packing loop
++        // below is written so the only PSRAM-hostile accesses are one strided
++        // byte write per output byte.
++#if defined(BOARD_HAS_PSRAM)
++        _bitbuf = (uint8_t *)ps_malloc(need);
++#endif
++        if (_bitbuf == NULL) _bitbuf = (uint8_t *)malloc(need);
++        if (_bitbuf == NULL) {
++            log_e("pushCanvas1bpp: could not allocate %u bytes.",
++                  (unsigned)need);
++            return false;
++        }
++        _bitbuf_size = need;
++    }
++
++    // Pack. A SET bit means M5EPD_1BPP_FRONT_GREY (white by default), and the
++    // canvas convention -- shared with the 4bpp path, which complements on
++    // the way out -- is that grey 0 is white and grey 15 is black. So
++    // bit = (grey < 8). Anything in between is thresholded, not dithered.
++    if (rot == IT8951_ROTATE_0) {
++        for (int32_t cy = 0; cy < _iheight; cy++) {
++            const uint8_t *row = _img8 + (int32_t)cy * _bytewidth;
++            uint8_t *out       = _bitbuf + (uint32_t)cy * stride;
++            for (int32_t bx = 0; bx < (int32_t)stride; bx++) {
++                uint8_t b = 0;
++                for (int32_t k = 0; k < 8; k++) {
++                    const int32_t cx = (bx << 3) + k;
++                    const uint8_t v  = row[cx >> 1];
++                    const uint8_t g  = (cx & 1) ? (v & 0x0F) : (v >> 4);
++                    b                = (uint8_t)((b << 1) | (g < 8 ? 1 : 0));
++                }
++                out[bx] = b;
++            }
++        }
++    } else {
++        // Eight canvas rows at a time: eight sequential PSRAM read streams in,
++        // one byte written per canvas column out.
++        for (int32_t cy0 = 0; cy0 < _iheight; cy0 += 8) {
++            const uint8_t *rows[8];
++            int32_t n = _iheight - cy0;
++            if (n > 8) n = 8;
++            for (int32_t k = 0; k < n; k++) {
++                rows[k] = _img8 + (int32_t)(cy0 + k) * _bytewidth;
++            }
++            const uint32_t out_col = (uint32_t)cy0 >> 3;
++            for (int32_t cx = 0; cx < _iwidth; cx++) {
++                const uint32_t nb  = (uint32_t)cx >> 1;
++                const bool high    = ((cx & 1) == 0);
++                uint8_t b          = 0;
++                for (int32_t k = 0; k < 8; k++) {
++                    uint8_t bit = 1;  // pad short groups with white
++                    if (k < n) {
++                        const uint8_t v = rows[k][nb];
++                        const uint8_t g = high ? (v >> 4) : (v & 0x0F);
++                        bit             = (g < 8) ? 1 : 0;
++                    }
++                    b = (uint8_t)((b << 1) | bit);
++                }
++                _bitbuf[(uint32_t)(_iwidth - 1 - cx) * stride + out_col] = b;
++            }
++        }
++    }
++
++    if (_epd_driver->Write1bppGram(px, py, pw, ph, _bitbuf) != M5EPD_OK) {
++        return false;
++    }
++    if (_epd_driver->Update1bppArea(px, py, pw, ph, mode) != M5EPD_OK) {
++        return false;
++    }
++
++    _last_push_x = x;
++    _last_push_y = y;
++    return true;
+ }
+ 
+ void M5EPD_Canvas::pushToCanvas(int32_t x, int32_t y, M5EPD_Canvas *canvas) {
