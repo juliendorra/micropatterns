@@ -792,10 +792,18 @@ void RenderTask_Function(void *pvParameters) {
                 // The final push to EPD happens here.
                 // Directly call canvas push since mutex is already held by RenderTask.
                 M5EPD_Canvas* canvas = g_displayManager->getCanvas();
-                if (canvas) {
-                    canvas->pushCanvas(0, 0, UPDATE_MODE_GC16); // Or appropriate mode
-                } else {
+                if (!canvas) {
                     log_e("RenderTask: Failed to get canvas from DisplayManager.");
+                } else if (resultData.interrupted) {
+                    // Do NOT push an interrupted render. The canvas holds a partial
+                    // image of the script we just abandoned; pushing it repaints the
+                    // panel with stale content -- which is what painted the previous
+                    // script over the new one's title on every script switch.
+                    // The incoming render owns the panel now.
+                    log_i("RenderTask: Render interrupted for '%s'. Skipping canvas push to avoid painting stale content.",
+                          resultData.script_id.c_str());
+                } else {
+                    canvas->pushCanvas(0, 0, UPDATE_MODE_GC16); // Or appropriate mode
                 }
                 
                 g_displayManager->unlockEPD(); // Unlock EPD

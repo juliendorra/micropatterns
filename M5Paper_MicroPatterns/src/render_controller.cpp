@@ -1,4 +1,5 @@
 #include "render_controller.h"
+#include "main.h" // For g_renderTaskEventFlags / RENDER_INTERRUPT_BIT
 #include "esp32-hal-log.h"
 
 RenderController::RenderController(DisplayManager& displayMgr)
@@ -12,7 +13,22 @@ RenderController::~RenderController() {
 }
 
 bool RenderController::checkInterrupt() {
-    return _interrupt_requested_for_runtime_or_renderer;
+    // Fast path: already latched.
+    if (_interrupt_requested_for_runtime_or_renderer) {
+        return true;
+    }
+    // MainControlTask signals a mid-render interrupt by setting RENDER_INTERRUPT_BIT
+    // on g_renderTaskEventFlags (main.cpp, on any input during a render). Nothing
+    // used to read that bit from inside the render path, so the whole cooperative
+    // interrupt mechanism was inert and a stale render always ran to completion --
+    // painting over the new script's title. Latch it here so the runtime and the
+    // renderer, which poll this callback, actually stop.
+    if (g_renderTaskEventFlags != NULL &&
+        (xEventGroupGetBits(g_renderTaskEventFlags) & RENDER_INTERRUPT_BIT) != 0) {
+        _interrupt_requested_for_runtime_or_renderer = true;
+        return true;
+    }
+    return false;
 }
 
 RenderResultData RenderController::renderScript(const String& script_id, const String& script_content, const ScriptExecState& initial_state) {

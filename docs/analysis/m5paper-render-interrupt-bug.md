@@ -3,8 +3,10 @@
 **Reported by Julien:** "when switching to another script, the previous script render over the
 title, then the new script appears."
 
-**Status:** diagnosed, not yet fixed. Diagnosis is from source reading only — not yet confirmed on
-hardware (the M5Paper was off USB at the time of writing).
+**Status:** FIXED and confirmed on hardware, 2026-08-27. The diagnosis below was written from
+source reading only; it has since been verified on the device and proved correct in both parts.
+The original text is preserved unchanged as history — see "Resolution" at the end for what was
+actually done, what the diagnosis got right, and what it missed.
 
 ## Root cause: the mid-render interrupt is a no-op
 
@@ -123,3 +125,86 @@ result be discarded outright rather than reinterpreted.
 - `DisplayManager::showMessage` and `DisplayListRenderer::render()` both write the shared canvas.
   Canvas ownership is guarded by the EPD mutex in some paths; whether `showMessage` from
   MainControlTask always takes it is not verified here.
+
+
+---
+
+# Resolution (2026-08-27)
+
+## The diagnosis was correct, in both parts
+
+Both defects were real and both needed fixing. Neither fix alone is sufficient, exactly as the
+analysis above predicted.
+
+### Fix 1 — connect the two signalling mechanisms
+
+`RenderController::checkInterrupt()` now reads the event group that `MainControlTask` actually
+sets, and latches it:
+
+```cpp
+if (_interrupt_requested_for_runtime_or_renderer) return true;   // fast path, already latched
+if (g_renderTaskEventFlags != NULL &&
+    (xEventGroupGetBits(g_renderTaskEventFlags) & RENDER_INTERRUPT_BIT) != 0) {
+    _interrupt_requested_for_runtime_or_renderer = true;
+    return true;
+}
+return false;
+```
+
+The runtime and the renderer already poll this callback, so this is all that was needed to make the
+cooperative interrupt mechanism live. `render_controller.cpp` now includes `main.h` for
+`g_renderTaskEventFlags` / `RENDER_INTERRUPT_BIT`.
+
+### Fix 2 — do not push an interrupted render
+
+The unconditional `pushCanvas` is now guarded. This is the fix that removes the *visible* symptom:
+
+```cpp
+} else if (resultData.interrupted) {
+    log_i("RenderTask: Render interrupted for '%s'. Skipping canvas push ...");
+} else {
+    canvas->pushCanvas(0, 0, UPDATE_MODE_GC16);
+}
+```
+
+## Hardware confirmation
+
+The "Open questions" section above asked for a switch captured under instrumentation. Done — start
+a slow script, interrupt it mid-render via the serial console, and the log shows the full chain
+firing in order:
+
+```
+MainCtrl: Input received during render. Requesting interrupt.
+RenderTask: RENDER_INTERRUPT_BIT was set by MainControlTask. Overriding result to interrupted.
+RenderTask: Render interrupted for 'eyes'. Skipping canvas push to avoid painting stale content.
+```
+
+Note what this *disproves*: the prediction was that the interrupt bit would be logged only after a
+full-duration render line. With Fix 1 in place the render is genuinely cut short instead (~0.2 s
+vs the ~8 s a complete `circuits` render takes), so the mechanism aborts rather than merely being
+detected after the fact.
+
+## What the diagnosis missed: a UX regression
+
+Removing the stale push is correct, but it also removed the only visual feedback during a long
+render. Previously the abandoned partial frame was painted, so the panel visibly changed on a
+button press. Now the panel holds its previous image for the full duration of the *new* render —
+8-10 s measured — and the device reads as unresponsive even though it is working correctly.
+
+This was reported by the user as "seem stuck, not responding to the buttons commands" and is a
+direct consequence of this fix. It is not a reason to revert it. The agreed follow-ups are:
+
+1. Button-press indicators must be as instant as possible (they already exist; they need to survive
+   and appear immediately).
+2. Tighten interrupt granularity. The check is currently polled per display-list item, which is
+   coarse on a 351-item script.
+3. Reduce render time itself. See `m5paper-rasterizer-perf.md` — estimated 10-20x headroom on the
+   hot path. This is the substantive fix, and it also decides whether the Watchy port is usable.
+
+## Still open (unchanged by this work)
+
+- The `main.cpp` clear-before-render race noted above is **not** fixed. `RENDER_INTERRUPT_BIT` is
+  still cleared before the render starts, so an interrupt requested in that window is still dropped.
+  The render epoch/generation-counter idea remains the better design and remains unimplemented.
+- `FetchTask`'s analogous incomplete interrupt path is still not investigated.
+- Canvas ownership between `showMessage` and `render()` is still not verified.
