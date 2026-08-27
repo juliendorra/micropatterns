@@ -1,0 +1,170 @@
+DEFINE PATTERN NAME="eye1" WIDTH=20 HEIGHT=20 DATA="0000000000000000000000100100100010001000001001001000100110000011011011111001001000010011100011110110000111100000001111000111000011111000010001000001110011000010010000111100011000100100001111000110001001100011110011100010001100011111110001100001100011111100010000000110001110001000000000111000000100000000000011111110000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+DEFINE PATTERN NAME="eye2" WIDTH=20 HEIGHT=20 DATA="0000000000000000000000000000000000000000000000000000000000000000000000000000000000000001111110000000000001100000010000000000110000000010000000001000011100010000000110001111100010000001000111111100100000010001110011001000000100011100110010000001000111111100100000010001111110010000000010001111000100000000110000000011000000000110000001100000000000011111110000000000000000000000000000000000000000000000"
+DEFINE PATTERN NAME="eye3" WIDTH=20 HEIGHT=20 DATA="0000000000000000000000000000000000000000000000010000000000000001000101001001001000010001010010010010000110010110100010100000100110101001001000001110111111111110000010000000000111000001100001111110100000110000111110101000000100001111101010000000100011111110100000001000111111110000000001001111110100000000011000011011000000000011000000100000000000001111110000000000000000000000000000000000000000000000"
+
+# Set up background
+COLOR NAME=WHITE
+FILL NAME=SOLID
+FILL_RECT X=0 Y=0 WIDTH=$WIDTH HEIGHT=$HEIGHT
+
+# Calculate how many eyes can fit horizontally and vertically
+VAR $eye_size = 20
+VAR $grid_cols = $WIDTH / $eye_size
+VAR $grid_rows = $HEIGHT / $eye_size
+
+# Set up variables for random placement
+VAR $seed_factor1 = 17
+VAR $seed_factor2 = 31
+VAR $seed_step1 = $SECOND * $seed_factor1
+VAR $seed = $seed_step1 + $COUNTER * $seed_factor2
+
+# Number of eyes to place
+VAR $num_eyes_raw = $grid_cols * $grid_rows
+VAR $num_eyes = $num_eyes_raw / 3
+VAR $max_eyes = 50
+IF $num_eyes > $max_eyes THEN
+  LET $num_eyes = $max_eyes
+ENDIF
+
+# Set the drawing color
+COLOR NAME=BLACK
+
+# Constants for our pseudo-random number generator
+VAR $multiplier = 1103515245
+VAR $increment = 12345
+VAR $modulus = 32768
+
+# Variables for temporary calculations
+VAR $seed_temp = 0
+VAR $seed_temp2 = 0
+VAR $offset_mod = 0
+VAR $grid_x = 0
+VAR $grid_y = 0
+VAR $offset_x = 0
+VAR $offset_y = 0
+VAR $x = 0
+VAR $y = 0
+VAR $eye_type_mod = 0
+VAR $eye_type = 0
+VAR $position_used = 0
+VAR $max_x = 0
+VAR $max_y = 0
+VAR $rotate_chance = 0
+VAR $rotation = 0
+
+# Place eyes randomly
+REPEAT COUNT=$num_eyes
+  # Generate pseudo-random values for this eye
+  LET $seed_temp = $seed * $multiplier
+  LET $seed_temp2 = $seed_temp + $increment
+  LET $seed = $seed_temp2 % $modulus
+  
+  # Calculate grid position
+  LET $grid_x = $seed % $grid_cols
+  
+  LET $seed_temp = $seed * $multiplier
+  LET $seed_temp2 = $seed_temp + $increment
+  LET $seed = $seed_temp2 % $modulus
+  
+  LET $grid_y = $seed % $grid_rows
+  
+  # Add small random variation to position
+  LET $seed_temp = $seed * $multiplier
+  LET $seed_temp2 = $seed_temp + $increment
+  LET $seed = $seed_temp2 % $modulus
+  
+  LET $offset_mod = $seed % 5
+  LET $offset_x = $offset_mod - 2
+  
+  LET $seed_temp = $seed * $multiplier
+  LET $seed_temp2 = $seed_temp + $increment
+  LET $seed = $seed_temp2 % $modulus
+  
+  LET $offset_mod = $seed % 5
+  LET $offset_y = $offset_mod - 2
+  
+  # Calculate final position
+  LET $x = $grid_x * $eye_size + $offset_x
+  LET $y = $grid_y * $eye_size + $offset_y
+  
+  # Choose which eye to draw (1, 2, or 3)
+  LET $seed_temp = $seed * $multiplier
+  LET $seed_temp2 = $seed_temp + $increment
+  LET $seed = $seed_temp2 % $modulus
+  
+  LET $eye_type_mod = $seed % 3
+  LET $eye_type = $eye_type_mod + 1
+  
+  # Check if position is already used (simple collision detection)
+  LET $position_used = 0
+  
+  # Check if position is off-screen
+  IF $x < 0 THEN
+    LET $position_used = 1
+  ENDIF
+  IF $y < 0 THEN
+    LET $position_used = 1
+  ENDIF
+  
+  LET $max_x = $WIDTH - $eye_size
+  IF $x > $max_x THEN
+    LET $position_used = 1
+  ENDIF
+  
+  LET $max_y = $HEIGHT - $eye_size
+  IF $y > $max_y THEN
+    LET $position_used = 1
+  ENDIF
+  
+  # Only draw if position is valid
+  IF $position_used == 0 THEN
+    # Apply a random rotation occasionally
+    LET $seed_temp = $seed * $multiplier
+    LET $seed_temp2 = $seed_temp + $increment
+    LET $seed = $seed_temp2 % $modulus
+    
+    LET $rotate_chance = $seed % 4
+    
+    VAR $size = 6 + $seed % 6
+    
+    IF $rotate_chance == 0 THEN
+      LET $seed_temp = $seed * $multiplier
+      LET $seed_temp2 = $seed_temp + $increment
+      LET $seed = $seed_temp2 % $modulus
+      
+      LET $rotation = $seed % 360
+      RESET_TRANSFORMS
+      TRANSLATE DX=$x DY=$y
+      ROTATE DEGREES=$rotation
+      
+      SCALE FACTOR=$size
+      
+      IF $eye_type == 1 THEN
+        DRAW NAME="eye1" X=0 Y=0
+      ENDIF
+      IF $eye_type == 2 THEN
+        DRAW NAME="eye2" X=0 Y=0
+      ENDIF
+      IF $eye_type == 3 THEN
+        DRAW NAME="eye3" X=0 Y=0
+      ENDIF
+      
+      RESET_TRANSFORMS
+    
+
+    ELSE
+      # Draw without rotation 
+       SCALE FACTOR=$size
+        
+      IF $eye_type == 1 THEN
+        DRAW NAME="eye1" X=$x Y=$y
+      ENDIF
+      IF $eye_type == 2 THEN
+        DRAW NAME="eye2" X=$x Y=$y
+      ENDIF
+      IF $eye_type == 3 THEN
+        DRAW NAME="eye3" X=$x Y=$y
+      ENDIF
+    ENDIF
+  ENDIF
+ENDREPEAT
