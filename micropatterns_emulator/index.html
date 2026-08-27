@@ -13,6 +13,13 @@
     <link id="themeStylesheet" rel="stylesheet" href="style.css"> <!-- Changed ID and default -->
     <!-- Structural-only rules for the provisioning panel, so it works with every theme above. -->
     <style>
+        /* Sits below both columns as a full-width band -- deliberately out of
+           the way while provisioning is still being brought up. */
+        #provisioningPanel {
+            clear: both;
+            margin: 20px;
+        }
+
         #provisioningPanel summary {
             cursor: pointer;
             font-size: 0.9em;
@@ -345,51 +352,50 @@ ENDREPEAT
         </div>
         <!-- End Device Sync Scripts Section -->
 
-        <!-- Device Provisioning Section (Web Bluetooth) -->
-        <div class="controls-group" id="provisioningPanel">
-            <h3>Provision a Device</h3>
-            <details id="provisioningDetails">
-                <summary>Send WiFi networks and your User ID to an M5Paper or Watchy over Bluetooth</summary>
-
-                <p id="provNotice" class="prov-notice"></p>
-
-                <div id="provBody">
-                    <div class="script-mgmt-row">
-                        <label for="provUserId">User ID:</label>
-                        <input type="text" id="provUserId" placeholder="User ID to write to the device" autocomplete="off">
-                        <button id="provRotateIdButton" class="secondary" title="Generate a fresh random User ID">New ID</button>
-                    </div>
-
-                    <p class="prov-hint">
-                        Networks are tried in this order, so put the one you are usually on first.
-                        Names and their order are remembered in this browser; passwords are not stored here
-                        and are never read back from the device.
-                    </p>
-                    <div id="provNetworkList"></div>
-                    <div class="prov-actions">
-                        <button id="provAddNetworkButton" class="secondary">Add network</button>
-                    </div>
-
-                    <div class="prov-actions">
-                        <button id="provConnectButton">Connect device</button>
-                        <button id="provDisconnectButton" class="secondary">Disconnect</button>
-                    </div>
-                    <div class="prov-actions">
-                        <label class="prov-inline-check"><input type="checkbox" id="provShowAllDevices"> Show all Bluetooth devices</label>
-                    </div>
-                    <div class="prov-actions">
-                        <button id="provSendButton">Send to device</button>
-                        <button id="provStatusButton" class="secondary">Check status</button>
-                        <button id="provForgetButton" class="secondary">Forget credentials</button>
-                    </div>
-
-                    <pre id="provLog" class="prov-log"></pre>
-                </div>
-            </details>
-        </div>
-        <!-- End Device Provisioning Section -->
-
     </div>
+
+    <div class="controls-group" id="provisioningPanel">
+        <h3>Provision a Device</h3>
+        <details id="provisioningDetails">
+            <summary>Send WiFi networks and your User ID to an M5Paper or Watchy over Bluetooth</summary>
+
+            <p id="provNotice" class="prov-notice"></p>
+
+            <div id="provBody">
+                <div class="script-mgmt-row">
+                    <label for="provUserId">User ID:</label>
+                    <input type="text" id="provUserId" placeholder="User ID to write to the device" autocomplete="off">
+                    <button id="provRotateIdButton" class="secondary" title="Generate a fresh random User ID">New ID</button>
+                </div>
+
+                <p class="prov-hint">
+                    Networks are tried in this order, so put the one you are usually on first.
+                    Names and their order are remembered in this browser; passwords are not stored here
+                    and are never read back from the device.
+                </p>
+                <div id="provNetworkList"></div>
+                <div class="prov-actions">
+                    <button id="provAddNetworkButton" class="secondary">Add network</button>
+                </div>
+
+                <div class="prov-actions">
+                    <button id="provConnectButton">Connect device</button>
+                    <button id="provDisconnectButton" class="secondary">Disconnect</button>
+                </div>
+                <div class="prov-actions">
+                    <label class="prov-inline-check"><input type="checkbox" id="provShowAllDevices"> Show all Bluetooth devices</label>
+                </div>
+                <div class="prov-actions">
+                    <button id="provSendButton">Send to device</button>
+                    <button id="provStatusButton" class="secondary">Check status</button>
+                    <button id="provForgetButton" class="secondary">Forget credentials</button>
+                </div>
+
+                <pre id="provLog" class="prov-log"></pre>
+            </div>
+        </details>
+    </div>
+        <!-- End Device Provisioning Section -->
 
     <!-- CodeMirror JS -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.15/codemirror.min.js"></script>
