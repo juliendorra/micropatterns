@@ -15,6 +15,7 @@ namespace {
 
 Preferences prefs;
 const char* NVS_NS = "mpprov";
+esp_err_t g_nvsInitErr = ESP_FAIL;   // result of nvs_flash_init(), for `diag`
 
 BLEServer*         g_server = nullptr;
 BLECharacteristic* g_notify = nullptr;
@@ -77,6 +78,36 @@ void handleCommand(const String& line)
         return;
     }
 
+    if (strcmp(cmd, "diag") == 0) {
+        // Reports NVS health over BLE. Exists because the Watchy emits nothing
+        // over serial, so this is the only way to see why a write failed.
+        JsonDocument out;
+        out["ok"] = true;
+        out["nvsInit"] = esp_err_to_name(g_nvsInitErr);
+
+        bool rw = prefs.begin(NVS_NS, false);
+        out["openRW"] = rw;
+        if (rw) {
+            // Round-trip a throwaway key: this is the actual operation that
+            // matters, and it can fail even when begin() succeeds.
+            size_t wrote = prefs.putUChar("diag.probe", 42);
+            out["probeWrote"] = wrote;
+            out["probeRead"] = prefs.getUChar("diag.probe", 0);
+            prefs.remove("diag.probe");
+            prefs.end();
+        }
+
+        nvs_stats_t st;
+        if (nvs_get_stats(NULL, &st) == ESP_OK) {
+            out["nvsUsed"] = st.used_entries;
+            out["nvsFree"] = st.free_entries;
+            out["nvsTotal"] = st.total_entries;
+        }
+        out["heap"] = ESP.getFreeHeap();
+        String j; serializeJson(out, j); reply(j);
+        return;
+    }
+
     if (strcmp(cmd, "forget") == 0) {
         prefs.begin(NVS_NS, false);
         prefs.clear();
@@ -87,30 +118,81 @@ void handleCommand(const String& line)
     }
 
     if (strcmp(cmd, "provision") == 0) {
+        // BOTH FIELDS ARE OPTIONAL, but at least one must be present.
+        //
+        //   userId only    -> rotate the ID, leave the networks untouched.
+        //                     Needed: the original ID leaked publicly, so
+        //                     rotating it without retyping WiFi passwords is a
+        //                     real workflow.
+        //   networks only  -> replace the list, keep the current ID.
+        //   both           -> do both.
+        //   networks: []   -> REFUSED. An empty array is ambiguous between "I
+        //                     sent nothing" and "erase everything", and it used
+        //                     to silently wipe the lot. Clearing is deliberate
+        //                     and has its own command.
         const char* uid = doc["userId"] | "";
+        const bool haveUid = strlen(uid) > 0;
+        const bool haveNets = doc["networks"].is<JsonArray>();
         JsonArray nets = doc["networks"].as<JsonArray>();
-        if (strlen(uid) == 0 || nets.isNull()) {
-            reply("{\"ok\":false,\"error\":\"userId and networks required\"}");
+
+        if (!haveUid && !haveNets) {
+            reply("{\"ok\":false,\"error\":\"send userId, networks, or both\"}");
             return;
         }
+        if (haveNets && nets.size() == 0) {
+            reply("{\"ok\":false,\"error\":\"empty network list; use forget to clear\"}");
+            return;
+        }
+
+        // Snapshot what is stored, so a blank password can mean "keep the one
+        // you already have" instead of destroying it.
+        //
+        // This matters because the editor deliberately does NOT persist
+        // passwords in the browser. After a page reload it has your SSIDs and
+        // empty password fields, and re-sending that list would otherwise wipe
+        // working credentials while answering "ok".
+        String prevSsid[MAX_NETWORKS], prevPsk[MAX_NETWORKS];
+        const int prevCount = networkCount();
+        for (int i = 0; i < prevCount && i < MAX_NETWORKS; i++) {
+            prevSsid[i] = networkSSID(i);
+            prevPsk[i]  = networkPSK(i);
+        }
+
         if (!prefs.begin(NVS_NS, false)) {
             log_e("Provisioning: could not open NVS for writing");
             reply("{\"ok\":false,\"error\":\"nvs open failed\"}");
             return;
         }
-        prefs.putString("user.id", uid);
-        int n = 0;
+        if (haveUid) prefs.putString("user.id", uid);
+
+        int n = prevCount, kept = 0, blanks = 0;   // unchanged if no list sent
+        if (haveNets) {
+        n = 0;
         for (JsonObject net : nets) {
             if (n >= MAX_NETWORKS) break;
             const char* ssid = net["ssid"] | "";
-            const char* psk  = net["psk"]  | "";
+            String psk = String(net["psk"] | "");
             if (strlen(ssid) == 0) continue;
+
+            if (psk.length() == 0) {
+                // Blank password: reuse the stored one for this SSID if we have
+                // it. If we do not, keep it blank -- open networks are a real
+                // thing -- but say so in the reply so it is never a surprise.
+                bool found = false;
+                for (int i = 0; i < prevCount && i < MAX_NETWORKS; i++) {
+                    if (prevSsid[i] == ssid) { psk = prevPsk[i]; found = true; break; }
+                }
+                if (found && psk.length() > 0) kept++;
+                else blanks++;
+            }
+
             prefs.putString(key("w%d.ssid", n).c_str(), ssid);
-            prefs.putString(key("w%d.psk",  n).c_str(), psk);
+            prefs.putString(key("w%d.psk",  n).c_str(), psk.c_str());
             n++;
         }
         prefs.putUChar("w.count", (uint8_t)n);
         prefs.putChar("w.last", -1);   // force a fresh scan on the new list
+        }
         prefs.end();
 
         // READ BACK before claiming success. The previous version reported the
@@ -119,7 +201,7 @@ void handleCommand(const String& line)
         // "0 stored, not provisioned", which is how this bug surfaced.
         const int verified = networkCount();
         const bool idOk = isProvisioned();
-        if (verified != n || !idOk) {
+        if (verified != n || (haveUid && !idOk)) {
             log_e("Provisioning: write did not persist (asked %d, stored %d, id=%s)",
                   n, verified, idOk ? "yes" : "no");
             String e = String("{\"ok\":false,\"error\":\"write did not persist\",\"stored\":")
@@ -127,8 +209,11 @@ void handleCommand(const String& line)
             reply(e);
             return;
         }
-        log_i("Provisioning: stored and verified %d network(s) and a user ID", verified);
-        String s = String("{\"ok\":true,\"networks\":") + verified + "}";
+        log_i("Provisioning: stored and verified %d network(s), %d password(s) kept from device, %d left blank",
+              verified, kept, blanks);
+        String s = String("{\"ok\":true,\"networks\":") + verified
+                 + ",\"keptPasswords\":" + kept
+                 + ",\"blankPasswords\":" + blanks + "}";
         reply(s);
         return;
     }
@@ -166,10 +251,12 @@ void begin()
     // the shared module means both devices get it, which is the point of the
     // module being shared.
     esp_err_t nvsErr = nvs_flash_init();
+    g_nvsInitErr = nvsErr;
     if (nvsErr == ESP_ERR_NVS_NO_FREE_PAGES || nvsErr == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         log_w("Provisioning: NVS needs erasing (%s); erasing and retrying", esp_err_to_name(nvsErr));
         nvs_flash_erase();
         nvsErr = nvs_flash_init();
+        g_nvsInitErr = nvsErr;
     }
     if (nvsErr != ESP_OK) {
         log_e("Provisioning: nvs_flash_init failed: %s -- credentials CANNOT be stored",
