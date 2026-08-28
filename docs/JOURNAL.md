@@ -413,3 +413,115 @@ worth weighing, none yet tested:
 
 The Watchy is the harder case either way: ~300KB total, no PSRAM, and it must
 hold BLE, WiFi and TLS on the same pool.
+
+---
+
+## 2026-08-28 (later) -- Why fetching was broken on both devices
+
+Two independent faults, and one wrong hypothesis discarded on the way.
+
+### The wrong hypothesis: the root CA
+
+The API's chain now reads leaf <- `YE2` <- `ISRG Root YE` <- `ISRG Root X2`,
+while the firmware pins **ISRG Root X1**. That looks exactly like an expired
+pin, and the Watchy's failure was fast enough to fit.
+
+It is not the fault. `ISRG Root X2` is cross-signed by X1, so the pinned root
+validates the whole chain -- confirmed against the live server with
+`openssl s_client -CAfile`, using the PEM extracted from the firmware source
+rather than a copy from the web. Worth recording precisely because the theory
+was so plausible; pinning "both roots" would have shipped a change that fixed
+nothing and hidden the real cause.
+
+### Fault 1: BLE was holding the RAM that TLS needs
+
+    [V][ssl_client.cpp:62] Free internal heap before TLS 23212
+    [E][ssl_client.cpp:37] (-32512) SSL - Memory allocation failed
+
+The M5Paper has 4MB of PSRAM and it is no help. mbedTLS, the WiFi driver and
+the BLE controller all draw from **internal DRAM**, and `ESP.getFreeHeap()`
+counts PSRAM -- so the device reported 3.8MB free while the pool that mattered
+was nearly empty. That is how a hard wall stayed invisible: every number on
+screen said there was plenty of memory.
+
+Budget, roughly: a handshake wants ~45KB of internal DRAM in blocks up to
+~17KB; the WiFi driver ~40KB; the BLE stack ~90KB for as long as it is up.
+
+BLE is now built when a provisioning window opens and torn down when it
+closes, and a sync tears it down first. Numbers after: internal heap before
+TLS **23,212 -> 103,744** on the M5Paper; free heap after a sync **80KB ->
+170KB** on the Watchy.
+
+Building BLE at boot was itself a workaround (e45a995) for lazy init crashing
+the Watchy -- and it was aimed at the wrong cause. The Watchy was on Arduino
+2.0.4 then, where NVS is broken on this ESP32-PICO-D4, and `BLEDevice::init()`
+reads NVS. The platform move had already fixed the real fault; the workaround
+outlived it and cost every HTTPS fetch on both devices.
+
+One detail that matters: `BLEDevice::deinit(false)`, never `deinit(true)`. The
+`true` variant calls `esp_bt_controller_mem_release()`, which permanently
+forfeits the controller's reserved region -- no later init can succeed until
+the device reboots.
+
+### Fault 2: the JSON parse was truncating over TLS
+
+With memory fixed the M5Paper fetched 7/7 and the Watchy fetched **5/7**. The
+two that failed were the two 15KB City scripts:
+
+    Content length (15320) is large ...
+    JSON parse error for 'city-2-by-telohtrab': IncompleteInput
+
+`deserializeJson(doc, http.getStream())` looks like the memory-efficient
+choice. Over TLS it silently truncates: `WiFiClientSecure::read()` returns -1
+whenever no decrypted bytes happen to be buffered, ArduinoJson takes that for
+end-of-stream, and the parse stops partway through. It only shows on payloads
+spanning several TLS records, which is exactly why the five small scripts went
+through and the two large ones did not -- and why this never surfaced on the
+M5Paper, which was failing earlier for fault 1.
+
+Reading the body with `getString()` first, then parsing, then freeing it, fixes
+it. 7/7 on both.
+
+Also dropped the `MAX_SCRIPT_CONTENT_LEN` (5600) heuristic around it.
+ArduinoJson 7 grows on demand and ignores the fixed capacities the old
+`DynamicJsonDocument` took, so quoting that number only implied a limit that
+does not exist -- real scripts on the server reach 15KB.
+
+### Watchy sleep, and two more serial dead ends
+
+The Watchy loop spun at 20ms for the full 77s between renders. It now light
+sleeps, waking on timer, buttons, or a provisioning window.
+
+Deep sleep was considered and rejected on arithmetic, not taste: a wake costs
+a full boot (SPIFFS mount, script load, parse, GxEPD2 init) measured at ~9s.
+77s at ~0.8mA is about 62mA-seconds; 9s at ~100mA is about 900. Deep sleep is
+worse at this cadence and only wins once the interval is minutes.
+
+The serial console cost two attempts:
+
+  - `esp_sleep_enable_uart_wakeup()` does nothing on Arduino 3.1. It fires only
+    if UART0 is clocked from REF_TICK / XTAL, and Arduino 3.1 uses APB, which
+    is gated in light sleep, with no supported way to change it after
+    `Serial.begin()`. The M5Paper's works only because 2.0.4 defaulted to
+    REF_TICK. The device woke on timer and buttons and stayed deaf to serial.
+  - Sleeping in 4s chunks and polling on each wake does not recover it either.
+    Bytes sent to a sleeping device are **dropped, not delayed** -- the RX FIFO
+    is unclocked.
+
+The working answer uses a property of the cable rather than the radio: opening
+the port asserts DTR/RTS and resets the board, so a debugger always arrives at
+a freshly booted device. The firmware stays awake 60s after boot and re-arms
+that window on every byte received.
+
+### Panel wording
+
+The two firmwares had drifted into separate vocabularies for the same events
+-- "NetMgr Fail!" / "Fetch: Fetch OK" / "Render Fail: eyes" against "Sync
+failed" / "no WiFi" / "Render error". `mp_messages.h` now holds every
+user-facing string and both compile it, and sync outcomes travel in
+`ScriptSyncResult::message` so a sync reports itself identically on either
+device.
+
+The M5Paper's render error also had to be split across two lines: that panel
+fits 30 glyphs at text size 3 (6x8 font x3 = 18px across 540px) and does not
+wrap, so "Render error: city-2-by-telohtrab" was 33 glyphs and lost its ends.
