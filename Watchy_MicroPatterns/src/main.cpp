@@ -13,12 +13,28 @@
 #include <GxEPD2_BW.h>
 #include <SPI.h>
 
-#include "embedded_scripts.h"
 #include "micropatterns_parser.h"
 #include "micropatterns_runtime.h"
 #include "display_list_renderer.h"
 #include "watchy_canvas.h"
 #include "mp_provisioning.h"
+
+// These four are pulled in by the shared managers below, not used directly
+// here. They are named explicitly because PlatformIO's library dependency
+// finder only scans sources under src/, and the managers arrive from the
+// M5Paper tree via build_src_filter -- without these lines HTTPClient, SPIFFS
+// and WiFiClientSecure never enter the dependency graph and the build fails
+// with "No such file or directory". lib_ldf_mode = deep+ would also fix it and
+// breaks the framework's own WiFi library instead; see platformio.ini.
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <WiFiClientSecure.h>
+#include <SPIFFS.h>
+
+#include "script_manager.h"
+#include "network_manager.h"
+#include "script_sync.h"
+#include <vector>
 #include <Preferences.h>
 #include "nvs_flash.h"
 #include "esp_task_wdt.h"
@@ -71,6 +87,18 @@ GxEPD2_BW<GxEPD2_154_D67, GxEPD2_154_D67::HEIGHT> g_display(
     GxEPD2_154_D67(EPD_CS, EPD_DC, EPD_RST, EPD_BUSY));
 
 static WatchyCanvas g_canvas;
+
+// Scripts come from the server and live in SPIFFS, exactly as on the M5Paper.
+// They used to be a compiled-in EMBEDDED_SCRIPTS[] table, which was a
+// scaffolding measure from before this firmware could reach the network: it
+// meant a script change needed a reflash, and the watch could never see
+// anything the user had written since the last build.
+static ScriptManager*    g_scriptManager = nullptr;
+static MPNetworkManager* g_networkManager = nullptr;
+
+struct ScriptEntry { String humanId; String name; String fileId; };
+static std::vector<ScriptEntry> g_scripts;
+
 static int  g_currentScript = 0;
 static int  g_counter = 0;
 
@@ -133,7 +161,11 @@ enum Corner { CORNER_TL, CORNER_TR, CORNER_BL, CORNER_BR };
 static void drawCornerIndicator(Corner c, bool filled);
 static void showScriptName(const char* name);
 static void showRenderError(const char* scriptName, const char* reason);
+static void showNotice(const char* title, const char* line1, const char* line2,
+                       const char* hint);
 static void fullRefresh();
+static bool loadScriptIndex();
+static void syncScripts(bool announce);
 
 // --- Panel update policy --------------------------------------------------
 //
@@ -203,22 +235,61 @@ static void logHeap(const char* stage)
           ESP.getFreeHeap(), ESP.getMaxAllocHeap());
 }
 
-// Renders EMBEDDED_SCRIPTS[index] and pushes it to the panel.
+// Loads the script list written by the last sync into g_scripts.
+static bool loadScriptIndex()
+{
+    g_scripts.clear();
+    if (!g_scriptManager) return false;
+
+    JsonDocument listDoc;
+    if (!g_scriptManager->loadScriptList(listDoc)) {
+        log_w("No local script list yet");
+        return false;
+    }
+    if (!listDoc.is<JsonArray>()) {
+        log_e("Local script list is not an array");
+        return false;
+    }
+    for (JsonObject item : listDoc.as<JsonArray>()) {
+        const char* id = item["id"].as<const char*>();
+        if (!id || strlen(id) == 0) continue;
+        ScriptEntry e;
+        e.humanId = id;
+        const char* nm = item["name"].as<const char*>();
+        e.name   = (nm && strlen(nm)) ? nm : id;
+        e.fileId = item["fileId"].as<String>();
+        if (e.fileId.isEmpty() || e.fileId == "null") continue;
+        g_scripts.push_back(e);
+    }
+    log_i("Script index: %u script(s) on device", (unsigned)g_scripts.size());
+    return !g_scripts.empty();
+}
+
+// Renders g_scripts[index] and pushes it to the panel.
 static bool renderScript(int index)
 {
-    if (index < 0 || index >= EMBEDDED_SCRIPT_COUNT) return false;
-    const EmbeddedScript& scr = EMBEDDED_SCRIPTS[index];
-    log_i("=== Rendering '%s' (%s) ===", scr.name, scr.id);
+    if (index < 0 || index >= (int)g_scripts.size()) return false;
+    const ScriptEntry& scr = g_scripts[index];
+    log_i("=== Rendering '%s' (%s) ===", scr.name.c_str(), scr.humanId.c_str());
     logHeap("before parse");
+
+    String source;
+    if (!g_scriptManager->loadScriptContent(scr.fileId, source) || source.isEmpty()) {
+        log_e("Could not load content for '%s' (fileId %s)",
+              scr.humanId.c_str(), scr.fileId.c_str());
+        showRenderError(scr.name.c_str(), "content missing on device");
+        return false;
+    }
 
     MicroPatternsParser parser;
     parser.reset();
-    if (!parser.parse(String(scr.content))) {
-        log_e("Parse failed for '%s':", scr.id);
+    if (!parser.parse(source)) {
+        log_e("Parse failed for '%s':", scr.humanId.c_str());
         for (const String& e : parser.getErrors()) log_e("  %s", e.c_str());
-        showRenderError(scr.name, "script did not parse");
+        showRenderError(scr.name.c_str(), "script did not parse");
         return false;
     }
+    source = String();   // the parser owns the tokens now; ~5KB back to the heap
     logHeap("after parse");
 
     const int W = g_display.width();
@@ -258,7 +329,7 @@ static bool renderScript(int index)
           g_updatesSinceFull, WATCHY_DEGHOST_INTERVAL);
 
     log_i("Rendered '%s' in %lu ms (gen %lu + raster %lu)",
-          scr.name, tGen + tRender, tGen, tRender);
+          scr.name.c_str(), tGen + tRender, tGen, tRender);
     logHeap("after render");
     return true;
 }
@@ -268,9 +339,18 @@ static bool renderScript(int index)
 // looking at, and the title frame is a whole extra panel update.
 static void showScript(int index, bool announce)
 {
-    g_currentScript = (index % EMBEDDED_SCRIPT_COUNT + EMBEDDED_SCRIPT_COUNT) % EMBEDDED_SCRIPT_COUNT;
+    if (g_scripts.empty()) {
+        g_lastRenderMs = millis();
+        showNotice("No scripts", "provision WiFi, then", "hold top-left to sync",
+                   "see the web editor");
+        return;
+    }
+    const int n = (int)g_scripts.size();
+    g_currentScript = (index % n + n) % n;
     g_counter++;
-    if (announce) showScriptName(EMBEDDED_SCRIPTS[g_currentScript].name);
+    if (announce) showScriptName(g_scripts[g_currentScript].name.c_str());
+    // Survives a reboot, same as on the M5Paper.
+    if (g_scriptManager) g_scriptManager->saveCurrentScriptId(g_scripts[g_currentScript].humanId);
     g_lastRenderMs = millis();
     if (!renderScript(g_currentScript)) {
         // renderScript() has already shown the specific reason where it knows
@@ -293,10 +373,13 @@ static void pollSerial()
             String cmd = String(line); cmd.trim(); cmd.toLowerCase();
             len = 0;
             if (cmd == "list") {
-                for (int i = 0; i < EMBEDDED_SCRIPT_COUNT; i++)
-                    Serial.printf("MPCON|%d\t%s\t%s\n", i,
-                                  EMBEDDED_SCRIPTS[i].id, EMBEDDED_SCRIPTS[i].name);
-                Serial.printf("MPCON|%d script(s)\n", EMBEDDED_SCRIPT_COUNT);
+                for (size_t i = 0; i < g_scripts.size(); i++)
+                    Serial.printf("MPCON|%u\t%s\t%s\n", (unsigned)i,
+                                  g_scripts[i].humanId.c_str(), g_scripts[i].name.c_str());
+                Serial.printf("MPCON|%u script(s)\n", (unsigned)g_scripts.size());
+            } else if (cmd == "sync") {
+                Serial.println("MPCON|ok sync");
+                syncScripts(true);
             } else if (cmd == "next") {
                 Serial.println("MPCON|ok next");
                 showScript(g_currentScript + 1, true);
@@ -305,7 +388,7 @@ static void pollSerial()
                 Serial.printf("MPCON|ok run %d\n", idx);
                 showScript(idx, true);
             } else {
-                Serial.println("MPCON|commands: list | run <index> | next");
+                Serial.println("MPCON|commands: list | run <index> | next | sync");
             }
         } else if (len < sizeof(line) - 1) {
             line[len++] = (char)c;
@@ -364,12 +447,14 @@ static void showScriptName(const char* name)
     } while (g_display.nextPage());
 }
 
-// Shows a failure on the panel instead of leaving it blank.
+// Centred four-line message frame. Used for render failures and for the
+// "nothing on this device yet" state.
 //
 // A render that fails used to leave whatever the clear produced -- a white
 // screen, which is indistinguishable from a dead device. Say what happened and
 // which script it was, so a failure is legible rather than alarming.
-static void showRenderError(const char* scriptName, const char* reason)
+static void showNotice(const char* title, const char* line1, const char* line2,
+                       const char* hint)
 {
     const int W = g_display.width();
     const int H = g_display.height();
@@ -380,30 +465,31 @@ static void showRenderError(const char* scriptName, const char* reason)
         g_display.setTextColor(GxEPD_BLACK);
 
         g_display.setTextSize(2);
-        const char* title = "Render error";
         g_display.setCursor((W - (int)strlen(title) * 12) / 2, H / 2 - 26);
         g_display.print(title);
 
         g_display.setTextSize(1);
-        int nw = (int)strlen(scriptName) * 6;
-        g_display.setCursor(nw < W ? (W - nw) / 2 : 2, H / 2 - 2);
-        g_display.print(scriptName);
+        int w1 = (int)strlen(line1) * 6;
+        g_display.setCursor(w1 < W ? (W - w1) / 2 : 2, H / 2 - 2);
+        g_display.print(line1);
 
-        int rw = (int)strlen(reason) * 6;
-        g_display.setCursor(rw < W ? (W - rw) / 2 : 2, H / 2 + 14);
-        g_display.print(reason);
+        int w2 = (int)strlen(line2) * 6;
+        g_display.setCursor(w2 < W ? (W - w2) / 2 : 2, H / 2 + 14);
+        g_display.print(line2);
 
-        const char* hint = "any button to retry";
         g_display.setCursor((W - (int)strlen(hint) * 6) / 2, H - 20);
         g_display.print(hint);
     } while (g_display.nextPage());
 }
 
+static void showRenderError(const char* scriptName, const char* reason)
+{
+    showNotice("Render error", scriptName, reason, "any button to retry");
+}
+
 // Full refresh: drive the panel through black and white to clear accumulated
-// ghosting, then re-render. On the M5Paper the equivalent gesture also re-syncs
-// scripts from the server; this firmware has NO networking and the API endpoint
-// is dead (Deno Deploy Classic was sunset 2026-07-20), so the sync half is not
-// implemented. See docs/analysis/watchy-port-attempt-log.md.
+// ghosting. The top-left gesture pairs it with syncScripts() -- the same
+// "re-sync and repaint from scratch" the M5Paper's equivalent gesture performs.
 static void fullRefresh()
 {
     // Counter goes to ZERO, not to the interval. This function drives the panel
@@ -417,6 +503,48 @@ static void fullRefresh()
         g_display.firstPage();
         do { g_display.fillScreen(pass == 0 ? GxEPD_BLACK : GxEPD_WHITE); }
         while (g_display.nextPage());
+    }
+}
+
+// Pulls the script list and every script's content from the API.
+//
+// The procedure itself is mp_sync_scripts(), shared verbatim with the M5Paper
+// (script_sync.cpp) -- this firmware supplies only the progress display. It runs
+// synchronously on the Arduino loop task, where the M5Paper hands it to a
+// dedicated FetchTask; that firmware has an interactive UI to keep responsive
+// during a sync and this one does not.
+static void syncScripts(bool announce)
+{
+    if (!g_networkManager || !g_scriptManager) return;
+
+    if (announce) {
+        showNotice("Syncing", "connecting to WiFi", "", "this takes a moment");
+    }
+
+    logHeap("before sync");
+    const ScriptSyncResult r = mp_sync_scripts(*g_networkManager, *g_scriptManager,
+                                               /*fullRefresh=*/true, nullptr,
+                                               [](const char* stage, void*) {
+                                                   log_i("Sync: %s", stage);
+                                                   Serial.printf("MPCON|sync %s\n", stage);
+                                               });
+    logHeap("after sync");
+    log_i("Sync finished: %s (ok %d, failed %d, of %d)",
+          r.message.c_str(), r.successCount, r.failCount, r.serverCount);
+
+    if (r.status == FetchResultStatus::SUCCESS) {
+        loadScriptIndex();
+        return;
+    }
+
+    // Keep whatever is already on the device -- a failed sync must never be
+    // worse than no sync. Only say so when there is nothing to fall back to.
+    loadScriptIndex();
+    if (g_scripts.empty()) {
+        const char* why = (r.status == FetchResultStatus::NO_WIFI)
+                              ? "no WiFi -- provision first"
+                              : r.message.c_str();
+        showNotice("Sync failed", why, "", "hold top-left to retry");
     }
 }
 
@@ -596,9 +724,36 @@ void setup()
     // window is opened by a real button press, below.
     MPProvisioning::begin();
 
-    showScript(0, true);
+    // Scripts live in SPIFFS, written by the last sync.
+    g_scriptManager = new ScriptManager();
+    if (!g_scriptManager->initialize()) {
+        log_e("ScriptManager init failed (SPIFFS)");
+    }
+    g_networkManager = new MPNetworkManager(nullptr);   // no SystemManager on this device
+    logHeap("managers up");
+
+    const bool haveLocal = loadScriptIndex();
+
+    // Restore whatever was showing before the last reboot.
+    if (haveLocal) {
+        String currentId;
+        if (g_scriptManager->getCurrentScriptId(currentId) && currentId.length()) {
+            for (size_t i = 0; i < g_scripts.size(); i++) {
+                if (g_scripts[i].humanId == currentId) { g_currentScript = (int)i; break; }
+            }
+        }
+        showScript(g_currentScript, true);
+    } else {
+        // Nothing on the device: a first sync is the only useful thing to do.
+        // Deliberately NOT done when scripts already exist -- boot must be fast
+        // and must not depend on the network being reachable.
+        log_i("No local scripts; syncing from the server");
+        syncScripts(true);
+        showScript(0, true);
+    }
+
     g_stage = 5;                                  // first script rendered; loop() runs
-    Serial.println("MPCON|ready -- commands: list | run <index> | next");
+    Serial.println("MPCON|ready -- commands: list | run <index> | next | sync");
 }
 
 void loop()
@@ -613,8 +768,8 @@ void loop()
     static unsigned long lastBeat = 0;
     if (millis() - lastBeat > 5000) {
         lastBeat = millis();
-        Serial.printf("MPCON|alive t=%lus script=%d/%d heap=%u\n",
-                      millis() / 1000, g_currentScript, EMBEDDED_SCRIPT_COUNT,
+        Serial.printf("MPCON|alive t=%lus script=%d/%u heap=%u\n",
+                      millis() / 1000, g_currentScript, (unsigned)g_scripts.size(),
                       ESP.getFreeHeap());
         Serial.flush();
     }
@@ -633,7 +788,7 @@ void loop()
     //   top-right    previous script   (M5Paper UP)
     //   bottom-right next script       (M5Paper DOWN)
     //   bottom-left  re-run current    (M5Paper PUSH / confirm)
-    //   top-left     hold 5s: full refresh
+    //   top-left     hold 5s: sync scripts from the server, then full refresh
     //
     // Actions are dispatched on CORNER, not on pin name, so the physical layout
     // lives in exactly one place (the btns[] table) and cannot drift out of sync
@@ -671,7 +826,11 @@ void loop()
         if (down && b.wasDown && b.corner == CORNER_TL &&
             (millis() - b.downAt) >= BTN_LONG_PRESS_MS) {
             // Long press fires while still held, then swallows the release.
-            log_i("Button: top-left held %dms -> full refresh", BTN_LONG_PRESS_MS);
+            log_i("Button: top-left held %dms -> sync from server", BTN_LONG_PRESS_MS);
+            drawCornerIndicator(b.corner, false);
+            // This gesture means "go get my scripts again", not "repaint the
+            // panel" -- the de-ghost is just what a fresh start looks like.
+            syncScripts(true);
             fullRefresh();
             showScript(g_currentScript, false);   // re-run: no title
             b.wasDown = false;
