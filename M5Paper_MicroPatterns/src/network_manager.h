@@ -11,12 +11,12 @@
 // Forward declaration
 class SystemManager;
 
-class NetworkManager
+class MPNetworkManager
 {
 public:
     // Constructor can take SystemManager for WiFi credentials if they are dynamic,
     // or use hardcoded/NVS values directly.
-    NetworkManager(SystemManager *sysMgr = nullptr); // Optional SystemManager
+    MPNetworkManager(SystemManager *sysMgr = nullptr); // Optional SystemManager
 
     // WiFi Management
     // Connects to WiFi. Timeout is in FreeRTOS ticks.

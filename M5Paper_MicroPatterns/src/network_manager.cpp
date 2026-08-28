@@ -1,6 +1,6 @@
 #include "network_manager.h"
 #include "mp_provisioning.h"
-#include "system_manager.h" // If used for config
+// system_manager.h is deliberately NOT included -- see network_manager.h.
 #include "esp32-hal-log.h"
 #include "esp_task_wdt.h" // For esp_task_wdt_reset()
 
@@ -18,13 +18,13 @@ const int FETCH_INTERRUPTED_BY_USER = -9999;
 //
 // This repo is public. Never put a real SSID, password or user ID here: the
 // previous values leaked and had to be rotated. Git history keeps them forever.
-const char *NetworkManager::WIFI_SSID_DEFAULT = "EXAMPLE-SSID";
-const char *NetworkManager::WIFI_PASSWORD_DEFAULT = "EXAMPLE-PASSWORD";
-const char *NetworkManager::API_BASE_URL_DEFAULT = "https://micropatterns-api.juliendorra.deno.net";
-const char *NetworkManager::USER_ID_DEFAULT = "EXAMPLE-USER-ID";
+const char *MPNetworkManager::WIFI_SSID_DEFAULT = "EXAMPLE-SSID";
+const char *MPNetworkManager::WIFI_PASSWORD_DEFAULT = "EXAMPLE-PASSWORD";
+const char *MPNetworkManager::API_BASE_URL_DEFAULT = "https://micropatterns-api.juliendorra.deno.net";
+const char *MPNetworkManager::USER_ID_DEFAULT = "EXAMPLE-USER-ID";
 
 // ISRG Root X1 CA Certificate
-const char *NetworkManager::ROOT_CA_CERT_DEFAULT =
+const char *MPNetworkManager::ROOT_CA_CERT_DEFAULT =
     "-----BEGIN CERTIFICATE-----\n"
     "MIIFazCCA1OgAwIBAgIRAIIQz7DSQONZRGPgu2OCiwAwDQYJKoZIhvcNAQELBQAw\n"
     "TzELMAkGA1UEBhMCVVMxKTAnBgNVBAoTIEludGVybmV0IFNlY3VyaXR5IFJlc2Vh\n"
@@ -57,9 +57,9 @@ const char *NetworkManager::ROOT_CA_CERT_DEFAULT =
     "emyPxgcYxn/eR44/KJ4EBs+lVDR3veyJm+kXQ99b21/+jh5Xos1AnX5iItreGCc=\n"
     "-----END CERTIFICATE-----\n";
 
-NetworkManager::NetworkManager(SystemManager *sysMgr) : _sysMgr(sysMgr), _interruptRequestFlag(nullptr) {}
+MPNetworkManager::MPNetworkManager(SystemManager *sysMgr) : _sysMgr(sysMgr), _interruptRequestFlag(nullptr) {}
 
-void NetworkManager::setInterruptFlag(volatile bool *flag)
+void MPNetworkManager::setInterruptFlag(volatile bool *flag)
 {
     _interruptRequestFlag = flag;
 }
@@ -67,7 +67,7 @@ void NetworkManager::setInterruptFlag(volatile bool *flag)
 // The provisioned user ID if the device has one, else the placeholder. The ID
 // is both identity and authentication for the script API, so a device that has
 // not been provisioned must not silently fall back to somebody else's.
-String NetworkManager::activeUserId()
+String MPNetworkManager::activeUserId()
 {
     String provisioned = MPProvisioning::userId();
     if (provisioned.length() > 0) return provisioned;
@@ -75,7 +75,7 @@ String NetworkManager::activeUserId()
     return String(USER_ID_DEFAULT);
 }
 
-bool NetworkManager::connectWiFi(TickType_t timeout)
+bool MPNetworkManager::connectWiFi(TickType_t timeout)
 {
     if (WiFi.status() == WL_CONNECTED)
     {
@@ -185,7 +185,7 @@ bool NetworkManager::connectWiFi(TickType_t timeout)
     return false;
 }
 
-void NetworkManager::disconnectWiFi()
+void MPNetworkManager::disconnectWiFi()
 {
     if (WiFi.status() == WL_CONNECTED)
     {
@@ -203,12 +203,12 @@ void NetworkManager::disconnectWiFi()
     }
 }
 
-bool NetworkManager::isConnected()
+bool MPNetworkManager::isConnected()
 {
     return (WiFi.status() == WL_CONNECTED);
 }
 
-int NetworkManager::performHttpRequest(const String &url, String &payload, WiFiClientSecure &client, HTTPClient &http)
+int MPNetworkManager::performHttpRequest(const String &url, String &payload, WiFiClientSecure &client, HTTPClient &http)
 {
     if (_interruptRequestFlag && *_interruptRequestFlag)
     {
@@ -253,7 +253,7 @@ int NetworkManager::performHttpRequest(const String &url, String &payload, WiFiC
     return httpCode;
 }
 
-FetchResultStatus NetworkManager::fetchScriptList(JsonDocument &outListDoc)
+FetchResultStatus MPNetworkManager::fetchScriptList(JsonDocument &outListDoc)
 {
     // Clear output document first to ensure we start fresh
     outListDoc.clear();
@@ -429,7 +429,7 @@ FetchResultStatus NetworkManager::fetchScriptList(JsonDocument &outListDoc)
     return status;
 }
 
-FetchResultStatus NetworkManager::fetchScriptContent(const String &humanId, JsonDocument &outScriptDoc)
+FetchResultStatus MPNetworkManager::fetchScriptContent(const String &humanId, JsonDocument &outScriptDoc)
 {
     // Clear output document first
     outScriptDoc.clear();

@@ -22,6 +22,7 @@ static void con_help()
     con_printf("  run <id|index>  run a script by human id or list index");
     con_printf("  next | prev     same as the UP/DOWN buttons");
     con_printf("  current         currently loaded script id");
+    con_printf("  sync            re-fetch all scripts from the server");
     con_printf("  help            this list");
 }
 
@@ -118,6 +119,17 @@ static void con_handle_line(String line)
             con_printf("current %s", cur.c_str());
         } else {
             con_printf("error: no current script");
+        }
+    } else if (cmd == "sync") {
+        // Same job the full-refresh gesture queues. The sync itself is shared
+        // with the Watchy firmware (script_sync.cpp), so exercising it here
+        // exercises both.
+        FetchJob job;
+        job.full_refresh = true;
+        if (xQueueSend(g_fetchCommandQueue, &job, pdMS_TO_TICKS(100)) != pdTRUE) {
+            con_printf("error: fetch queue full");
+        } else {
+            con_printf("ok sync queued");
         }
     } else if (cmd == "run") {
         if (arg.isEmpty()) {

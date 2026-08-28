@@ -5,7 +5,7 @@
 
 // This file is significantly reduced. Most settings and functions
 // have been moved to their respective manager classes (SystemManager,
-// InputManager, ScriptManager, NetworkManager, DisplayManager).
+// InputManager, ScriptManager, MPNetworkManager, DisplayManager).
 
 // --- Potentially remaining global constants (if any truly global and not fitting elsewhere) ---
 // Example:

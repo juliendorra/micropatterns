@@ -4,6 +4,7 @@
 #include "esp_heap_caps.h" // heap integrity probe in RenderTask
 #include "serial_console.h" // Serial command channel (list/run scripts over USB)
 #include "mp_provisioning.h"   // BLE provisioning, shared with the Watchy firmware
+#include "script_sync.h"        // Server sync procedure, shared with the Watchy firmware
 
 #if MP_BENCH
 #include "bench/mp_bench.h" // env:m5paper-bench only; compiled out otherwise
@@ -41,7 +42,7 @@ SystemManager* g_systemManager = nullptr;
 InputManager* g_inputManager = nullptr;
 DisplayManager* g_displayManager = nullptr;
 ScriptManager* g_scriptManager = nullptr;
-NetworkManager* g_networkManager = nullptr;
+MPNetworkManager* g_networkManager = nullptr;
 // RenderController is instantiated by RenderTask as needed, or can be global if RenderTask always uses one.
 // For now, RenderTask will create its own RenderController instance.
 
@@ -126,13 +127,13 @@ void setup() {
     }
     esp_task_wdt_reset();
     
-    g_networkManager = new NetworkManager(g_systemManager); // Pass SystemManager if needed for config
+    g_networkManager = new MPNetworkManager(g_systemManager); // Pass SystemManager if needed for config
     if (!g_networkManager) {
-        log_e("FATAL: NetworkManager instantiation failed.");
+        log_e("FATAL: MPNetworkManager instantiation failed.");
         g_displayManager->showMessage("NetMgr Fail!", 150, 15, false, false);
         while(1) vTaskDelay(portMAX_DELAY);
     }
-    // NetworkManager doesn't have an init method in the plan, connects on demand.
+    // MPNetworkManager doesn't have an init method in the plan, connects on demand.
     esp_task_wdt_reset();
 
     g_inputManager = new InputManager(g_inputEventQueue);
@@ -433,8 +434,8 @@ void MainControlTask_Function(void *pvParameters) {
                 log_i("MainCtrl: State changed to IDLE preemptively due to render interrupt request.");
             }
             if (currentState == AppState::FETCHING_DATA) { // Check if currently fetching
-                // Fetch task interrupt is more complex, might need a flag for NetworkManager
-                // For now, let FetchTask complete or handle its own interrupt via NetworkManager flag.
+                // Fetch task interrupt is more complex, might need a flag for MPNetworkManager
+                // For now, let FetchTask complete or handle its own interrupt via MPNetworkManager flag.
                 log_i("MainCtrl: Input received during fetch. Fetch task should handle via its interrupt flag.");
             }
 
@@ -984,14 +985,9 @@ void FetchTask_Function(void *pvParameters) {
     esp_task_wdt_add(NULL);
 
     volatile bool user_interrupt_flag_for_network_manager = false;
-    if (g_networkManager) {
-        g_networkManager->setInterruptFlag(&user_interrupt_flag_for_network_manager);
-    }
 
     FetchJob job; // FetchJob is simple, no Strings, can remain as is
-    DynamicJsonDocument serverListDoc(JSON_DOC_CAPACITY_SCRIPT_LIST);
-    DynamicJsonDocument scriptContentDoc(SCRIPT_CONTENT_JSON_CAPACITY); // From event_defs.h capacity
-    
+
     // WDT timeout for FetchTask is 120s. We'll use a 60s queue receive timeout.
     const TickType_t queueReceiveTimeout = pdMS_TO_TICKS(60000);
 
@@ -1001,181 +997,19 @@ void FetchTask_Function(void *pvParameters) {
 
         if (xQueueReceive(g_fetchCommandQueue, &job, queueReceiveTimeout) == pdTRUE) {
             log_i("FetchTask: Received job. Full Refresh: %s", job.full_refresh ? "Yes" : "No");
-            
-            // Clear JsonDocuments before use for this job
-            serverListDoc.clear();
-            scriptContentDoc.clear();
 
-            FetchResultData resultData; // Use FetchResultData for internal logic
-            resultData.new_scripts_available = false; // Default
-            resultData.status = FetchResultStatus::GENUINE_ERROR; // Default
-            
-            // Connect WiFi
-            esp_task_wdt_reset(); // Before potentially long WiFi connect
-            if (!g_networkManager->connectWiFi()) { // connectWiFi uses its internal interrupt flag
-                resultData.status = FetchResultStatus::NO_WIFI;
-                resultData.message = "WiFi Connect Fail";
-            } else {
-                esp_task_wdt_reset(); // After successful connect or attempt
-                // Perform fetch operations
-            
-                // NOTE: a full refresh used to call clearAllScriptData() HERE, before
-                // the fetch. That destroyed every local script up front, so any
-                // later failure -- a 404, a dropped connection, a malformed list --
-                // left the device with nothing and no way to recover, since the
-                // scripts exist only on the device. That is exactly what happened
-                // when the API began returning 404 for this device id.
-                //
-                // The wipe was also redundant: saveScriptList() below replaces
-                // list.json wholesale, the content loop overwrites each file, and
-                // cleanupOrphanedContent()/cleanupOrphanedStates() remove anything
-                // the server no longer lists -- but only once the sync has fully
-                // succeeded. Deleting nothing up front is strictly safer and ends
-                // in the same state.
+            // The sync procedure itself is shared with the Watchy -- see
+            // script_sync.cpp. This task only owns the queue, the watchdog and
+            // the interrupt flag.
+            const ScriptSyncResult sync = mp_sync_scripts(*g_networkManager,
+                                                          *g_scriptManager,
+                                                          job.full_refresh,
+                                                          &user_interrupt_flag_for_network_manager);
 
-                esp_task_wdt_reset(); // Before network op (fetchScriptList)
-                resultData.status = g_networkManager->fetchScriptList(serverListDoc);
-                esp_task_wdt_reset(); // After network op
-
-                if (resultData.status == FetchResultStatus::SUCCESS) {
-                        JsonArray serverList = serverListDoc.as<JsonArray>();
-                        log_i("FetchTask: Fetched server list with %d scripts.", serverList.size());
-                        
-                        JsonDocument localListDoc;
-                        bool localListExists = g_scriptManager->loadScriptList(localListDoc);
-                        if (!localListExists || localListDoc.as<JsonArray>().size() != serverList.size()) {
-                            resultData.new_scripts_available = true;
-                        }
-
-                        log_d("FetchTask: Before saveScriptList - serverListDoc type: isArray=%d, isObject=%d, isNull=%d, size=%d", serverListDoc.is<JsonArray>(), serverListDoc.is<JsonObject>(), serverListDoc.isNull(), serverListDoc.is<JsonArray>() ? serverListDoc.as<JsonArray>().size() : 0);
-                        
-                        esp_task_wdt_reset(); // Before saving script list
-                        if (!serverListDoc.is<JsonArray>()) {
-                            log_e("FetchTask: Server list document (serverListDoc) is not a JSON array before saving!");
-                            resultData.status = FetchResultStatus::GENUINE_ERROR;
-                            resultData.message = "Invalid List Format (Pre-Save Check)";
-                        } else {
-                            JsonArrayConst serverListConstView = serverListDoc.as<JsonArrayConst>();
-                            if (serverListConstView.size() == 0) {
-                                log_w("FetchTask: Server returned empty script list");
-                            }
-                            log_i("FetchTask: Downloaded list contains %u scripts", serverListConstView.size());
-                            
-                            esp_task_wdt_reset(); // Before file system op (saveScriptList)
-                            if (!g_scriptManager->saveScriptList(serverListDoc)) {
-                                log_e("FetchTask: Failed to save script list to filesystem");
-                                log_e("FetchTask: serverListDoc state after saveScriptList failed: isArray=%d, isObject=%d, isNull=%d, size=%d",
-                                     serverListDoc.is<JsonArray>(), serverListDoc.is<JsonObject>(), serverListDoc.isNull(), serverListDoc.is<JsonArray>() ? serverListDoc.as<JsonArray>().size() : 0);
-                                if (serverListDoc.is<JsonArray>()) {
-                                    log_e("FetchTask: List (serverListDoc) contains %u items but save failed", serverListDoc.as<JsonArray>().size());
-                                    int itemsToLog = min(3, (int)serverListDoc.as<JsonArray>().size());
-                                    for (int i = 0; i < itemsToLog; i++) {
-                                        JsonVariant item = serverListDoc.as<JsonArray>()[i];
-                                        if (item.is<JsonObject>()) {
-                                            JsonObject obj = item.as<JsonObject>();
-                                            const char* id = obj["id"].as<const char*>();
-                                            log_e("FetchTask: Item %d - id: %s", i, id ? id : "null");
-                                        } else {
-                                            log_e("FetchTask: Item %d is not an object", i);
-                                        }
-                                    }
-                                }
-                                resultData.status = FetchResultStatus::GENUINE_ERROR;
-                                resultData.message = "Save List Fail";
-                            } else {
-                                log_i("FetchTask: Successfully saved script list to filesystem");
-                                esp_task_wdt_reset(); // After saving list
-                                
-                                bool allContentFetched = true;
-                                int successCount = 0;
-                                int failCount = 0;
-                                
-                                for (JsonObject scriptInfo : serverList) {
-                                    esp_task_wdt_reset(); // Inside loop, before each script content fetch
-                                    
-                                    const char* humanId = scriptInfo["id"].as<const char*>();
-                                    if (!humanId || strlen(humanId) == 0) {
-                                        log_w("FetchTask: Skipping script with missing/empty ID");
-                                        failCount++;
-                                        continue;
-                                    }
-                                    log_i("FetchTask: Fetching content for script '%s'", humanId);
-                                    
-                                    FetchResultStatus contentStatus = g_networkManager->fetchScriptContent(humanId, scriptContentDoc);
-                                    esp_task_wdt_reset(); // After fetchScriptContent call
-
-                                    if (contentStatus == FetchResultStatus::SUCCESS) {
-                                        if (!scriptContentDoc.is<JsonObject>() || !scriptContentDoc["content"].is<const char*>()) {
-                                            log_e("FetchTask: Invalid content response structure for '%s'", humanId);
-                                            allContentFetched = false; failCount++; continue;
-                                        }
-                                        const char* content = scriptContentDoc["content"].as<const char*>();
-                                        if (!content || strlen(content) == 0) {
-                                            log_e("FetchTask: Empty content for '%s'", humanId);
-                                            allContentFetched = false; failCount++; continue;
-                                        }
-                                        String fileId;
-                                        if (!scriptInfo["fileId"].isNull() && scriptInfo["fileId"].is<const char*>()) {
-                                            fileId = scriptInfo["fileId"].as<String>();
-                                            if (fileId.isEmpty() || fileId == "null" || !fileId.startsWith("s")) {
-                                                log_w("FetchTask: Script '%s' has invalid fileId '%s', generating short fileId", humanId, fileId.c_str());
-                                                fileId = g_scriptManager->generateShortFileId(humanId);
-                                                scriptInfo["fileId"] = fileId; scriptContentDoc["fileId"] = fileId;
-                                            }
-                                        } else {
-                                            log_w("FetchTask: Script '%s' has no fileId field or it's not a string, generating short fileId", humanId);
-                                            fileId = g_scriptManager->generateShortFileId(humanId);
-                                            scriptInfo["fileId"] = fileId; scriptContentDoc["fileId"] = fileId;
-                                        }
-                                        log_i("FetchTask: Saving content for '%s' (length: %u bytes)", humanId, strlen(content));
-                                        esp_task_wdt_reset(); // Before saving script content
-                                        if (!g_scriptManager->saveScriptContent(fileId, content)) {
-                                            log_e("FetchTask: Failed to save content for '%s'", humanId);
-                                            allContentFetched = false; failCount++;
-                                        } else {
-                                            log_i("FetchTask: Successfully saved content for '%s'", humanId);
-                                            successCount++;
-                                        }
-                                        esp_task_wdt_reset(); // After saving script content
-                                    } else if (contentStatus == FetchResultStatus::INTERRUPTED_BY_USER) {
-                                        log_i("FetchTask: Content fetch for '%s' interrupted by user", humanId);
-                                        resultData.status = FetchResultStatus::INTERRUPTED_BY_USER;
-                                        allContentFetched = false; break;
-                                    } else {
-                                        log_e("FetchTask: Failed to fetch content for '%s' (status: %d)", humanId, (int)contentStatus);
-                                        allContentFetched = false; failCount++;
-                                    }
-                                    if (user_interrupt_flag_for_network_manager) {
-                                        log_i("FetchTask: Script content fetch loop interrupted by user");
-                                        break;
-                                    }
-                                }
-                                log_i("FetchTask: Content fetch complete - Success: %d, Failed: %d, Total: %d", successCount, failCount, (int)serverList.size());
-
-                                if (resultData.status != FetchResultStatus::INTERRUPTED_BY_USER) {
-                                    if (allContentFetched) {
-                                        resultData.message = job.full_refresh ? "Full Refresh OK" : "Fetch OK";
-                                        resultData.status = FetchResultStatus::SUCCESS;
-                                        esp_task_wdt_reset();
-                                        g_scriptManager->cleanupOrphanedContent(serverList);
-                                        esp_task_wdt_reset();
-                                        g_scriptManager->cleanupOrphanedStates(serverList);
-                                    } else {
-                                        resultData.message = "Partial Fetch";
-                                        resultData.status = FetchResultStatus::GENUINE_ERROR;
-                                    }
-                                }
-                            }
-                        }
-                } else if (resultData.status == FetchResultStatus::INTERRUPTED_BY_USER) {
-                     resultData.message = "Fetch Interrupted";
-                } else {
-                    resultData.message = "Fetch List Fail";
-                }
-                esp_task_wdt_reset(); // Before disconnect
-                g_networkManager->disconnectWiFi();
-                esp_task_wdt_reset(); // After disconnect
-            } // End if WiFi connected
+            FetchResultData resultData;
+            resultData.status = sync.status;
+            resultData.message = sync.message;
+            resultData.new_scripts_available = sync.newScriptsAvailable;
 
             FetchResultQueueItem resultQueueItem;
             resultQueueItem.fromFetchResultData(resultData);

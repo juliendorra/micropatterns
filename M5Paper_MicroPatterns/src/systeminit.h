@@ -12,7 +12,7 @@
 // - Battery ADC: SystemManager or main setup.
 // - RTC.begin: SystemManager or main setup.
 // - SPIFFS init: ScriptManager.
-// - NTP time sync: SystemManager (using NetworkManager).
+// - NTP time sync: SystemManager (using MPNetworkManager).
 // - EPD init: DisplayManager.
 // - Touch Panel init: Could be InputManager or a dedicated TouchManager if complex. For now, main setup.
 // - NVS LoadSetting: SystemManager.

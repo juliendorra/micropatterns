@@ -7,7 +7,7 @@
 #include "event_defs.h" // For ScriptExecState if needed, or other system-wide defs
 
 // Forward declaration
-class NetworkManager; // If SystemManager needs to interact with NetworkManager (e.g. for WiFi credentials)
+class MPNetworkManager; // If SystemManager needs to interact with MPNetworkManager (e.g. for WiFi credentials)
 
 typedef void (*WakeupCallback)();
 
@@ -18,7 +18,7 @@ public:
     bool initialize(); // General system initialization
 
     // RTC and Time
-    bool syncTimeWithNTP(NetworkManager &netMgr); // Pass NetworkManager for WiFi
+    bool syncTimeWithNTP(MPNetworkManager &netMgr); // Pass MPNetworkManager for WiFi
     RTC_Time getTime();
     RTC_Date getDate();
     void printLocalTimeAndSetRTC(struct tm &timeinfo); // Helper for NTP

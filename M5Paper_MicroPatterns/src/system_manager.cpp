@@ -1,6 +1,6 @@
 #include "system_manager.h"
-#include "network_manager.h" // For NetworkManager reference in syncTimeWithNTP
-#include <WiFi.h>          // For WiFi status check, should be through NetworkManager
+#include "network_manager.h" // For MPNetworkManager reference in syncTimeWithNTP
+#include <WiFi.h>          // For WiFi status check, should be through MPNetworkManager
 #include "time.h"          // For NTP time struct
 #include "esp32-hal-log.h"
 #include "esp_task_wdt.h"  // For esp_task_wdt_reset()
@@ -129,8 +129,8 @@ bool SystemManager::saveSettings() {
     return true;
 }
 
-bool SystemManager::syncTimeWithNTP(NetworkManager& netMgr) {
-    if (!netMgr.isConnected()) { // Use NetworkManager's status check
+bool SystemManager::syncTimeWithNTP(MPNetworkManager& netMgr) {
+    if (!netMgr.isConnected()) { // Use MPNetworkManager's status check
         log_i("NTP Sync: WiFi not connected. Attempting to connect...");
         if (!netMgr.connectWiFi(pdMS_TO_TICKS(15000))) { // 15s timeout for NTP sync
             log_e("NTP Sync: WiFi connection failed. Cannot sync time.");
