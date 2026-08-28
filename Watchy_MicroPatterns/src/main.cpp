@@ -21,6 +21,7 @@
 #include "mp_provisioning.h"
 #include <Preferences.h>
 #include "nvs_flash.h"
+#include "esp_task_wdt.h"
 #include "nvs.h"
 #include "esp_partition.h"
 
@@ -131,6 +132,7 @@ static void StageReporterTask(void* pv)
 enum Corner { CORNER_TL, CORNER_TR, CORNER_BL, CORNER_BR };
 static void drawCornerIndicator(Corner c, bool filled);
 static void showScriptName(const char* name);
+static void showRenderError(const char* scriptName, const char* reason);
 static void fullRefresh();
 
 // --- Panel update policy --------------------------------------------------
@@ -214,6 +216,7 @@ static bool renderScript(int index)
     if (!parser.parse(String(scr.content))) {
         log_e("Parse failed for '%s':", scr.id);
         for (const String& e : parser.getErrors()) log_e("  %s", e.c_str());
+        showRenderError(scr.name, "script did not parse");
         return false;
     }
     logHeap("after parse");
@@ -270,6 +273,8 @@ static void showScript(int index, bool announce)
     if (announce) showScriptName(EMBEDDED_SCRIPTS[g_currentScript].name);
     g_lastRenderMs = millis();
     if (!renderScript(g_currentScript)) {
+        // renderScript() has already shown the specific reason where it knows
+        // one; this covers anything that returned false without drawing.
         log_e("Render failed for index %d", g_currentScript);
     }
 }
@@ -356,6 +361,41 @@ static void showScriptName(const char* name)
         g_display.setCursor(x, g_display.height() / 2 - 8);
         g_display.print(name);
         g_display.setTextSize(1);
+    } while (g_display.nextPage());
+}
+
+// Shows a failure on the panel instead of leaving it blank.
+//
+// A render that fails used to leave whatever the clear produced -- a white
+// screen, which is indistinguishable from a dead device. Say what happened and
+// which script it was, so a failure is legible rather than alarming.
+static void showRenderError(const char* scriptName, const char* reason)
+{
+    const int W = g_display.width();
+    const int H = g_display.height();
+    beginPanelUpdate(false);
+    g_display.firstPage();
+    do {
+        g_display.fillScreen(GxEPD_WHITE);
+        g_display.setTextColor(GxEPD_BLACK);
+
+        g_display.setTextSize(2);
+        const char* title = "Render error";
+        g_display.setCursor((W - (int)strlen(title) * 12) / 2, H / 2 - 26);
+        g_display.print(title);
+
+        g_display.setTextSize(1);
+        int nw = (int)strlen(scriptName) * 6;
+        g_display.setCursor(nw < W ? (W - nw) / 2 : 2, H / 2 - 2);
+        g_display.print(scriptName);
+
+        int rw = (int)strlen(reason) * 6;
+        g_display.setCursor(rw < W ? (W - rw) / 2 : 2, H / 2 + 14);
+        g_display.print(reason);
+
+        const char* hint = "any button to retry";
+        g_display.setCursor((W - (int)strlen(hint) * 6) / 2, H - 20);
+        g_display.print(hint);
     } while (g_display.nextPage());
 }
 
