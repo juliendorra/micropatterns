@@ -51,6 +51,14 @@ void begin();
 // Must only be called from a real button press. A timer wake is not a request
 // to provision, and opening a radio window nobody asked for costs awake time on
 // a battery device for nothing.
+// Builds / tears down the BLE stack. The window functions manage this on their
+// own; call stopRadio() directly before anything that needs internal DRAM in
+// bulk -- above all an HTTPS fetch, which cannot get its ~45KB with BLE
+// resident. See the comment on startRadio() in the .cpp.
+bool startRadio();
+void stopRadio();
+bool radioUp();
+
 void openWindow(uint32_t ms = 20000);
 void closeWindow();
 bool windowOpen();

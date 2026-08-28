@@ -341,8 +341,8 @@ static void showScript(int index, bool announce)
 {
     if (g_scripts.empty()) {
         g_lastRenderMs = millis();
-        showNotice("No scripts", "provision WiFi, then", "hold top-left to sync",
-                   "see the web editor");
+        showNotice("No scripts", "set up WiFi in the web editor, then hold",
+                   "top-left to sync", "");
         return;
     }
     const int n = (int)g_scripts.size();
@@ -447,44 +447,71 @@ static void showScriptName(const char* name)
     } while (g_display.nextPage());
 }
 
-// Centred four-line message frame. Used for render failures and for the
-// "nothing on this device yet" state.
+// Centred message frame. Used for render failures, for the "nothing on this
+// device yet" state and for sync progress.
 //
 // A render that fails used to leave whatever the clear produced -- a white
 // screen, which is indistinguishable from a dead device. Say what happened and
 // which script it was, so a failure is legible rather than alarming.
+//
+// Body text is size 2 like the title, not size 1: at 6px per glyph the
+// explanation was unreadable on a 200x200 panel, which defeats the point of
+// showing it. Size 2 is 12px per glyph, so only 16 glyphs fit across -- hence
+// the word wrap, rather than one long line running off the edge.
+static void drawWrapped(const char* text, int& y, int textSize)
+{
+    const int W = g_display.width();
+    const int glyph = 6 * textSize;
+    const int perLine = W / glyph;
+    g_display.setTextSize(textSize);
+
+    String rest(text);
+    while (rest.length()) {
+        String line = rest;
+        if ((int)line.length() > perLine) {
+            // Break on the last space that fits; hard-cut a single word that
+            // is longer than a line.
+            int cut = line.lastIndexOf(' ', perLine);
+            if (cut <= 0) cut = perLine;
+            line = rest.substring(0, cut);
+            rest = rest.substring(cut);
+            rest.trim();
+        } else {
+            rest = "";
+        }
+        const int w = (int)line.length() * glyph;
+        g_display.setCursor(w < W ? (W - w) / 2 : 0, y);
+        g_display.print(line);
+        y += 8 * textSize + 4;
+    }
+}
+
 static void showNotice(const char* title, const char* line1, const char* line2,
                        const char* hint)
 {
     const int W = g_display.width();
-    const int H = g_display.height();
     beginPanelUpdate(false);
     g_display.firstPage();
     do {
         g_display.fillScreen(GxEPD_WHITE);
         g_display.setTextColor(GxEPD_BLACK);
 
+        int y = 26;
         g_display.setTextSize(2);
-        g_display.setCursor((W - (int)strlen(title) * 12) / 2, H / 2 - 26);
+        g_display.setCursor((W - (int)strlen(title) * 12) / 2, y);
         g_display.print(title);
+        y += 30;
 
+        if (line1 && *line1) drawWrapped(line1, y, 2);
+        if (line2 && *line2) drawWrapped(line2, y, 2);
+        if (hint  && *hint)  { y += 8; drawWrapped(hint, y, 2); }
         g_display.setTextSize(1);
-        int w1 = (int)strlen(line1) * 6;
-        g_display.setCursor(w1 < W ? (W - w1) / 2 : 2, H / 2 - 2);
-        g_display.print(line1);
-
-        int w2 = (int)strlen(line2) * 6;
-        g_display.setCursor(w2 < W ? (W - w2) / 2 : 2, H / 2 + 14);
-        g_display.print(line2);
-
-        g_display.setCursor((W - (int)strlen(hint) * 6) / 2, H - 20);
-        g_display.print(hint);
     } while (g_display.nextPage());
 }
 
 static void showRenderError(const char* scriptName, const char* reason)
 {
-    showNotice("Render error", scriptName, reason, "any button to retry");
+    showNotice("Render error", scriptName, reason, "");
 }
 
 // Full refresh: drive the panel through black and white to clear accumulated
@@ -518,7 +545,7 @@ static void syncScripts(bool announce)
     if (!g_networkManager || !g_scriptManager) return;
 
     if (announce) {
-        showNotice("Syncing", "connecting to WiFi", "", "this takes a moment");
+        showNotice("Syncing", "connecting to WiFi", "", "");
     }
 
     logHeap("before sync");
@@ -542,7 +569,7 @@ static void syncScripts(bool announce)
     loadScriptIndex();
     if (g_scripts.empty()) {
         const char* why = (r.status == FetchResultStatus::NO_WIFI)
-                              ? "no WiFi -- provision first"
+                              ? "no WiFi"
                               : r.message.c_str();
         showNotice("Sync failed", why, "", "hold top-left to retry");
     }

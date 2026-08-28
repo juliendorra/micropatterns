@@ -1,4 +1,7 @@
 #include "script_manager.h"
+// Compiled on the Watchy too, where loopTask is not subscribed to the watchdog
+// and a direct esp_task_wdt_reset() logs an error on every call.
+#include "mp_wdt.h"
 #include "esp32-hal-log.h"
 #include <set>
 #include <vector>
@@ -423,7 +426,7 @@ bool ScriptManager::saveScriptList_nolock(JsonDocument &listDoc)
 
     bool success = false;
     log_d("saveScriptList_nolock: Beginning serialization of %u elements to %s", arraySize, LIST_JSON_PATH);
-    esp_task_wdt_reset(); // Reset watchdog before serialization
+    mp_wdt_reset(); // Reset watchdog before serialization
 
     size_t bytesWritten = serializeJson(listDoc, file);
     log_i("saveScriptList_nolock: serializeJson wrote %u bytes.", bytesWritten);
@@ -475,7 +478,7 @@ bool ScriptManager::loadScriptList_nolock(JsonDocument &outListDoc)
         return false;
     }
     log_d("loadScriptList_nolock: File %s opened, size: %u bytes", LIST_JSON_PATH, fileSize);
-    esp_task_wdt_reset();
+    mp_wdt_reset();
     DeserializationError error = deserializeJson(outListDoc, file);
     file.close();
 
@@ -637,7 +640,7 @@ bool ScriptManager::loadScriptContent_nolock(const String &fileId, String &outCo
     size_t fileSize = file.size();
     if (fileSize == 0) { log_w("loadScriptContent_nolock: File is empty (0 bytes)"); file.close(); return false; }
     log_d("loadScriptContent_nolock: File opened successfully, size: %u bytes", fileSize);
-    esp_task_wdt_reset();
+    mp_wdt_reset();
     if (fileSize > 5000) log_w("loadScriptContent_nolock: Large file detected (%u bytes)", fileSize);
     outContent = file.readString();
     size_t readLength = outContent.length();
@@ -722,9 +725,9 @@ bool ScriptManager::saveScriptContent_nolock(const String &fileId, const String 
         return false;
     }
 
-    esp_task_wdt_reset();
+    mp_wdt_reset();
     size_t bytesWritten = file.print(content);
-    esp_task_wdt_reset();
+    mp_wdt_reset();
     bool success = (bytesWritten == content.length());
 
     if (success) log_i("saveScriptContent_nolock: Successfully wrote %u bytes to file", bytesWritten);
@@ -1347,7 +1350,7 @@ void ScriptManager::clearAllScriptData()
                 File entry = root.openNextFile();
                 while (entry)
                 {
-                    esp_task_wdt_reset();
+                    mp_wdt_reset();
                     if (!entry.isDirectory())
                     {
                         String baseName = entry.name();
@@ -1459,7 +1462,7 @@ void ScriptManager::cleanupOrphanedStates(const JsonArrayConst &validScriptList)
                 }
                 else
                 {
-                    esp_task_wdt_reset();
+                    mp_wdt_reset();
                     if (serializeJson(currentStatesDoc, statesFile) > 0)
                     {
                         log_i("Successfully saved cleaned-up script states to %s.", SCRIPT_STATES_PATH);
@@ -1539,7 +1542,7 @@ void ScriptManager::cleanupOrphanedContent(const JsonArrayConst &validScriptList
             File entry = root.openNextFile();
             while (entry)
             {
-                esp_task_wdt_reset();
+                mp_wdt_reset();
                 if (!entry.isDirectory())
                 {
                     String entryName = entry.name();

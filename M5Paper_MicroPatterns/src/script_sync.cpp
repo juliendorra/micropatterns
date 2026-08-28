@@ -5,8 +5,7 @@
 #include "network_manager.h"
 #include "script_manager.h"
 #include "mp_wdt.h"
-
-#define SCRIPT_SYNC_CONTENT_JSON_CAPACITY (MAX_SCRIPT_CONTENT_LEN + 512)
+#include "mp_provisioning.h"
 
 namespace
 {
@@ -29,6 +28,13 @@ ScriptSyncResult mp_sync_scripts(MPNetworkManager &net,
     ScriptSyncResult result;
 
     net.setInterruptFlag(interruptFlag);
+
+    // BLE and TLS cannot both have the internal DRAM. A handshake needs roughly
+    // 45KB of it in blocks up to ~17KB, the WiFi driver takes ~40KB more, and
+    // the BLE stack holds ~90KB for as long as it is up -- which is why every
+    // fetch was dying at "SSL - Memory allocation failed". Provisioning is a
+    // deliberate act with its own 20s window, so the radio yields to the sync.
+    MPProvisioning::stopRadio();
 
     mp_wdt_reset();
     report(progress, progressCtx, "WiFi");
@@ -53,8 +59,12 @@ ScriptSyncResult mp_sync_scripts(MPNetworkManager &net,
     // Deleting nothing up front is strictly safer and ends in the same state.
     (void)fullRefresh;
 
-    DynamicJsonDocument serverListDoc(JSON_DOC_CAPACITY_SCRIPT_LIST);
-    DynamicJsonDocument scriptContentDoc(SCRIPT_SYNC_CONTENT_JSON_CAPACITY);
+    // Plain JsonDocument: ArduinoJson 7 grows on demand and ignores the fixed
+    // capacities the old DynamicJsonDocument took, so quoting
+    // MAX_SCRIPT_CONTENT_LEN (5600) here only implied a limit that does not
+    // exist -- the real scripts on the server reach 15KB.
+    JsonDocument serverListDoc;
+    JsonDocument scriptContentDoc;
 
     mp_wdt_reset();
     report(progress, progressCtx, "List");

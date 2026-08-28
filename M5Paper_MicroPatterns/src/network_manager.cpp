@@ -1,4 +1,5 @@
 #include "network_manager.h"
+#include "mp_wdt.h"
 #include "mp_provisioning.h"
 // system_manager.h is deliberately NOT included -- see network_manager.h.
 #include "esp32-hal-log.h"
@@ -153,7 +154,7 @@ bool MPNetworkManager::connectWiFi(TickType_t timeout)
             if ((xTaskGetTickCount() - lastDot) > pdMS_TO_TICKS(500))
             {
                 log_d(".");
-                esp_task_wdt_reset();
+                mp_wdt_reset();
                 lastDot = xTaskGetTickCount();
             }
 
@@ -221,11 +222,11 @@ int MPNetworkManager::performHttpRequest(const String &url, String &payload, WiF
         log_e("HTTPClient begin failed for URL: %s", url.c_str());
         return -1; // Generic error code for begin failure
     }
-    esp_task_wdt_reset(); // Reset WDT before blocking GET
+    mp_wdt_reset(); // Reset WDT before blocking GET
 
     int httpCode = http.GET();
     vTaskDelay(pdMS_TO_TICKS(10)); // Small yield
-    esp_task_wdt_reset();          // Reset WDT after GET
+    mp_wdt_reset();          // Reset WDT after GET
 
     if (_interruptRequestFlag && *_interruptRequestFlag)
     {
@@ -290,7 +291,7 @@ FetchResultStatus MPNetworkManager::fetchScriptList(JsonDocument &outListDoc)
     http.setTimeout(10000); // 10 seconds
     
     // Reset watchdog before HTTP operation
-    esp_task_wdt_reset();
+    mp_wdt_reset();
     log_d("fetchScriptList: Sending HTTP GET request");
     
     // Send the request
@@ -298,7 +299,7 @@ FetchResultStatus MPNetworkManager::fetchScriptList(JsonDocument &outListDoc)
     
     // Small yield to allow other tasks to run
     vTaskDelay(pdMS_TO_TICKS(10));
-    esp_task_wdt_reset();
+    mp_wdt_reset();
 
     // Check for interrupt after request
     if (_interruptRequestFlag && *_interruptRequestFlag) {
@@ -332,7 +333,7 @@ FetchResultStatus MPNetworkManager::fetchScriptList(JsonDocument &outListDoc)
             }
             
             // Reset watchdog before JSON parsing
-            esp_task_wdt_reset();
+            mp_wdt_reset();
             
             // Use ArduinoJson streaming API for efficient parsing
             log_d("fetchScriptList: Deserializing JSON from HTTP stream");
@@ -472,7 +473,7 @@ FetchResultStatus MPNetworkManager::fetchScriptContent(const String &humanId, Js
     http.setTimeout(15000); // 15 seconds - scripts might be large
     
     // Reset watchdog before HTTP operation
-    esp_task_wdt_reset();
+    mp_wdt_reset();
     log_d("fetchScriptContent: Sending HTTP GET request");
     
     // Send the request
@@ -480,7 +481,7 @@ FetchResultStatus MPNetworkManager::fetchScriptContent(const String &humanId, Js
     
     // Small yield to allow other tasks to run
     vTaskDelay(pdMS_TO_TICKS(10));
-    esp_task_wdt_reset();
+    mp_wdt_reset();
 
     // Check for interrupt after request
     if (_interruptRequestFlag && *_interruptRequestFlag) {
@@ -505,31 +506,35 @@ FetchResultStatus MPNetworkManager::fetchScriptContent(const String &humanId, Js
                 return FetchResultStatus::GENUINE_ERROR;
             }
             
-            // Heuristic check for very large content. MAX_SCRIPT_CONTENT_LEN is 5600.
-            // JsonDocument for script content is SCRIPT_CONTENT_JSON_CAPACITY (MAX_SCRIPT_CONTENT_LEN + 512)
-            if (contentLength > (MAX_SCRIPT_CONTENT_LEN + 200)) { // If content is larger than expected max + buffer
-                log_w("fetchScriptContent: Content length (%d) is large and might exceed typical document memory capacity (expected max script: %d)",
-                     contentLength, MAX_SCRIPT_CONTENT_LEN);
-                // Continue anyway, ArduinoJson might handle it with truncation or reallocation
+            mp_wdt_reset();
+
+            // Read the whole body, THEN parse -- do not deserialize straight
+            // from http.getStream().
+            //
+            // Streaming looks like the memory-efficient choice and it silently
+            // truncates over TLS: WiFiClientSecure::read() returns -1 whenever
+            // no decrypted bytes happen to be buffered, ArduinoJson takes that
+            // for end-of-stream, and the parse ends in IncompleteInput partway
+            // through. It only shows on payloads big enough to span several TLS
+            // records, which is why the two 15KB City scripts failed on the
+            // Watchy while the five small ones went through. getString() owns
+            // the read loop and its timeouts, so it waits for the rest.
+            log_d("fetchScriptContent: Reading %d byte body", contentLength);
+            String body = http.getString();
+            mp_wdt_reset();
+            if ((int)body.length() < contentLength) {
+                log_e("fetchScriptContent: Short read for '%s': got %u of %d bytes",
+                      humanId.c_str(), (unsigned)body.length(), contentLength);
+                http.end();
+                return FetchResultStatus::GENUINE_ERROR;
             }
-            
-            // Reset watchdog before JSON parsing
-            esp_task_wdt_reset();
-            
-            // Deserialize from stream for memory efficiency
-            log_d("fetchScriptContent: Deserializing JSON response");
-            DeserializationError error = deserializeJson(outScriptDoc, http.getStream());
+
+            DeserializationError error = deserializeJson(outScriptDoc, body);
+            body = String();   // ~15KB back before anything else runs
             
             if (error) {
                 log_e("fetchScriptContent: JSON parse error for '%s': %s",
                      humanId.c_str(), error.c_str());
-                
-                // Try to log response for debugging if it's small
-                if (contentLength < 500) {
-                    // Re-request to get the payload for logging
-                    String responseBody = http.getString();
-                    log_e("fetchScriptContent: Response body: %s", responseBody.c_str());
-                }
                 
                 outScriptDoc.clear();
             } else {

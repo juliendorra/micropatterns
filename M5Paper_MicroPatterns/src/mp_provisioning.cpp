@@ -10,6 +10,7 @@
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "esp32-hal-log.h"
+#include "esp_heap_caps.h"
 
 namespace MPProvisioning {
 namespace {
@@ -54,6 +55,17 @@ volatile int g_pendHead = 0, g_pendTail = 0;
 
 inline bool pendingEmpty() { return g_pendHead == g_pendTail; }
 inline bool pendingFull()  { return ((g_pendTail + 1) % PENDING_MAX) == g_pendHead; }
+
+// Free INTERNAL DRAM, which is the number that actually matters.
+// ESP.getFreeHeap() on the M5Paper counts its 4MB of PSRAM, so it reads in the
+// millions while the pool mbedTLS and the radios draw from is nearly empty --
+// which is exactly how "23KB free" hid behind "3.8MB free" for months.
+void logInternal(const char* stage)
+{
+    log_i("[dram] %-22s free=%u largest=%u", stage,
+          (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+          (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+}
 
 String key(const char* fmt, int i) { char b[24]; snprintf(b, sizeof(b), fmt, i); return String(b); }
 
@@ -367,21 +379,30 @@ void begin()
     log_i("Provisioning: %d stored network(s), provisioned=%s",
           n, isProvisioned() ? "yes" : "no");
 
-    // Build the BLE stack HERE, at boot, and never again.
-    //
-    // It used to be created lazily inside openWindow(), i.e. from loop() on a
-    // button press -- after the renderer, the display list and GxEPD2 had all
-    // allocated. BLEDevice::init() wants a large contiguous block, and on the
-    // Watchy (~300KB heap, no PSRAM, fragmented by then) that crashed the
-    // firmware. Doing it at boot, while the heap is clean and contiguous, is
-    // both cheaper and far more predictable.
-    //
-    // The cost is the stack's memory for the life of the device rather than
-    // only during a window. Measured at +16KB static on the Watchy, which is
-    // affordable; a crash is not.
-    log_i("Provisioning: free heap before BLE init: %u (largest block %u)",
-          ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+    logInternal("boot (no BLE)");
+}
 
+// Builds the BLE stack. Split out of begin() so the radio is only resident when
+// it is actually wanted.
+//
+// It used to be built at boot and never torn down, because building it lazily
+// from openWindow() -- i.e. from loop(), on a button press -- crashed the
+// Watchy. That workaround was aimed at the wrong cause: at the time the Watchy
+// was on Arduino 2.0.4, where NVS is broken on this ESP32-PICO-D4, and
+// BLEDevice::init() reads NVS. The platform move fixed the underlying fault.
+//
+// Keeping it resident cost about 90KB of internal DRAM for the life of the
+// device, and that is not affordable: mbedTLS needs roughly 45KB of internal
+// DRAM in blocks up to ~17KB for a handshake, and the WiFi driver wants ~40KB
+// on top. With BLE resident the M5Paper reached the handshake with 23KB free
+// and every fetch failed with "SSL - Memory allocation failed". BLE and TLS are
+// never needed at the same instant -- provisioning is a deliberate, occasional
+// act -- so they take turns.
+bool startRadio()
+{
+    if (g_bleInited) return true;
+
+    logInternal("before BLE init");
     BLEDevice::init("MicroPatterns");
     // Ask for a large MTU. The central decides the final value; we only ever
     // send what the negotiated MTU allows.
@@ -403,18 +424,36 @@ void begin()
     adv->addServiceUUID(SERVICE_UUID);
     adv->setScanResponse(true);
     g_bleInited = true;
+    logInternal("after BLE init");
+    return true;
+}
 
-    // Built but SILENT. Nothing is advertised until a button press.
-    log_i("Provisioning: BLE ready (not advertising), free heap now %u", ESP.getFreeHeap());
+// Tears the stack down and gives the DRAM back.
+//
+// deinit(false), NOT deinit(true): the `true` variant calls
+// esp_bt_controller_mem_release(), which permanently forfeits the controller's
+// reserved region and makes any later init fail until the device reboots. With
+// `false` the Bluedroid host and the controller's dynamic allocations are
+// freed and the stack can be built again.
+void stopRadio()
+{
+    if (!g_bleInited) return;
+    g_windowOpen = false;
+    g_rx = "";
+    BLEDevice::deinit(false);
+    g_server = nullptr;
+    g_notify = nullptr;
+    g_bleInited = false;
+    logInternal("after BLE deinit");
 }
 
 void openWindow(uint32_t ms)
 {
-    if (!g_bleInited) {
-        log_w("Provisioning: BLE not initialised; begin() was not called");
+    if (!g_bleInited && !startRadio()) {
+        log_e("Provisioning: could not start BLE");
         return;
     }
-    // Advertising only -- the stack was built at boot. Absolute deadline,
+    // Absolute deadline,
     // deliberately REPLACED on each call rather than added to, so repeated
     // presses end the window 20s after the LAST press and never later.
     const bool wasOpen = g_windowOpen;
@@ -429,15 +468,14 @@ void closeWindow()
 {
     if (!g_windowOpen) return;
     BLEDevice::stopAdvertising();
-    g_windowOpen = false;
-    g_rx = "";
-    // The stack stays built. Tearing it down and rebuilding it per window is
-    // what caused the crash described in begin(); the radio is idle when not
-    // advertising, and BLE and WiFi coexist on this controller.
-    log_i("Provisioning: window closed (BLE idle, still initialised)");
+    // Give the DRAM back. A closed window means nobody is provisioning, and the
+    // memory is worth far more to the next HTTPS fetch than an idle radio is.
+    stopRadio();
+    log_i("Provisioning: window closed, BLE torn down");
 }
 
 bool windowOpen() { return g_windowOpen; }
+bool radioUp()    { return g_bleInited; }
 
 void tick()
 {
