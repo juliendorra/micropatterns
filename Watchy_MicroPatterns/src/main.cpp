@@ -19,6 +19,14 @@
 #include "display_list_renderer.h"
 #include "watchy_canvas.h"
 #include "mp_provisioning.h"
+#include <Preferences.h>
+#include "nvs_flash.h"
+#include "nvs.h"
+#include "esp_partition.h"
+
+#ifndef MP_NVS_SCREEN
+#define MP_NVS_SCREEN 0
+#endif
 
 // --- Watchy 2.0 pinout (docs/analysis/watchy-hardware-and-references.md) ---
 // EPD wiring is identical across Watchy v1/v1.5/v2; only the battery ADC and
@@ -458,6 +466,90 @@ void setup()
     } while (g_display.nextPage());
     Serial.println("MPCON|probe pattern pushed"); Serial.flush();
     delay(2500);   // hold it long enough to be seen before the first script
+#endif
+
+    // NVS DIAGNOSTIC ON THE PANEL.
+    //
+    // The Watchy emits nothing over serial, and the BLE reply path turned out
+    // to be truncating long messages -- so both channels used to debug the
+    // "write did not persist" failure were themselves unreliable. The panel is
+    // the one output on this device that has been proven to work, so the
+    // diagnostic goes there, and it runs BEFORE BLE is initialised so a BLE
+    // fault cannot hide it.
+    //
+    // Remove once the NVS problem is understood.
+#if MP_NVS_SCREEN
+    {
+        esp_err_t e = nvs_flash_init();
+        bool erased = false;
+        if (e == ESP_ERR_NVS_NO_FREE_PAGES || e == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+            nvs_flash_erase(); e = nvs_flash_init(); erased = true;
+        }
+        // Which flash region does NVS actually believe it owns? If this is not
+        // 0x9000 / 0x5000 then NVS is bound somewhere other than the partition
+        // table we flash, which would explain writes that vanish.
+        const esp_partition_t* part = esp_partition_find_first(
+            ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_NVS, NULL);
+
+        // Raw NVS round-trip, with NO BLE anywhere in the picture. This is the
+        // bisect: if it fails here it is an NVS/flash problem, and if it
+        // succeeds here but fails over BLE it is the BLE context.
+        nvs_handle_t h; esp_err_t eo = nvs_open("bootdiag", NVS_READWRITE, &h);
+        esp_err_t es = ESP_FAIL, ec = ESP_FAIL, eg = ESP_FAIL; uint8_t rv = 0;
+        if (eo == ESP_OK) {
+            es = nvs_set_u8(h, "k", 42);
+            ec = nvs_commit(h);
+            eg = nvs_get_u8(h, "k", &rv);
+            nvs_close(h);
+        }
+        nvs_stats_t st; bool haveStats = (nvs_get_stats(NULL, &st) == ESP_OK);
+
+        // Also print it: serial works on this board at 80MHz flash frequency,
+        // so the probe no longer depends on somebody photographing the panel.
+        Serial.printf("NVSPROBE init=%s erased=%d part=@0x%lx sz=0x%lx open=%s set=%s commit=%s get=%s value=%u used=%u free=%u total=%u\n",
+                      esp_err_to_name(e), erased ? 1 : 0,
+                      part ? (unsigned long)part->address : 0UL,
+                      part ? (unsigned long)part->size : 0UL,
+                      esp_err_to_name(eo), esp_err_to_name(es),
+                      esp_err_to_name(ec), esp_err_to_name(eg), rv,
+                      haveStats ? st.used_entries : 0,
+                      haveStats ? st.free_entries : 0,
+                      haveStats ? st.total_entries : 0);
+        Serial.flush();
+
+        beginPanelUpdate(true);
+        g_display.firstPage();
+        do {
+            g_display.fillScreen(GxEPD_WHITE);
+            g_display.setTextColor(GxEPD_BLACK);
+            g_display.setTextSize(1);
+            int y = 10;
+            auto line = [&](const String& t) { g_display.setCursor(4, y); g_display.print(t); y += 12; };
+            line("NVS BOOT PROBE (no BLE)");
+            line(String("init: ") + esp_err_to_name(e));
+            line(String("erased: ") + (erased ? "yes" : "no"));
+            if (part) {
+                char b[48];
+                snprintf(b, sizeof(b), "part @0x%lx sz 0x%lx",
+                         (unsigned long)part->address, (unsigned long)part->size);
+                line(b);
+            } else line("part: NOT FOUND");
+            line(String("open: ") + esp_err_to_name(eo));
+            line(String("set: ") + esp_err_to_name(es));
+            line(String("commit: ") + esp_err_to_name(ec));
+            line(String("get: ") + esp_err_to_name(eg));
+            line(String("value: ") + rv + " (want 42)");
+            if (haveStats) {
+                line(String("used: ") + st.used_entries);
+                line(String("free: ") + st.free_entries);
+                line(String("total: ") + st.total_entries);
+            } else {
+                line("stats: unavailable");
+            }
+            line(String("heap: ") + ESP.getFreeHeap());
+        } while (g_display.nextPage());
+        delay(12000);   // long enough to read and photograph
+    }
 #endif
 
     // Loads stored credentials only. NO advertising window at boot -- the

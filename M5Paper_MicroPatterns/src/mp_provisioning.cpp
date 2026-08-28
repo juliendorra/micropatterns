@@ -8,6 +8,7 @@
 #include <BLE2902.h>
 #include <WiFi.h>
 #include "nvs_flash.h"
+#include "nvs.h"
 #include "esp32-hal-log.h"
 
 namespace MPProvisioning {
@@ -23,9 +24,36 @@ bool          g_windowOpen = false;
 unsigned long g_windowEndsAt = 0;
 bool          g_bleInited = false;
 
+// Negotiated ATT MTU. Starts at the BLE default of 23, which allows only
+// 23 - 3 = 20 payload bytes per notification. Anything larger is SILENTLY
+// TRUNCATED by the stack -- which is why long replies (diag, status with
+// several SSIDs) arrived gutted while short ones looked fine.
+uint16_t g_mtu = 23;
+
 // Reassembly buffer. A 3-network payload exceeds the ~185 byte MTU, so writes
 // arrive in pieces; a newline terminates the message.
 String g_rx;
+volatile bool g_overflowed = false;
+
+// A complete command, handed from the BLE callback to tick() for processing.
+//
+// onWrite() runs on the BLE STACK'S OWN TASK. Parsing JSON, writing NVS and
+// notifying (with per-chunk delays) directly from there blocks that task for
+// hundreds of milliseconds, which is a good way to wedge the stack -- and the
+// Watchy, with far less headroom than the M5Paper, is where that showed up as
+// a freeze. The callback now does the minimum: reassemble bytes, hand over a
+// finished line, return.
+// A SMALL QUEUE, not a single slot. With one slot, a command arriving while
+// another was still queued was silently DROPPED -- and the editor now sends
+// `status` automatically on connect, so a Diagnostics click landing moments
+// later disappeared with no reply and no error. Silent loss is the worst
+// possible failure for a debugging channel.
+const int PENDING_MAX = 4;
+String g_pending[PENDING_MAX];
+volatile int g_pendHead = 0, g_pendTail = 0;
+
+inline bool pendingEmpty() { return g_pendHead == g_pendTail; }
+inline bool pendingFull()  { return ((g_pendTail + 1) % PENDING_MAX) == g_pendHead; }
 
 String key(const char* fmt, int i) { char b[24]; snprintf(b, sizeof(b), fmt, i); return String(b); }
 
@@ -34,7 +62,10 @@ void reply(const String& json)
     if (!g_notify) return;
     // Chunked to stay under the negotiated MTU. 180 leaves room for ATT
     // overhead; the editor reassembles on the newline we append at the end.
-    const size_t CHUNK = 180;
+    // Payload limit is MTU - 3 (ATT opcode + handle). Never assume a larger MTU
+    // was negotiated: Web Bluetooth usually asks for ~185, but if that
+    // negotiation has not happened yet we must still be correct at 23.
+    const size_t CHUNK = (g_mtu > 23) ? (size_t)(g_mtu - 3) : 20;
     String out = json + "\n";
     for (size_t off = 0; off < out.length(); off += CHUNK) {
         String piece = out.substring(off, min(off + CHUNK, (size_t)out.length()));
@@ -88,13 +119,36 @@ void handleCommand(const String& line)
         bool rw = prefs.begin(NVS_NS, false);
         out["openRW"] = rw;
         if (rw) {
-            // Round-trip a throwaway key: this is the actual operation that
-            // matters, and it can fail even when begin() succeeds.
             size_t wrote = prefs.putUChar("diag.probe", 42);
             out["probeWrote"] = wrote;
             out["probeRead"] = prefs.getUChar("diag.probe", 0);
             prefs.remove("diag.probe");
             prefs.end();
+        }
+
+        // RAW NVS PROBE.
+        //
+        // Preferences reported a successful write whose value then read back as
+        // the default, with the entry count still zero -- i.e. it is swallowing
+        // an error. These calls report the actual esp_err_t at every step, so
+        // the failing operation names itself instead of being inferred.
+        {
+            nvs_handle_t h;
+            esp_err_t eo = nvs_open("mpdiag", NVS_READWRITE, &h);
+            out["rawOpen"] = esp_err_to_name(eo);
+            if (eo == ESP_OK) {
+                esp_err_t es = nvs_set_u8(h, "k", 42);
+                out["rawSet"] = esp_err_to_name(es);
+                esp_err_t ec = nvs_commit(h);
+                out["rawCommit"] = esp_err_to_name(ec);
+                uint8_t v = 0;
+                esp_err_t eg = nvs_get_u8(h, "k", &v);
+                out["rawGet"] = esp_err_to_name(eg);
+                out["rawValue"] = v;
+                nvs_erase_key(h, "k");
+                nvs_commit(h);
+                nvs_close(h);
+            }
         }
 
         nvs_stats_t st;
@@ -163,7 +217,8 @@ void handleCommand(const String& line)
             reply("{\"ok\":false,\"error\":\"nvs open failed\"}");
             return;
         }
-        if (haveUid) prefs.putString("user.id", uid);
+        size_t wUid = 0, wCount = 0, wSsid0 = 0, wPsk0 = 0;
+        if (haveUid) wUid = prefs.putString("user.id", uid);
 
         int n = prevCount, kept = 0, blanks = 0;   // unchanged if no list sent
         if (haveNets) {
@@ -186,11 +241,12 @@ void handleCommand(const String& line)
                 else blanks++;
             }
 
-            prefs.putString(key("w%d.ssid", n).c_str(), ssid);
-            prefs.putString(key("w%d.psk",  n).c_str(), psk.c_str());
+            size_t a = prefs.putString(key("w%d.ssid", n).c_str(), ssid);
+            size_t b = prefs.putString(key("w%d.psk",  n).c_str(), psk.c_str());
+            if (n == 0) { wSsid0 = a; wPsk0 = b; }
             n++;
         }
-        prefs.putUChar("w.count", (uint8_t)n);
+        wCount = prefs.putUChar("w.count", (uint8_t)n);
         prefs.putChar("w.last", -1);   // force a fresh scan on the new list
         }
         prefs.end();
@@ -202,11 +258,25 @@ void handleCommand(const String& line)
         const int verified = networkCount();
         const bool idOk = isProvisioned();
         if (verified != n || (haveUid && !idOk)) {
+            // Report every write's return value. Guessing at this has already
+            // cost several wrong hypotheses; the numbers say which call failed.
             log_e("Provisioning: write did not persist (asked %d, stored %d, id=%s)",
                   n, verified, idOk ? "yes" : "no");
-            String e = String("{\"ok\":false,\"error\":\"write did not persist\",\"stored\":")
-                     + verified + "}";
-            reply(e);
+            JsonDocument e;
+            e["ok"] = false;
+            e["error"] = "write did not persist";
+            e["asked"] = n;
+            e["stored"] = verified;
+            e["idStored"] = idOk;
+            e["wroteUserId"] = wUid;      // bytes written, 0 = the put failed
+            e["wroteCount"] = wCount;
+            e["wroteSsid0"] = wSsid0;
+            e["wrotePsk0"] = wPsk0;
+            e["reopenRO"] = prefs.begin(NVS_NS, true);   // can we even read it back?
+            e["countRaw"] = prefs.getUChar("w.count", 255);
+            e["ssid0Raw"] = prefs.getString(key("w%d.ssid", 0).c_str(), "<none>");
+            prefs.end();
+            String out; serializeJson(e, out); reply(out);
             return;
         }
         log_i("Provisioning: stored and verified %d network(s), %d password(s) kept from device, %d left blank",
@@ -223,15 +293,38 @@ void handleCommand(const String& line)
 
 class WriteCB : public BLECharacteristicCallbacks {
     void onWrite(BLECharacteristic* c) override {
+        // Runs on the BLE task: reassemble only, never process. See g_pending.
         std::string v = c->getValue();
         for (char ch : v) {
-            if (ch == '\n') { String line = g_rx; g_rx = ""; if (line.length()) handleCommand(line); }
-            else if (g_rx.length() < 2048) g_rx += ch;
+            if (ch == '\n') {
+                if (g_rx.length()) {
+                    if (!pendingFull()) {
+                        g_pending[g_pendTail] = g_rx;
+                        g_pendTail = (g_pendTail + 1) % PENDING_MAX;
+                    } else {
+                        // Never drop in silence -- say so, so an overrun is
+                        // visible instead of looking like a dead device.
+                        g_overflowed = true;
+                    }
+                }
+                g_rx = "";
+            } else if (g_rx.length() < 2048) {
+                g_rx += ch;
+            }
         }
     }
 };
 
 class ServerCB : public BLEServerCallbacks {
+    void onConnect(BLEServer* s, esp_ble_gatts_cb_param_t* param) override {
+        g_mtu = 23;   // reset; the central renegotiates per connection
+        log_i("Provisioning: central connected");
+    }
+    void onMtuChanged(BLEServer*, esp_ble_gatts_cb_param_t* param) override {
+        g_mtu = param->mtu.mtu;
+        log_i("Provisioning: MTU negotiated to %u (%u payload bytes per notify)",
+              (unsigned)g_mtu, (unsigned)(g_mtu - 3));
+    }
     void onConnect(BLEServer*) override { log_i("Provisioning: central connected"); }
     void onDisconnect(BLEServer* s) override {
         log_i("Provisioning: central disconnected");
@@ -285,6 +378,9 @@ void begin()
           ESP.getFreeHeap(), ESP.getMaxAllocHeap());
 
     BLEDevice::init("MicroPatterns");
+    // Ask for a large MTU. The central decides the final value; we only ever
+    // send what the negotiated MTU allows.
+    BLEDevice::setMTU(185);
     g_server = BLEDevice::createServer();
     g_server->setCallbacks(new ServerCB());
     BLEService* svc = g_server->createService(SERVICE_UUID);
@@ -340,6 +436,23 @@ bool windowOpen() { return g_windowOpen; }
 
 void tick()
 {
+    // Process at most one command per call, on the CALLER'S task (the main loop
+    // on the Watchy, MainControlTask on the M5Paper) rather than on the BLE
+    // stack's task. Everything slow -- JSON, NVS, chunked notifies -- happens
+    // here where blocking is safe.
+    // Drain the whole queue, not one entry: several commands can arrive while a
+    // render is in progress.
+    while (!pendingEmpty()) {
+        String line = g_pending[g_pendHead];
+        g_pending[g_pendHead] = "";
+        g_pendHead = (g_pendHead + 1) % PENDING_MAX;
+        handleCommand(line);
+    }
+    if (g_overflowed) {
+        g_overflowed = false;
+        reply("{\"ok\":false,\"error\":\"command queue overflow; send them slower\"}");
+    }
+
     if (g_windowOpen && (long)(millis() - g_windowEndsAt) >= 0) closeWindow();
 }
 
