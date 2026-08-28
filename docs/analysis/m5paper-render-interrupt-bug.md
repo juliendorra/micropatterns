@@ -215,3 +215,71 @@ The agreed follow-ups were:
   The render epoch/generation-counter idea remains the better design and remains unimplemented.
 - `FetchTask`'s analogous incomplete interrupt path is still not investigated.
 - Canvas ownership between `showMessage` and `render()` is still not verified.
+
+---
+
+## 2026-08-28 -- Title browsing, and the three visible symptoms
+
+The remaining flakiness was reported from the device, not from the code:
+paging through scripts showed a stale "Render stopped" over the new title, the
+*previous* script flashed up briefly anyway, and the whole thing felt slow.
+
+Three separate causes, none of them the interrupt mechanism itself.
+
+### 1. A blocking half-second per press
+
+`selectNextScript()` was followed by `vTaskDelay(pdMS_TO_TICKS(500))` "to
+display the selection message", and only then triggered a render. So every
+press cost 500ms before the *next* press was even read from the queue, and each
+press started a render the following press then had to interrupt. Paging ran at
+two titles per second at best, with a render begun and abandoned for each.
+
+Replaced with a settle timer: a press shows the title and arms a render for
+`TITLE_SETTLE_MS` (450) later, and every further press re-arms it. Presses are
+read immediately. Only the title you stop on is rendered.
+
+The Watchy has the same model now, and its serial `next`/`prev` route through
+the same function so the behaviour can be exercised over a cable. Measured:
+five steps 150ms apart draw five titles and produce exactly one render, where
+before they produced five.
+
+### 2. "Render stopped" arriving after the new title
+
+A render is only ever interrupted because the user pressed a button, and the
+press has already replaced the screen with the new script's name. The message
+therefore landed a moment later, painting over the title the user was reading,
+to announce something they had just done deliberately. It is now silent -- the
+interruption is logged and not drawn.
+
+### 3. The previous script appearing briefly
+
+`RenderTask` already declines to push an interrupted canvas, so this was not a
+partial frame -- it was a *completed* render whose result arrived after the
+user had moved on, being handled as if it were current. `MainCtrlTask` now
+ignores any render result for a script that is no longer the selected one:
+
+    MainCtrl: Received render result for 'circuits'. Success: No, Interrupted: Yes
+    MainCtrl: Ignoring stale render result for 'circuits' (now on 'city-2-by-telohtrab').
+
+This is a narrower version of the render epoch/generation counter proposed
+above -- comparing script ids rather than a monotonic epoch. It is enough for
+the observed symptom and does not close the underlying race: two renders of the
+*same* script id, queued back to back, are still indistinguishable. The epoch
+remains the better design and remains unimplemented.
+
+### Watchy: aborting mid-render
+
+The display list renderer has had `setInterruptCheckCallback()` since the
+beginning and the Watchy simply never supplied one. It now polls the four
+buttons, and the raster loop breaks out **without calling `nextPage()`** --
+which is what pushes the buffer to the panel, so an abandoned frame costs the
+work but is never shown. The de-ghost counter is rolled back for a frame that
+never appeared.
+
+## Still open (unchanged by this work)
+
+- The `main.cpp` clear-before-render race is **not** fixed. `RENDER_INTERRUPT_BIT`
+  is still cleared before the render starts, so an interrupt requested in that
+  window is still dropped.
+- `FetchTask`'s analogous incomplete interrupt path is still not investigated.
+- Canvas ownership between `showMessage` and `render()` is still not verified.

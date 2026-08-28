@@ -7,6 +7,11 @@
 #include "script_sync.h"        // Server sync procedure, shared with the Watchy firmware
 #include "mp_messages.h"       // Panel wording, shared with the Watchy firmware
 
+// How long a script title stays up, alone, before its render starts. Long
+// enough to press again and move on; short enough not to feel like a delay.
+// Same value on the Watchy.
+#define TITLE_SETTLE_MS 450
+
 #if MP_BENCH
 #include "bench/mp_bench.h" // env:m5paper-bench only; compiled out otherwise
 #endif
@@ -392,6 +397,13 @@ void MainControlTask_Function(void *pvParameters) {
 
 
     // --- Main Loop ---
+    // Title browsing: a script change shows its name immediately but does not
+    // start the render until the presses stop. Holding a render off for a
+    // moment is what makes it possible to page through titles at the speed of
+    // the button rather than the speed of the renderer.
+    String pendingHumanId;
+    TickType_t pendingRenderAt = 0;
+
     for (;;) {
         esp_task_wdt_reset();
         InputEvent inputEvent;
@@ -407,6 +419,15 @@ void MainControlTask_Function(void *pvParameters) {
         }
 
         MPProvisioning::tick();   // closes the provisioning window when it expires
+
+        // The presses have stopped: render whatever title is showing.
+        if (!pendingHumanId.isEmpty() && xTaskGetTickCount() >= pendingRenderAt &&
+            currentState != AppState::RENDERING_SCRIPT) {
+            const String toRender = pendingHumanId;
+            pendingHumanId = "";
+            log_i("MainCtrl: Title settled on '%s'. Triggering render.", toRender.c_str());
+            triggerScriptRender(toRender, false, currentState, currentLoadedScriptId);
+        }
 
         // Check Input Queue (non-blocking)
         if (xQueueReceive(g_inputEventQueue, &inputEvent, 0) == pdTRUE) {
@@ -442,12 +463,17 @@ void MainControlTask_Function(void *pvParameters) {
             if (inputEvent.type == InputEventType::NEXT_SCRIPT || inputEvent.type == InputEventType::PREVIOUS_SCRIPT) {
                 String selectedHumanId, selectedName;
                 if (g_scriptManager->selectNextScript(inputEvent.type == InputEventType::PREVIOUS_SCRIPT, selectedHumanId, selectedName)) {
+                    // Name now, render later. This used to be followed by a
+                    // blocking vTaskDelay(500), which meant every press cost
+                    // half a second before the next one was even read -- so
+                    // paging through titles ran at two per second at best, and
+                    // each one started a render that the next press then had to
+                    // interrupt.
                     g_displayManager->showMessage(selectedName, 250, 15, true, true);
-                    vTaskDelay(pdMS_TO_TICKS(500)); // Display selection message
-
-                    // currentLoadedScriptId will be updated by triggerScriptRender if successful
-                    log_i("MainCtrl: Selected script '%s'. Triggering render.", selectedHumanId.c_str());
-                    triggerScriptRender(selectedHumanId, false, currentState, currentLoadedScriptId); // false for useAsIsState (fresh)
+                    pendingHumanId = selectedHumanId;
+                    pendingRenderAt = xTaskGetTickCount() + pdMS_TO_TICKS(TITLE_SETTLE_MS);
+                    log_i("MainCtrl: Selected '%s'; render in %dms unless another press arrives.",
+                          selectedHumanId.c_str(), TITLE_SETTLE_MS);
                 } else {
                     // selectNextScript failed or returned default
                     log_w("MainCtrl: selectNextScript failed or no scripts available. Current script: '%s'", currentLoadedScriptId.c_str());
@@ -499,15 +525,28 @@ void MainControlTask_Function(void *pvParameters) {
             log_i("MainCtrl: Received render result for '%s'. Success: %s, Interrupted: %s",
                   received_script_id.c_str(), renderResultItem.success ? "Yes":"No", renderResultItem.interrupted ? "Yes":"No");
             
-            if (renderResultItem.success) {
+            // A result for a script we have already left is stale: the user
+            // pressed on, and acting on it would repaint the old script over the
+            // title of the new one -- which is the "previous render appears
+            // briefly anyway" flicker.
+            if (!pendingHumanId.isEmpty() ||
+                (!currentLoadedScriptId.isEmpty() && received_script_id != currentLoadedScriptId)) {
+                log_i("MainCtrl: Ignoring stale render result for '%s' (now on '%s').",
+                      received_script_id.c_str(),
+                      pendingHumanId.isEmpty() ? currentLoadedScriptId.c_str() : pendingHumanId.c_str());
+                if (currentState == AppState::RENDERING_SCRIPT) currentState = AppState::IDLE;
+            } else if (renderResultItem.success) {
                 g_scriptManager->saveScriptExecutionState(received_script_id, renderResultItem.final_state);
                 if (currentState == AppState::RENDERING_SCRIPT) { // If we were rendering
                     currentState = AppState::IDLE;
                     log_i("MainCtrl: Render successful for '%s'. State -> IDLE.", received_script_id.c_str());
                 }
             } else if (renderResultItem.interrupted) {
-                g_displayManager->showMessage("Render stopped", 200, 15, false, false); // Brief, no clear
-                vTaskDelay(pdMS_TO_TICKS(100)); // Short delay
+                // Deliberately silent. A render is only ever interrupted because
+                // the user pressed a button, and the press has already replaced
+                // the screen with the new script's title -- so "Render stopped"
+                // arrived a moment later and painted over the title the user was
+                // reading, announcing something they had just done on purpose.
                 if (currentState == AppState::RENDERING_SCRIPT) { // If we were rendering
                     currentState = AppState::IDLE;
                     log_i("MainCtrl: Render interrupted for '%s'. State -> IDLE.", received_script_id.c_str());

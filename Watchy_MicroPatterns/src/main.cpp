@@ -104,6 +104,14 @@ struct ScriptEntry { String humanId; String name; String fileId; };
 static std::vector<ScriptEntry> g_scripts;
 
 static int  g_currentScript = 0;
+
+// Title browsing. A press shows the next script's name at once and arms a
+// timer; the render only starts once the presses stop. Same value and same
+// behaviour as the M5Paper.
+#define TITLE_SETTLE_MS 450
+static int           g_pendingScript = -1;   // -1: nothing waiting to render
+static unsigned long g_renderDueAt   = 0;
+
 static int  g_counter = 0;
 
 // STAGE REPORTER -- the only working instrument on this device.
@@ -169,6 +177,9 @@ static void showNotice(const char* title, const char* line1, const char* line2,
                        const char* hint);
 static void fullRefresh();
 static bool loadScriptIndex();
+static void browseScript(int delta);
+static void renderIfSettled();
+static bool anyButtonDown();
 static void syncScripts(bool announce);
 
 // --- Panel update policy --------------------------------------------------
@@ -274,6 +285,18 @@ static bool loadScriptIndex()
     return !g_scripts.empty();
 }
 
+// True while any of the four buttons is held.
+//
+// Used as the renderer's interrupt check, so a render abandons itself the
+// moment someone presses -- the display list renderer already polls a callback
+// between items for exactly this (the M5Paper has used it since the beginning),
+// this firmware simply never supplied one.
+static bool anyButtonDown()
+{
+    return digitalRead(BTN_BACK) == HIGH || digitalRead(BTN_MENU) == HIGH ||
+           digitalRead(BTN_UP)   == HIGH || digitalRead(BTN_DOWN) == HIGH;
+}
+
 // Renders g_scripts[index] and pushes it to the panel.
 static bool renderScript(int index)
 {
@@ -327,12 +350,30 @@ static bool renderScript(int index)
     // is not repeated per page.
     t0 = millis();
     const bool fullRefreshThisTime = beginPanelUpdate(false);
+    bool aborted = false;
     g_display.firstPage();
     do {
         DisplayListRenderer renderer(&g_canvas, parser.getAssets(), W, H);
+        renderer.setInterruptCheckCallback(anyButtonDown);
         renderer.render(dl);
+        if (anyButtonDown()) {
+            // Leave WITHOUT calling nextPage(). The buffer holds a half-drawn
+            // frame and nextPage() is what pushes it to the panel, so breaking
+            // here costs the work but never shows it. The next firstPage()
+            // starts clean.
+            aborted = true;
+            break;
+        }
     } while (g_display.nextPage());
     unsigned long tRender = millis() - t0;
+
+    if (aborted) {
+        log_i("Render of '%s' abandoned after %lums: button pressed",
+              scr.name.c_str(), tRender);
+        // The de-ghost counter must not advance for a frame never shown.
+        if (!fullRefreshThisTime && g_updatesSinceFull > 0) g_updatesSinceFull--;
+        return false;
+    }
     log_i("Panel update: %s (%d/%d until de-ghost)",
           fullRefreshThisTime ? "FULL (de-ghost)" : "fast partial",
           g_updatesSinceFull, WATCHY_DEGHOST_INTERVAL);
@@ -362,9 +403,38 @@ static void showScript(int index, bool announce)
     g_lastRenderMs = millis();
     if (!renderScript(g_currentScript)) {
         // renderScript() has already shown the specific reason where it knows
-        // one; this covers anything that returned false without drawing.
-        log_e("Render failed for index %d", g_currentScript);
+        // one, and says nothing at all when the user simply pressed on.
+        log_i("Render did not complete for index %d", g_currentScript);
     }
+}
+
+// Steps the selection and shows the new title, WITHOUT rendering.
+//
+// The render is armed for TITLE_SETTLE_MS later and re-armed by every further
+// press, so holding down next pages through titles at the speed of the button.
+// Previously each press rendered immediately and the following press had to
+// wait for that render to finish -- roughly 750ms per title, and a partial
+// frame of the wrong script in between.
+static void browseScript(int delta)
+{
+    if (g_scripts.empty()) { showScript(0, true); return; }
+    const int n = (int)g_scripts.size();
+    const int from = (g_pendingScript >= 0) ? g_pendingScript : g_currentScript;
+    g_pendingScript = ((from + delta) % n + n) % n;
+    g_renderDueAt = millis() + TITLE_SETTLE_MS;
+    showScriptName(g_scripts[g_pendingScript].name.c_str());
+}
+
+// Renders the browsed-to script once the presses have stopped.
+static void renderIfSettled()
+{
+    if (g_pendingScript < 0) return;
+    if ((long)(millis() - g_renderDueAt) < 0) return;
+    if (anyButtonDown()) { g_renderDueAt = millis() + TITLE_SETTLE_MS; return; }
+
+    const int target = g_pendingScript;
+    g_pendingScript = -1;
+    showScript(target, false);   // the title is already on screen
 }
 
 // Minimal serial channel, mirroring the M5Paper console: list / run N / next.
@@ -389,15 +459,18 @@ static void pollSerial()
             } else if (cmd == "sync") {
                 Serial.println("MPCON|ok sync");
                 syncScripts(true);
-            } else if (cmd == "next") {
-                Serial.println("MPCON|ok next");
-                showScript(g_currentScript + 1, true);
+            } else if (cmd == "next" || cmd == "prev") {
+                // Through browseScript(), like the buttons: the console is meant
+                // to mirror them, and routing it here means the title-browsing
+                // behaviour can be exercised over a cable.
+                Serial.printf("MPCON|ok %s\n", cmd.c_str());
+                browseScript(cmd == "next" ? +1 : -1);
             } else if (cmd.startsWith("run ")) {
                 int idx = cmd.substring(4).toInt();
                 Serial.printf("MPCON|ok run %d\n", idx);
                 showScript(idx, true);
             } else {
-                Serial.println("MPCON|commands: list | run <index> | next | sync");
+                Serial.println("MPCON|commands: list | run <index> | next | prev | sync");
             }
         } else if (len < sizeof(line) - 1) {
             line[len++] = (char)c;
@@ -789,7 +862,7 @@ void setup()
     }
 
     g_stage = 5;                                  // first script rendered; loop() runs
-    Serial.println("MPCON|ready -- commands: list | run <index> | next | sync");
+    Serial.println("MPCON|ready -- commands: list | run <index> | next | prev | sync");
 }
 
 // Light sleep between renders.
@@ -814,6 +887,7 @@ static void sleepUntilSomethingHappens()
 {
     if (MPProvisioning::windowOpen()) { delay(20); return; }
     if (Serial.available() > 0)       { return; }
+    if (g_pendingScript >= 0)         { delay(10); return; }   // a render is due
 
     // Stay awake while someone is at the console.
     //
@@ -866,6 +940,7 @@ void loop()
 {
     pollSerial();
     MPProvisioning::tick();
+    renderIfSettled();
 
     // Heartbeat. Without it, a device whose boot output was simply missed looks
     // exactly like a hung one -- which cost real time diagnosing this port. Any
@@ -954,11 +1029,11 @@ void loop()
             switch (b.corner) {
                 case CORNER_TR:
                     log_i("Button: top-right -> previous script");
-                    showScript(g_currentScript - 1, true);   // changed: announce
+                    browseScript(-1);
                     break;
                 case CORNER_BR:
                     log_i("Button: bottom-right -> next script");
-                    showScript(g_currentScript + 1, true);   // changed: announce
+                    browseScript(+1);
                     break;
                 case CORNER_BL:
                     log_i("Button: bottom-left -> re-run current script");
