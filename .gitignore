@@ -42,3 +42,7 @@ tools/host_harness/build_null/
 # Deploy secrets, not from this file.
 envprod
 .envprod
+
+# Stray flash dumps from device debugging.
+*.bin
+!M5Paper_MicroPatterns/lib/**/*.bin
