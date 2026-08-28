@@ -39,6 +39,9 @@
 #include <Preferences.h>
 #include "nvs_flash.h"
 #include "esp_task_wdt.h"
+#include "esp_sleep.h"
+#include "driver/gpio.h"
+#include "driver/uart.h"
 #include "nvs.h"
 #include "esp_partition.h"
 
@@ -208,6 +211,11 @@ static const int WATCHY_DEGHOST_INTERVAL = 24;
 // firmware stays awake in loop(). Battery life is a known open item for the
 // Watchy port -- the design doc puts the sustainable autonomous cadence at
 // roughly hourly, which this does not respect.
+// How long the device stays awake for the serial console after boot, and after
+// each byte received. See sleepUntilSomethingHappens().
+static const unsigned long CONSOLE_AWAKE_MS = 60000;
+static unsigned long g_lastSerialMs = 0;
+
 static const unsigned long AUTO_RERUN_INTERVAL_MS = 77UL * 1000UL;
 static unsigned long g_lastRenderMs = 0;
 static int g_updatesSinceFull = WATCHY_DEGHOST_INTERVAL;  // force full on first use
@@ -367,6 +375,7 @@ static void pollSerial()
     while (Serial.available() > 0) {
         int c = Serial.read();
         if (c < 0) break;
+        g_lastSerialMs = millis();   // someone is typing: hold off sleep
         if (c == '\n' || c == '\r') {
             if (len == 0) continue;
             line[len] = '\0';
@@ -783,6 +792,76 @@ void setup()
     Serial.println("MPCON|ready -- commands: list | run <index> | next | sync");
 }
 
+// Light sleep between renders.
+//
+// The loop was spinning at 20ms for the whole 77s between re-renders, which on
+// a watch is the difference between hours and days of battery: an ESP32 draws
+// roughly 40mA awake and under 1mA in light sleep. The M5Paper has done this
+// since the beginning (SystemManager::goToLightSleep); this is the same three
+// wake sources, on this device's pins.
+//
+// Light sleep, not deep sleep, and that is a considered choice rather than a
+// stepping stone. Deep sleep costs a full boot on every wake -- SPIFFS mount,
+// script load, parse, GxEPD2 re-init -- which measured ~9s here. At the current
+// 77s cadence that trades 77s at ~0.8mA (about 62mA-seconds) for 9s at ~100mA
+// (about 900), so deep sleep would use more power, not less. It only wins once
+// the interval is minutes rather than seconds, which is a product decision
+// about how often a time-dependent script should advance.
+//
+// Sleep is skipped while a provisioning window is open: BLE needs its
+// connection events serviced, and the window is only ever 20s.
+static void sleepUntilSomethingHappens()
+{
+    if (MPProvisioning::windowOpen()) { delay(20); return; }
+    if (Serial.available() > 0)       { return; }
+
+    // Stay awake while someone is at the console.
+    //
+    // Serial cannot wake this device: esp_sleep_enable_uart_wakeup() only fires
+    // if UART0 is clocked from a source that survives light sleep (REF_TICK /
+    // XTAL), and Arduino 3.1 clocks it from APB, which is gated -- with no
+    // supported way to change it after Serial.begin(). The M5Paper's equivalent
+    // works only because Arduino 2.0.4 defaulted to REF_TICK. Worse, bytes sent
+    // to a sleeping device are not merely late, they are dropped: the RX FIFO
+    // is unclocked, so waking in short chunks and polling does not recover them
+    // either. Both were tried on hardware.
+    //
+    // What does work: opening the port asserts DTR/RTS and resets the board, so
+    // a debugger always arrives at a freshly booted device. Stay awake for a
+    // window after boot, and re-arm it on every byte received, so a session
+    // stays alive as long as it is being used and the watch sleeps the rest of
+    // the time.
+    if (millis() - g_lastSerialMs < CONSOLE_AWAKE_MS) { delay(20); return; }
+
+    const unsigned long since = millis() - g_lastRenderMs;
+    if (since >= AUTO_RERUN_INTERVAL_MS) return;          // due now; do not sleep
+    const unsigned long remaining = AUTO_RERUN_INTERVAL_MS - since;
+
+    // A button held down would wake us instantly and forever, so only sleep
+    // once all four are released.
+    if (digitalRead(BTN_BACK) == HIGH || digitalRead(BTN_MENU) == HIGH ||
+        digitalRead(BTN_UP)   == HIGH || digitalRead(BTN_DOWN) == HIGH) {
+        delay(20);
+        return;
+    }
+
+    esp_sleep_enable_timer_wakeup((uint64_t)remaining * 1000ULL);
+
+    // Buttons idle LOW on this board and go HIGH when pressed, the opposite of
+    // the M5Paper's.
+    gpio_wakeup_enable((gpio_num_t)BTN_BACK, GPIO_INTR_HIGH_LEVEL);
+    gpio_wakeup_enable((gpio_num_t)BTN_MENU, GPIO_INTR_HIGH_LEVEL);
+    gpio_wakeup_enable((gpio_num_t)BTN_UP,   GPIO_INTR_HIGH_LEVEL);
+    gpio_wakeup_enable((gpio_num_t)BTN_DOWN, GPIO_INTR_HIGH_LEVEL);
+    esp_sleep_enable_gpio_wakeup();
+
+    Serial.flush();
+    esp_light_sleep_start();
+
+    // millis() is esp_timer-backed and is corrected across light sleep, so the
+    // re-render deadline stays honest without any bookkeeping here.
+}
+
 void loop()
 {
     pollSerial();
@@ -793,7 +872,9 @@ void loop()
     // capture started at any moment now shows within 5s whether the firmware is
     // alive, and how far it got.
     static unsigned long lastBeat = 0;
-    if (millis() - lastBeat > 5000) {
+    // Every 60s, not 5s: the heartbeat is a diagnostic, and at 5s it would keep
+    // waking the device and undo the light sleep below.
+    if (millis() - lastBeat > 60000) {
         lastBeat = millis();
         Serial.printf("MPCON|alive t=%lus script=%d/%u heap=%u\n",
                       millis() / 1000, g_currentScript, (unsigned)g_scripts.size(),
@@ -889,5 +970,6 @@ void loop()
             }
         }
     }
-    delay(20);
+
+    sleepUntilSomethingHappens();
 }
