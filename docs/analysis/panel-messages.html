@@ -1,0 +1,405 @@
+<title>MicroPatterns Panel Messages</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;700&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500&display=swap">
+
+<style>
+  :root {
+    --bench:      #e8e6e0;
+    --bench-2:    #f4f3ef;
+    --rule:       #c9c6bc;
+    --text:       #24262a;
+    --text-dim:   #6a6d73;
+    --accent:     #2f6178;
+    --accent-dim: #7fa3b2;
+
+    /* The panel is a physical object: its colours do not follow the page theme.
+       E-ink white is a warm grey, and e-ink black is never true black. */
+    --paper: #d5d3c9;
+    --ink:   #1b1c19;
+
+    --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    --sans: "IBM Plex Sans", system-ui, -apple-system, sans-serif;
+    --disp: "Archivo", "Helvetica Neue", Arial, sans-serif;
+  }
+  :root:not([data-theme="light"]) {
+    @media (prefers-color-scheme: dark) {
+      --bench:      #16181b;
+      --bench-2:    #1e2125;
+      --rule:       #32363c;
+      --text:       #e4e6e9;
+      --text-dim:   #90959c;
+      --accent:     #7cb4cc;
+      --accent-dim: #4a6c7c;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bench:      #16181b;
+    --bench-2:    #1e2125;
+    --rule:       #32363c;
+    --text:       #e4e6e9;
+    --text-dim:   #90959c;
+    --accent:     #7cb4cc;
+    --accent-dim: #4a6c7c;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    background: var(--bench);
+    color: var(--text);
+    font-family: var(--sans);
+    line-height: 1.55;
+    margin: 0;
+    padding: 48px 24px 96px;
+  }
+
+  .wrap { max-width: 1080px; margin: 0 auto; display: flex; flex-direction: column; gap: 56px; }
+
+  header { display: flex; flex-direction: column; gap: 14px; max-width: 62ch; }
+  h1 {
+    font-family: var(--disp);
+    font-weight: 700;
+    font-size: clamp(30px, 5vw, 44px);
+    letter-spacing: -0.02em;
+    line-height: 1.08;
+    margin: 0;
+    text-wrap: balance;
+  }
+  .lede { margin: 0; color: var(--text-dim); font-size: 17px; }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0;
+  }
+
+  section { display: flex; flex-direction: column; gap: 22px; }
+  h2 {
+    font-family: var(--disp);
+    font-weight: 700;
+    font-size: 22px;
+    letter-spacing: -0.01em;
+    margin: 0;
+  }
+  .note { margin: 0; color: var(--text-dim); font-size: 15px; max-width: 68ch; }
+  .note code, .inline-code {
+    font-family: var(--mono);
+    font-size: 0.9em;
+    background: var(--bench-2);
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    padding: 1px 5px;
+  }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(232px, 1fr));
+    gap: 26px;
+  }
+
+  figure { margin: 0; display: flex; flex-direction: column; gap: 9px; }
+
+  .screen {
+    background: var(--paper);
+    image-rendering: pixelated;
+    display: block;
+    border: 1px solid var(--rule);
+  }
+  .watchy-frame {
+    width: 200px; height: 200px;
+    padding: 0;
+    box-shadow: 0 1px 0 rgba(0,0,0,.18);
+  }
+
+  figcaption { display: flex; flex-direction: column; gap: 3px; }
+  .cap-name { font-weight: 500; font-size: 14px; }
+  .cap-when { color: var(--text-dim); font-size: 13px; }
+
+  /* M5Paper: 540x960 shown at 1/3 */
+  .m5-row { display: flex; gap: 26px; flex-wrap: wrap; }
+  .m5-frame { width: 180px; height: 320px; }
+
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  .table-scroll { overflow-x: auto; border: 1px solid var(--rule); border-radius: 4px; background: var(--bench-2); }
+  th, td { text-align: left; padding: 9px 14px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.11em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    font-weight: 500;
+    white-space: nowrap;
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  td.key { font-family: var(--mono); font-size: 12.5px; color: var(--accent); white-space: nowrap; }
+  td.val { font-family: var(--mono); font-size: 12.5px; }
+
+  .caveat {
+    border-left: 3px solid var(--accent-dim);
+    padding: 4px 0 4px 16px;
+    color: var(--text-dim);
+    font-size: 14.5px;
+    max-width: 70ch;
+  }
+</style>
+
+<div class="wrap">
+
+  <header>
+    <p class="eyebrow">Firmware · panel copy</p>
+    <h1>Every word these two screens can say</h1>
+    <p class="lede">
+      The Watchy (200&times;200) and the M5Paper (540&times;960) now draw from one
+      message vocabulary. Below: every text frame either device can show, laid out
+      with the real font metrics, wrap rule and y-offsets from the firmware.
+    </p>
+  </header>
+
+  <section>
+    <h2>Watchy — 200&times;200, shown 1:1</h2>
+    <p class="note">
+      Title and body are both text size 2: a 6&times;8 glyph scaled &times;2, so
+      12&thinsp;px per glyph and <strong>16 glyphs per line</strong>. Body text
+      used to be size 1 and was unreadable on a panel this small. Lines wrap on
+      the last space that fits; a single word longer than a line is hard-cut.
+    </p>
+    <div class="grid" id="watchy-grid"></div>
+  </section>
+
+  <section>
+    <h2>M5Paper — 540&times;960, shown at one third</h2>
+    <p class="note">
+      Text size 3 on the same 6&times;8 font: 18&thinsp;px per glyph,
+      <strong>30 glyphs per line</strong>, and no wrapping — each call draws one
+      centred line at a fixed y. Messages appear over whatever the script left on
+      the panel, which is why they are short.
+    </p>
+    <div class="m5-row" id="m5-row"></div>
+  </section>
+
+  <section>
+    <h2>The shared vocabulary</h2>
+    <p class="note">
+      One header, <span class="inline-code">mp_messages.h</span>, compiled by both
+      firmwares. Sync outcomes travel in
+      <span class="inline-code">ScriptSyncResult::message</span>, so a sync
+      reports itself in the same words on either device.
+    </p>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th>Constant</th><th>Text</th><th>Where it appears</th></tr>
+        </thead>
+        <tbody id="vocab"></tbody>
+      </table>
+    </div>
+    <p class="caveat">
+      Rendered here with a monospace web font on the exact 6&times;8 cell grid, not
+      captured from the panels — glyph shapes differ slightly, line breaks and
+      positions do not.
+    </p>
+  </section>
+
+</div>
+
+<script>
+(function () {
+  const PAPER = "#d5d3c9", INK = "#1b1c19";
+
+  // --- the firmware's wrap, transcribed from drawWrapped() in main.cpp -------
+  function wrap(text, perLine) {
+    const out = [];
+    let rest = text;
+    while (rest.length) {
+      let line = rest;
+      if (line.length > perLine) {
+        let cut = line.lastIndexOf(" ", perLine);
+        if (cut <= 0) cut = perLine;
+        line = rest.substring(0, cut);
+        rest = rest.substring(cut).trim();
+      } else {
+        rest = "";
+      }
+      out.push(line);
+    }
+    return out;
+  }
+
+  function makeCanvas(w, h, cssW, cssH, cls) {
+    const c = document.createElement("canvas");
+    const dpr = Math.max(2, window.devicePixelRatio || 1);
+    c.width = w * dpr; c.height = h * dpr;
+    c.style.width = cssW + "px"; c.style.height = cssH + "px";
+    c.className = "screen " + cls;
+    const g = c.getContext("2d");
+    g.scale(dpr, dpr);
+    g.fillStyle = PAPER; g.fillRect(0, 0, w, h);
+    g.fillStyle = INK;
+    g.textBaseline = "top";
+    return { c, g };
+  }
+
+  // Draw a line of bitmap-font text. `size` is the firmware's text size:
+  // advance is 6*size px, cell height 8*size px.
+  function glyphs(g, text, x, y, size) {
+    const px = 6 * size, py = 8 * size;
+    g.font = `500 ${py}px "IBM Plex Mono", monospace`;
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i];
+      if (ch === " ") continue;
+      const w = g.measureText(ch).width;
+      g.fillText(ch, x + i * px + (px - w) / 2, y);
+    }
+  }
+
+  // --- Watchy showNotice(), transcribed ------------------------------------
+  function watchyNotice(title, line1, line2, hint) {
+    const W = 200, H = 200, PER = Math.floor(W / 12);
+    const { c, g } = makeCanvas(W, H, 200, 200, "watchy-frame");
+    let y = 26;
+    glyphs(g, title, Math.floor((W - title.length * 12) / 2), y, 2);
+    y += 30;
+    const body = (t) => {
+      for (const line of wrap(t, PER)) {
+        const w = line.length * 12;
+        glyphs(g, line, w < W ? Math.floor((W - w) / 2) : 0, y, 2);
+        y += 8 * 2 + 4;
+      }
+    };
+    if (line1) body(line1);
+    if (line2) body(line2);
+    if (hint) { y += 8; body(hint); }
+    return c;
+  }
+
+  // showScriptName(): one centred line at H/2 - 8
+  function watchyName(name) {
+    const W = 200, H = 200;
+    const { c, g } = makeCanvas(W, H, 200, 200, "watchy-frame");
+    const w = name.length * 12;
+    glyphs(g, name, w < W ? Math.floor((W - w) / 2) : 2, H / 2 - 8, 2);
+    return c;
+  }
+
+  const WATCHY = [
+    { name: "No scripts", when: "Nothing stored yet, or a first sync found nothing",
+      c: () => watchyNotice("No scripts", "set up WiFi in the web editor, then hold", "top-left to sync", "") },
+    { name: "Syncing", when: "Top-left held 5s, or a boot with no scripts",
+      c: () => watchyNotice("Syncing", "connecting to WiFi", "", "") },
+    { name: "Sync failed — no WiFi", when: "None of the stored networks answered",
+      c: () => watchyNotice("Sync failed", "No WiFi", "", "hold top-left to retry") },
+    { name: "Sync failed — partial", when: "The list arrived, some scripts did not",
+      c: () => watchyNotice("Sync failed", "Some scripts missing", "", "hold top-left to retry") },
+    { name: "Render error — parse", when: "The script has a syntax error",
+      c: () => watchyNotice("Render error", "City 2 by Telohtrab", "script did not parse", "") },
+    { name: "Render error — missing", when: "Listed in list.json, no content file",
+      c: () => watchyNotice("Render error", "Eyes", "content missing on device", "") },
+    { name: "Script name", when: "Shown for one frame when the script changes",
+      c: () => watchyName("Thunderstorms") },
+  ];
+
+  const wg = document.getElementById("watchy-grid");
+  for (const s of WATCHY) {
+    const fig = document.createElement("figure");
+    fig.appendChild(s.c());
+    const cap = document.createElement("figcaption");
+    cap.innerHTML = `<span class="cap-name"></span><span class="cap-when"></span>`;
+    cap.querySelector(".cap-name").textContent = s.name;
+    cap.querySelector(".cap-when").textContent = s.when;
+    fig.appendChild(cap);
+    wg.appendChild(fig);
+  }
+
+  // --- M5Paper: centred lines at fixed y offsets ---------------------------
+  function m5(lines) {
+    const W = 540, H = 960;
+    const { c, g } = makeCanvas(W, H, 180, 320, "m5-frame");
+    for (const [text, y] of lines) {
+      const w = text.length * 18;
+      glyphs(g, text, w < W ? Math.floor((W - w) / 2) : 0, y, 3);
+    }
+    return c;
+  }
+
+  const M5 = [
+    { name: "Startup failed", when: "A manager or task did not come up (y 150)",
+      c: () => m5([["Startup failed", 150]]) },
+    { name: "Syncing", when: "A fetch job started (y 200)",
+      c: () => m5([["Syncing", 200]]) },
+    { name: "Render error", when: "Two lines now, so long ids are not clipped (y 200, 250)",
+      c: () => m5([["Render error", 200], ["city-2-by-telohtrab", 250]]) },
+    { name: "Sync outcome", when: "ScriptSyncResult::message, verbatim (y 350)",
+      c: () => m5([["Scripts up to date", 350], ["New scripts", 400]]) },
+    { name: "Script name", when: "Shown when switching scripts (y 250)",
+      c: () => m5([["Thunderstorms", 250]]) },
+  ];
+
+  const mr = document.getElementById("m5-row");
+  for (const s of M5) {
+    const fig = document.createElement("figure");
+    fig.appendChild(s.c());
+    const cap = document.createElement("figcaption");
+    cap.innerHTML = `<span class="cap-name"></span><span class="cap-when"></span>`;
+    cap.querySelector(".cap-name").textContent = s.name;
+    cap.querySelector(".cap-when").textContent = s.when;
+    fig.appendChild(cap);
+    mr.appendChild(fig);
+  }
+
+  // --- vocabulary table ----------------------------------------------------
+  const VOCAB = [
+    ["MP_MSG_RENDER_ERROR", "Render error", "Both"],
+    ["MP_MSG_NO_SCRIPTS", "No scripts", "Both"],
+    ["MP_MSG_SYNCING", "Syncing", "Both"],
+    ["MP_MSG_SYNC_FAILED", "Sync failed", "Watchy"],
+    ["MP_MSG_STARTUP_FAILED", "Startup failed", "M5Paper"],
+    ["MP_MSG_CONNECTING", "connecting to WiFi", "Watchy"],
+    ["MP_MSG_NO_SCRIPTS_HOW", "set up WiFi in the web editor, then hold", "Watchy"],
+    ["MP_MSG_NO_SCRIPTS_HOW2", "top-left to sync", "Watchy"],
+    ["MP_MSG_RETRY_SYNC", "hold top-left to retry", "Watchy"],
+    ["MP_MSG_SCRIPT_MISSING", "content missing on device", "Watchy"],
+    ["MP_MSG_PARSE_FAILED", "script did not parse", "Watchy"],
+    ["MP_MSG_SYNC_OK", "Scripts up to date", "Both — sync result"],
+    ["MP_MSG_SYNC_NO_WIFI", "No WiFi", "Both — sync result"],
+    ["MP_MSG_SYNC_NO_SERVER", "Server unreachable", "Both — sync result"],
+    ["MP_MSG_SYNC_BAD_REPLY", "Unexpected server reply", "Both — sync result"],
+    ["MP_MSG_SYNC_NO_SAVE", "Could not save scripts", "Both — sync result"],
+    ["MP_MSG_SYNC_PARTIAL", "Some scripts missing", "Both — sync result"],
+    ["MP_MSG_SYNC_STOPPED", "Sync stopped", "Both — sync result"],
+  ];
+  const tb = document.getElementById("vocab");
+  for (const [k, v, w] of VOCAB) {
+    const tr = document.createElement("tr");
+    const a = document.createElement("td"); a.className = "key"; a.textContent = k;
+    const b = document.createElement("td"); b.className = "val"; b.textContent = v;
+    const c2 = document.createElement("td"); c2.textContent = w;
+    tr.append(a, b, c2); tb.appendChild(tr);
+  }
+
+  document.fonts && document.fonts.ready.then(() => {
+    // Re-render once the mono face is live, so glyph widths are the real ones.
+    wg.innerHTML = ""; mr.innerHTML = "";
+    for (const s of WATCHY) {
+      const fig = document.createElement("figure");
+      fig.appendChild(s.c());
+      const cap = document.createElement("figcaption");
+      cap.innerHTML = `<span class="cap-name"></span><span class="cap-when"></span>`;
+      cap.querySelector(".cap-name").textContent = s.name;
+      cap.querySelector(".cap-when").textContent = s.when;
+      fig.appendChild(cap); wg.appendChild(fig);
+    }
+    for (const s of M5) {
+      const fig = document.createElement("figure");
+      fig.appendChild(s.c());
+      const cap = document.createElement("figcaption");
+      cap.innerHTML = `<span class="cap-name"></span><span class="cap-when"></span>`;
+      cap.querySelector(".cap-name").textContent = s.name;
+      cap.querySelector(".cap-when").textContent = s.when;
+      fig.appendChild(cap); mr.appendChild(fig);
+    }
+  });
+})();
+</script>
