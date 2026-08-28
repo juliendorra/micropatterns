@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include <string.h>
 #include <strings.h> // strcasecmp
+#include "mp_wdt.h"
 #include "matrix_utils.h"
 
 const uint8_t RUNTIME_COLOR_WHITE = 0;
@@ -390,7 +391,7 @@ void MicroPatternsRuntime::generateDisplayList() {
         return;
     }
     resetStateAndList(); // Clears _displayList and resets _currentState, variables
-    esp_task_wdt_reset();
+    mp_wdt_reset();
     clearInterrupt();
 
     int commandCounter = 0;
@@ -400,12 +401,12 @@ void MicroPatternsRuntime::generateDisplayList() {
         if (commandCounter > 0 && commandCounter % 50 == 0) { // Yield less frequently
             yield();
             if (commandCounter % 150 == 0) {
-                 esp_task_wdt_reset();
+                 mp_wdt_reset();
             }
         }
         if (_interrupt_requested) break;
     }
-    esp_task_wdt_reset();
+    mp_wdt_reset();
 }
 
 const std::vector<DisplayListItem>& MicroPatternsRuntime::getDisplayList() const {
@@ -504,14 +505,14 @@ void MicroPatternsRuntime::processCommandForDisplayList(const MicroPatternsComma
         case CMD_REPEAT: {
             int count = resolveValue(cmd.count, cmd.lineNumber, loopIndex);
             if (count < 0) { runtimeError("REPEAT count negative.", cmd.lineNumber); return; }
-            esp_task_wdt_reset();
+            mp_wdt_reset();
             for (int i = 0; i < count; ++i) {
                 for (const auto& nestedCmd : cmd.nestedCommands) {
                     processCommandForDisplayList(nestedCmd, i);
                     if (_interrupt_requested) break;
                 }
                 if (_interrupt_requested) break;
-                if (i > 0 && i % 20 == 0) { yield(); if (i % 60 == 0) esp_task_wdt_reset(); }
+                if (i > 0 && i % 20 == 0) { yield(); if (i % 60 == 0) mp_wdt_reset(); }
             }
             return; // REPEAT block expanded, no single item for REPEAT itself
         }
