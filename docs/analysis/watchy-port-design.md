@@ -1,5 +1,31 @@
 # Watchy Port Design — Micropatterns
 
+Status: **SUPERSEDED as a plan, kept as history.** Written 2026-08-27, before any
+code existed. The port was built on 2026-08-27/28 and diverged from this plan in
+several load-bearing ways; the plan is preserved unchanged because the reasoning
+behind the choices -- and behind the ones that turned out wrong -- is the useful
+part. Read the reconciliation below before treating anything here as current.
+
+### What this plan got right, and where the build went elsewhere
+
+| This plan said | What was built | Why |
+|---|---|---|
+| Storage backend changes SPIFFS -> LittleFS | **SPIFFS kept** | The M5Paper's `script_manager.cpp` is compiled straight out of its tree, unmodified. Changing the backend would have forked it. |
+| `network_manager` / `script_manager`: **ADAPT** | **Neither adapted -- both shared verbatim** | They needed only `#include` and one rename (`NetworkManager` -> `MPNetworkManager`, which collides with an Arduino 3.1 class). `MPNetworkManager` holds a `SystemManager*` it never dereferences, so the Watchy passes `nullptr`. |
+| `main.cpp`: **REWRITE**. `setup()` = one wake cycle, then deep sleep. "No `loop()` to speak of." | **`loop()` with light sleep** | Deep sleep costs a full boot per wake -- SPIFFS mount, script load, parse, GxEPD2 init -- measured at ~9s. At the 77s cadence that is ~900mA-seconds against ~62 for light sleep. Deep sleep only wins once the interval is minutes. See `JOURNAL.md`. |
+| A `wake_router` classifying RENDER / INTERACTIVE / FETCH | Not built | The single `loop()` with light sleep made it unnecessary. |
+| `system_manager`: **REWRITE** for SmallRTC / PCF8563 | Not ported at all | Nothing on the Watchy needed it. |
+| `MAX_SCRIPT_CONTENT_LEN 5600` is "a RAM-relevant constant on Watchy" | **Removed from the fetch path** | ArduinoJson 7 grows on demand and ignores fixed capacities, so it only implied a limit that did not exist. Real scripts reach 15KB. The real ceiling is measured in `JOURNAL.md`. |
+| "the root CA is directly reusable" | Correct, and worth stating loudly | The chain later moved to ISRG Root X2, which *looks* like an expired pin. X2 is cross-signed by X1, so the pinned root still validates. Verified against the live server before anything was changed. |
+
+The single largest thing this plan did not anticipate: **NVS is broken on this
+ESP32-PICO-D4 under Arduino 2.0.4**, which forced the whole platform onto
+pioarduino (Arduino 3.1 / IDF 5.3). See
+`docs/incidents/2026-08-28-watchy-nvs-postmortem.md` and the reproducer at
+`tools/device/probes/nvs-probe/`.
+
+Original status line follows.
+
 Status: design document, no code committed to the device. Nothing was flashed, written or erased.
 Date: 2026-08-27.
 Companion docs: `docs/analysis/watchy-hardware-and-references.md` (hardware ID, measured panel

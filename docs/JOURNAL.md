@@ -525,3 +525,62 @@ device.
 The M5Paper's render error also had to be split across two lines: that panel
 fits 30 glyphs at text size 3 (6x8 font x3 = 18px across 540px) and does not
 wrap, so "Render error: city-2-by-telohtrab" was 33 glyphs and lost its ends.
+
+---
+
+## 2026-08-28 (later still) -- The fetch memory ceiling, and the tools kept
+
+### How large a script can the devices actually fetch?
+
+Reading the body in full before parsing fixed truncation over TLS but gave the
+fetch a real ceiling, so it was measured rather than estimated. Watchy,
+mid-sync, WiFi and TLS resident, internal heap:
+
+| script | size | at start | after body | after parse | cost |
+|---|---|---|---|---|---|
+| art-deco-4 | 1,439 | 86,252 | 84,780 | 83,156 | 3.1K |
+| circuits | 8,380 | 81,532 | 77,868 | 69,464 | 12.1K |
+| city-by-telohtrab | 12,284 | 76,720 | 73,892 | 61,672 | 15.0K |
+| city-2-by-telohtrab | 15,320 | 81,460 | 70,884 | 55,636 | **25.8K** |
+
+Peak is about **1.7x the script size**: the raw body and the JsonDocument's copy
+of the content string are both alive until the body is released after parsing.
+A fetch starts with ~81KB free on the Watchy and ~104KB on the M5Paper, putting
+the wall near **45KB and 60KB of script**. Comfortable to ~30KB. The largest
+script on the server today is 15KB.
+
+`fetchScriptContent()` now checks `2x + 8KB` against free internal heap before
+allocating. Without it an over-large script would exhaust the heap somewhere
+unpredictable -- possibly inside the TLS layer, taking the rest of the sync
+with it -- rather than failing as one named script the caller reports and moves
+past. The existing local copy is untouched either way.
+
+The render is a separate and probably tighter limit, bounded by display-list
+size rather than source bytes. Not measured.
+
+### Tools kept, and why
+
+Three diagnostics from this work existed only in a scratch directory, which is
+the wrong place for the evidence behind decisions the codebase now depends on.
+All are under `tools/device/probes/`, each with a README recording what it
+proved:
+
+- **`nvs-probe/`** -- the A/B that decided the Watchy's platform. Run it on any
+  future platform bump before trusting NVS.
+- **`ldf-wifi-probe/`** -- why `lib_ldf_mode = deep+` is banned in the Watchy's
+  `platformio.ini`, in nine lines.
+- **`serial-probe/`** -- separates "the app is not running" from "I cannot hear
+  it". Deliberately left with `flash_mode = qio`, the build that proved qio
+  stops this board executing entirely.
+
+`tools/device/mpcon.py` replaces the throwaway serial script that was retyped a
+dozen times during this work. Its `browse-timing` subcommand is a real
+regression check: it reports the title-to-title interval and how many renders
+started, where **exactly one** is correct.
+
+Worth recording that the tool's own line-matching was wrong twice before it was
+right, and both times it reported a regression that did not exist -- the
+M5Paper emits both a console echo and a firmware log per step (double count),
+and "Triggering render" also matches the 77s timer wake (false positive). A
+measurement tool is not evidence until it has been checked against a case whose
+answer is already known.

@@ -4,6 +4,10 @@
 process post-mortem written while it was still unresolved, kept unchanged
 because the wrong turns are the useful part.
 
+**The reproducer is committed:** `tools/device/probes/nvs-probe/`. Two envs, one
+source -- `arduino2` fails, `arduino3` passes. Run it before blaming NVS on
+anything else, and run it again on any future platform bump.
+
 Written at the project owner's request, after the observation that "instead of
 following best practices you invented code that doesn't work."
 
