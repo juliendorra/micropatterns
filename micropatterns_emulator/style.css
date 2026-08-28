@@ -297,6 +297,7 @@ label {
 
 input[type="number"],
 input[type="text"],
+input[type="password"],
 select {
     padding: 0.4rem 1rem;
     font-weight: 700;
@@ -313,6 +314,7 @@ select {
 
 input[type="number"]:focus,
 input[type="text"]:focus,
+input[type="password"]:focus,
 select:focus {
     border-color: var(--accent-color-pink);
     outline: 0;
@@ -383,13 +385,20 @@ button:active {
     box-shadow: 2px 2px 0px var(--border-color);
 }
 
-button:disabled {
+/* Disabled buttons stay fully opaque: the page background is patterned, and
+   any transparency here lets the pattern read straight through the label. */
+button:disabled,
+button.secondary:disabled {
     background-color: var(--memphis-medium-gray);
     border-color: var(--memphis-dark-gray);
     color: var(--memphis-dark-gray);
-    opacity: 0.6;
+    opacity: 1;
     cursor: not-allowed;
     box-shadow: var(--shadow-subtle);
+}
+
+button:disabled::before {
+    opacity: 0.35;
 }
 
 button.secondary {
@@ -1047,6 +1056,7 @@ body::before {
 
     input[type="number"],
     input[type="text"],
+    input[type="password"],
     select {
         padding: 0.7rem 0.9rem;
         font-size: 0.9rem;

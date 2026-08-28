@@ -176,6 +176,7 @@ label {
 
 input[type="number"],
 input[type="text"],
+input[type="password"],
 select {
     padding: 0.5rem 0.8rem;
     font-weight: 500;
@@ -192,6 +193,7 @@ select {
 
 input[type="number"]:focus,
 input[type="text"]:focus,
+input[type="password"]:focus,
 select:focus {
     border-color: var(--primary-color);
     outline: 0;
@@ -258,11 +260,12 @@ button:active {
     box-shadow: 1px 1px 0px var(--border-color);
 }
 
-button:disabled {
+button:disabled,
+button.secondary:disabled {
     background-color: #B0BEC5;
     border-color: #90A4AE;
-    color: #607D8B;
-    opacity: 0.7;
+    color: #37474F;
+    opacity: 1;
     cursor: not-allowed;
     box-shadow: var(--shadow-subtle);
 }
@@ -786,6 +789,7 @@ button#runButton span {
 
     input[type="number"],
     input[type="text"],
+    input[type="password"],
     select {
         padding: 0.4rem 0.7rem;
         font-size: 0.85rem;

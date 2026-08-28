@@ -33,7 +33,6 @@
             font-size: 0.8em;
             line-height: 1.4;
             margin: 10px 0 6px;
-            opacity: 0.8;
         }
 
         #provisioningPanel .prov-section {
@@ -49,12 +48,14 @@
             margin-bottom: 6px;
         }
 
-        /* A section that will not be sent is dimmed, but stays readable and editable. */
+        /* A section that will not be sent is dimmed, but stays readable and editable.
+           The panel background is patterned, so dim gently: too much transparency
+           lets the pattern read through the text. */
         #provisioningPanel .prov-section-off .script-mgmt-row,
         #provisioningPanel .prov-section-off .prov-hint,
         #provisioningPanel .prov-section-off #provNetworkList,
         #provisioningPanel .prov-section-off .prov-actions {
-            opacity: 0.45;
+            opacity: 0.7;
         }
 
         #provisioningPanel .prov-network-note {
@@ -62,7 +63,6 @@
             margin: 0 0 2px 2em;
             font-size: 0.75em;
             line-height: 1.3;
-            opacity: 0.8;
         }
 
         #provisioningPanel .prov-network-note-warn {
@@ -81,7 +81,7 @@
         #provisioningPanel .prov-network-rank {
             min-width: 1.5em;
             font-size: 0.85em;
-            opacity: 0.7;
+            font-weight: bold;
         }
 
         #provisioningPanel .prov-ssid,
@@ -125,7 +125,9 @@
             margin: 8px 0 0;
             padding: 6px;
             border: 1px solid currentColor;
-            opacity: 0.9;
+            /* Opaque, so the panel's background pattern does not show through the log. */
+            background-color: var(--bg-color-alt, #fff);
+            color: var(--text-color, #111);
         }
     </style>
 </head>
@@ -381,7 +383,7 @@ ENDREPEAT
 
         <!-- Device Provisioning Section (Web Bluetooth) -->
         <div class="controls-group" id="provisioningPanel">
-            <h3>Provision a Device</h3>
+            <h3>Setup Your Device</h3>
             <details id="provisioningDetails">
                 <summary>Send WiFi networks and your User ID to an M5Paper or Watchy over Bluetooth</summary>
 
