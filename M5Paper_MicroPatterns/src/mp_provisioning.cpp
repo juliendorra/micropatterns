@@ -294,8 +294,13 @@ void handleCommand(const String& line)
 class WriteCB : public BLECharacteristicCallbacks {
     void onWrite(BLECharacteristic* c) override {
         // Runs on the BLE task: reassemble only, never process. See g_pending.
-        std::string v = c->getValue();
-        for (char ch : v) {
+        // getValue() returns std::string on Arduino 2.x and String on 3.x, and
+        // this file is compiled by BOTH firmwares. length()/operator[] is the
+        // interface they share, so index rather than range-for.
+        auto v = c->getValue();
+        const size_t vlen = v.length();
+        for (size_t vi = 0; vi < vlen; ++vi) {
+            const char ch = v[vi];
             if (ch == '\n') {
                 if (g_rx.length()) {
                     if (!pendingFull()) {
