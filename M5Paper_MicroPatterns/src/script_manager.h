@@ -89,6 +89,16 @@ private:
     String _generateShortFileId_nolock(const String& humanId); // Private helper, assumes mutex is held
     
     bool loadScriptList_nolock(JsonDocument &outListDoc);
+
+    // In-memory copy of list.json.
+    //
+    // Every read used to go to flash and then re-validate every entry's fileId
+    // by stat-ing its content file. On the M5Paper that made a single
+    // next-script step cost ~900ms of SPIFFS work -- measured, and far more
+    // than the ~250ms panel update it was blamed on. The list only changes when
+    // a sync writes it, so it is cached and the cache is dropped on write.
+    JsonDocument _listCache;
+    bool _listCacheValid = false;
     bool getCurrentScriptId_nolock(String &outHumanId);
     bool saveCurrentScriptId_nolock(const String &humanId);
     bool loadScriptExecutionState_nolock(const String &humanId, ScriptExecState &outState);

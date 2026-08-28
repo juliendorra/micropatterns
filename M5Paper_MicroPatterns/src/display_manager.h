@@ -142,6 +142,21 @@ public:
     void drawStartupIndicator();
     void drawActivityIndicator(ActivityIndicatorType type = ACTIVITY_PUSH);
 
+    // Wipes the strip all three activity indicators live in.
+    //
+    // An indicator is a region push from InputTask, so it is only erased when
+    // something later covers that region. While a render holds the canvas
+    // mutex, showMessage() falls back to a banner band that does not reach it,
+    // and the indicator then sat on screen until the next full push -- which,
+    // once title rendering was deferred, could be seconds.
+    void clearActivityIndicators();
+
+private:
+    // Where the last activity indicator was drawn, so clearing it costs one
+    // 256-row region rather than the whole 768-row strip all three occupy.
+    int32_t _lastIndicatorTop = -1;
+public:
+
 private:
     M5EPD_Canvas _canvas;
     M5EPD_Canvas _indicatorCanvas; // Scratch canvas for region pushes (indicators, banners)

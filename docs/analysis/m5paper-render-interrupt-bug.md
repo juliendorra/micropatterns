@@ -283,3 +283,46 @@ never appeared.
   window is still dropped.
 - `FetchTask`'s analogous incomplete interrupt path is still not investigated.
 - Canvas ownership between `showMessage` and `render()` is still not verified.
+
+### Why the M5Paper then felt SLOWER than the Watchy
+
+Removing the blocking delay made the M5Paper worse, not better, and the button
+indicators lingered. Three causes, and the one everybody would have guessed --
+the panel -- was the smallest.
+
+Measured, title-to-title while paging:
+
+| | before | after |
+|---|---|---|
+| whole cycle | ~1080 ms | **~230 ms** |
+| of which: script selection | ~900 ms | ~60 ms |
+| of which: panel update | ~250 ms (was ~600 as GC16) | ~50 ms (band) |
+
+**1. Selection was doing ~900ms of SPIFFS work per step.** `selectNextScript()`
+re-read `list.json` from flash and then re-validated every entry's fileId by
+stat-ing its content file -- seven `SPIFFS.exists()` calls, ~500ms of the
+total -- on every single press. The Watchy never did this: it holds its list in
+RAM and steps an index. `ScriptManager` now caches the parsed list, dropping
+the cache whenever the list is written. Dropped rather than updated, so a
+failed or partial write can never leave RAM claiming something flash does not
+say.
+
+**2. The title was a full-panel GC16.** `showMessage(..., full_update=true)`
+pushes all 540x960 with the slowest waveform, holding the panel mutex for the
+whole of it. A title is transient black text on white and has no use for 16
+greys. It is DU4 now, and after the first title of a browse burst it is a
+*band* push -- 34 rows instead of 960, since the panel is already white.
+
+**3. Indicators outlived their press.** An activity indicator is a region push
+from `InputTask`, so it is only erased when something later covers that region.
+While a render holds the canvas mutex `showMessage()` falls back to a banner
+band that does not reach it, so the indicator sat there until the next full
+push -- which, once title rendering was deferred by the settle timer, could be
+seconds. `clearActivityIndicators()` now wipes it explicitly before each title,
+and clears only the one position actually drawn (256 rows) rather than the
+768-row strip all three share.
+
+The general lesson, which cost the whole investigation: on this device
+"it feels slow" points at the e-ink panel, and the panel was responsible for
+less than a quarter of it. Filesystem work on the control path was four times
+worse and completely invisible.

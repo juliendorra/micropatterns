@@ -469,7 +469,26 @@ void MainControlTask_Function(void *pvParameters) {
                     // paging through titles ran at two per second at best, and
                     // each one started a render that the next press then had to
                     // interrupt.
-                    g_displayManager->showMessage(selectedName, 250, 15, true, true);
+                    //
+                    // full_update=false, i.e. DU4 rather than GC16. A title is a
+                    // transient frame of black text on white and has no use for
+                    // 16 greys; GC16 is the slowest waveform on this panel and
+                    // holds the panel mutex for the whole of it, so paying it
+                    // per press made browsing SLOWER than the Watchy, whose
+                    // equivalent has always used a fast update. The canvas is
+                    // still cleared first, so the title lands on white rather
+                    // than over the outgoing script.
+                    // First title of a burst clears the whole panel so the name
+                    // lands on white rather than over the outgoing script. Every
+                    // title after that only repaints the band -- the panel is
+                    // already white, and a band push touches 34 rows instead of
+                    // 960.
+                    g_displayManager->clearActivityIndicators();
+                    if (pendingHumanId.isEmpty()) {
+                        g_displayManager->showMessage(selectedName, 250, 15, false, true);
+                    } else {
+                        g_displayManager->showBanner(selectedName, 250, 15);
+                    }
                     pendingHumanId = selectedHumanId;
                     pendingRenderAt = xTaskGetTickCount() + pdMS_TO_TICKS(TITLE_SETTLE_MS);
                     log_i("MainCtrl: Selected '%s'; render in %dms unless another press arrives.",

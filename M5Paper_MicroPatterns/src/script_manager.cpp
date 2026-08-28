@@ -395,6 +395,12 @@ bool ScriptManager::saveScriptList(JsonDocument &listDoc)
 // Internal helper: Assumes _spiffsMutex is already held.
 bool ScriptManager::saveScriptList_nolock(JsonDocument &listDoc)
 {
+    // Anything that rewrites the list invalidates the cache. Dropped rather
+    // than updated, so a failed or partial write can never leave RAM claiming
+    // something flash does not say.
+    _listCacheValid = false;
+    _listCache.clear();
+
     // Validations from the original public saveScriptList
     if (listDoc.isNull()) {
         log_e("saveScriptList_nolock: Document is null/empty");
@@ -447,6 +453,15 @@ bool ScriptManager::loadScriptList_nolock(JsonDocument &outListDoc)
 {
     // Clear the output document first to ensure we start fresh
     outListDoc.clear();
+
+    if (_listCacheValid)
+    {
+        outListDoc.set(_listCache);
+        log_d("loadScriptList_nolock: served %u entries from cache",
+              (unsigned)outListDoc.as<JsonArray>().size());
+        return true;
+    }
+
     log_i("loadScriptList_nolock: Attempting to load script list from %s", LIST_JSON_PATH);
 
     if (!SPIFFS.exists(LIST_JSON_PATH))
@@ -506,6 +521,8 @@ bool ScriptManager::loadScriptList_nolock(JsonDocument &outListDoc)
     size_t numEntries = outListDoc.as<JsonArray>().size();
     log_i("loadScriptList_nolock: Successfully loaded script list with %u entries", numEntries);
     ensureUniqueFileIds_nolock(outListDoc); // This is already _nolock
+    _listCache.set(outListDoc);
+    _listCacheValid = true;
     return true;
 }
 
@@ -1334,6 +1351,9 @@ bool ScriptManager::getScriptForExecution(String &outHumanId, String &outFileId,
 
 void ScriptManager::clearAllScriptData()
 {
+    _listCacheValid = false;
+    _listCache.clear();
+
     if (xSemaphoreTake(_spiffsMutex, pdMS_TO_TICKS(1000)) == pdTRUE)
     {
         log_w("Clearing all script data (list.json, current_script.id, script_states.json and content files).");

@@ -400,6 +400,30 @@ void DisplayManager::drawStartupIndicator()
     }
 }
 
+void DisplayManager::clearActivityIndicators()
+{
+    if (!_isInitialized || _lastIndicatorTop < 0) return;
+
+    if (xSemaphoreTake(_panelMutex, pdMS_TO_TICKS(1500)) != pdTRUE)
+    {
+        log_w("DisplayManager::clearActivityIndicators failed to take panel mutex.");
+        return;
+    }
+
+    const int32_t w = 64, h = 256;
+    const int32_t x = _canvasW - w;
+    const int32_t y = _lastIndicatorTop;
+    if (_indicatorCanvas.createCanvas(w, h))
+    {
+        _indicatorCanvas.fillCanvas(0); // WHITE
+        _indicatorCanvas.pushCanvas(x, y, UPDATE_MODE_DU4);
+        noteFastUpdateLocked();
+        _indicatorCanvas.deleteCanvas();
+        _lastIndicatorTop = -1;
+    }
+    xSemaphoreGive(_panelMutex);
+}
+
 void DisplayManager::drawActivityIndicator(ActivityIndicatorType type)
 {
     if (!_isInitialized)
@@ -467,6 +491,7 @@ void DisplayManager::drawActivityIndicator(ActivityIndicatorType type)
                                       0); // WHITE
             _indicatorCanvas.pushCanvas(region_screen_x, region_screen_y, UPDATE_MODE_DU4);
             noteFastUpdateLocked();
+            _lastIndicatorTop = region_screen_y;
             _indicatorCanvas.deleteCanvas();
             log_i("DisplayManager: Drew activity indicator (type %d at Y:%d) as a region push.", type, region_screen_y);
         }
