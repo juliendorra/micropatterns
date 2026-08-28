@@ -1,3 +1,7 @@
+#include "mp_wdt.h"
+#if defined(ARDUINO_ARCH_ESP32)
+#include "esp_heap_caps.h"
+#endif
 #include "micropatterns_drawing.h"
 #include "micropatterns_drawing.h"
 #include <cmath> // For round, floor, ceil, sinf, cosf, fabs, sqrtf
@@ -126,9 +130,30 @@ void MicroPatternsDrawing::enablePixelOccupationMap(bool enable) {
 
 void MicroPatternsDrawing::initPixelOccupationMap() {
     if (_canvasWidth > 0 && _canvasHeight > 0) {
+        _occStride = (_canvasWidth + 7) / 8;
+        const size_t need = (size_t)_occStride * _canvasHeight;
         // Resize only if necessary or if size changed
-        if (_pixelOccupationMap.size() != (size_t)_canvasWidth * _canvasHeight) {
-            _pixelOccupationMap.resize((size_t)_canvasWidth * _canvasHeight, 0);
+        if (_pixelOccupationMap.size() != need) {
+#if defined(ARDUINO_ARCH_ESP32)
+            // Check BEFORE allocating. Exceptions are disabled on Arduino, so a
+            // vector resize that cannot be satisfied calls abort() outright --
+            // the device reboots mid-render with no usable message.
+            //
+            // That is not hypothetical: on the Watchy (200x200, no PSRAM) this
+            // map is 40,000 bytes, and parsing the largest script fragments the
+            // heap down to a ~26KB largest block. Switching to that script
+            // aborted and rebooted every time.
+            //
+            // The occupation map is only an overdraw optimisation, so dropping
+            // it costs speed, not correctness. Slower is better than a reboot.
+            const size_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
+            if (largest < need + 4096) {   // margin for allocator overhead
+                _pixelOccupationMap.clear();
+                _usePixelOccupationMap = false;
+                return;
+            }
+#endif
+            _pixelOccupationMap.resize(need, 0);
         }
         // No need to fill with 0 here, resetPixelOccupationMap will do it.
     } else {
@@ -308,7 +333,7 @@ void MicroPatternsDrawing::drawPixel(const DisplayListItem& item) {
         if (_interrupt_check_cb && _interrupt_check_cb()) { _overdrawSkippedPixels += skipped; return; }
         const float fy = static_cast<float>(sy_iter) + 0.5f;
         const float m2y = im2 * fy, m3y = im3 * fy;
-        uint8_t* occRow = occ ? occ + (size_t)sy_iter * cw : nullptr;
+        uint8_t* occRow = occ ? occ + (size_t)sy_iter * _occStride : nullptr;
         for (int sx_iter = min_sx; sx_iter < max_sx; ++sx_iter) {
             const float fx = static_cast<float>(sx_iter) + 0.5f;
             const float slx = im0 * fx + m2y + im4;
@@ -363,7 +388,7 @@ void MicroPatternsDrawing::drawFilledPixel(const DisplayListItem& item) {
         if (_interrupt_check_cb && _interrupt_check_cb()) { _overdrawSkippedPixels += skipped; return; }
         const float fy = static_cast<float>(sy_iter) + 0.5f;
         const float m2y = im2 * fy, m3y = im3 * fy;
-        uint8_t* occRow = occ ? occ + (size_t)sy_iter * cw : nullptr;
+        uint8_t* occRow = occ ? occ + (size_t)sy_iter * _occStride : nullptr;
         for (int sx_iter = min_sx; sx_iter < max_sx; ++sx_iter) {
             const float fx = static_cast<float>(sx_iter) + 0.5f;
             const float slx = im0 * fx + m2y + im4;
@@ -476,7 +501,7 @@ void MicroPatternsDrawing::fillRect(const DisplayListItem& item) {
         // scanline is bounded by the canvas width, so responsiveness is unchanged
         // in any way a user can perceive.
         if (_interrupt_check_cb && _interrupt_check_cb()) { _overdrawSkippedPixels += skipped; return; }
-        if ((sy_iter & 7) == 0) { yield(); esp_task_wdt_reset(); }
+        if ((sy_iter & 7) == 0) { yield(); mp_wdt_reset(); }
 
         const float fy = static_cast<float>(sy_iter) + 0.5f;
         // m2y / m3y are the only parts of the inverse transform that depend on y.
@@ -493,7 +518,7 @@ void MicroPatternsDrawing::fillRect(const DisplayListItem& item) {
         narrowSpan(gy, rect_y0, rect_y1, x0, x1);
         if (x0 >= x1) continue;
 
-        uint8_t* occRow = occ ? occ + (size_t)sy_iter * cw : nullptr;
+        uint8_t* occRow = occ ? occ + (size_t)sy_iter * _occStride : nullptr;
         if (!patterned) {
             for (int sx_iter = x0; sx_iter < x1; ++sx_iter) {
                 emitPixel(sx_iter, sy_iter, flatColor, occRow, skipped);
@@ -536,7 +561,7 @@ void MicroPatternsDrawing::fillRect(const DisplayListItem& item) {
         }
     }
     _overdrawSkippedPixels += skipped;
-    esp_task_wdt_reset(); // Ensure WDT is reset after the loop
+    mp_wdt_reset(); // Ensure WDT is reset after the loop
 }
 
 void MicroPatternsDrawing::drawCircle(const DisplayListItem& item) {
@@ -639,7 +664,7 @@ void MicroPatternsDrawing::fillCircle(const DisplayListItem& item) {
 
     for (int sy_iter = min_sy; sy_iter < max_sy; ++sy_iter) {
         if (_interrupt_check_cb && _interrupt_check_cb()) { _overdrawSkippedPixels += skipped; return; }
-        if ((sy_iter & 7) == 0) { yield(); esp_task_wdt_reset(); }
+        if ((sy_iter & 7) == 0) { yield(); mp_wdt_reset(); }
 
         const float fy = static_cast<float>(sy_iter) + 0.5f;
         const float m2y = im2 * fy;
@@ -667,7 +692,7 @@ void MicroPatternsDrawing::fillCircle(const DisplayListItem& item) {
         narrowSpan(bly, flcy - logical_radius - 1.0f, flcy + logical_radius + 1.0f, x0, x1);
         if (x0 >= x1) continue;
 
-        uint8_t* occRow = occ ? occ + (size_t)sy_iter * cw : nullptr;
+        uint8_t* occRow = occ ? occ + (size_t)sy_iter * _occStride : nullptr;
         for (int sx_iter = x0; sx_iter < x1; ++sx_iter) {
             const float fx = static_cast<float>(sx_iter) + 0.5f;
             float base_logical_x = im0 * fx + m2y + im4;
@@ -686,7 +711,7 @@ void MicroPatternsDrawing::fillCircle(const DisplayListItem& item) {
         }
     }
     _overdrawSkippedPixels += skipped;
-    esp_task_wdt_reset();
+    mp_wdt_reset();
 }
 
 void MicroPatternsDrawing::drawAsset(const DisplayListItem& item, const MicroPatternsAsset& asset) {
@@ -733,7 +758,7 @@ void MicroPatternsDrawing::drawAsset(const DisplayListItem& item, const MicroPat
 
     for (int sy_iter = min_sy; sy_iter < max_sy; ++sy_iter) {
         if (_interrupt_check_cb && _interrupt_check_cb()) { _overdrawSkippedPixels += skipped; return; }
-        if ((sy_iter & 7) == 0) { yield(); esp_task_wdt_reset(); }
+        if ((sy_iter & 7) == 0) { yield(); mp_wdt_reset(); }
 
         const float fy = static_cast<float>(sy_iter) + 0.5f;
         const float m2y = im2 * fy;
@@ -756,7 +781,7 @@ void MicroPatternsDrawing::drawAsset(const DisplayListItem& item, const MicroPat
         narrowSpan(aly, 0.0f, fasset_h, x0, x1);
         if (x0 >= x1) continue;
 
-        uint8_t* occRow = occ ? occ + (size_t)sy_iter * cw : nullptr;
+        uint8_t* occRow = occ ? occ + (size_t)sy_iter * _occStride : nullptr;
 
         // When the inverse transform has no x->y coupling (im1 == 0, i.e. no
         // rotation or shear) the asset row is the same for the whole scanline,
@@ -807,5 +832,5 @@ void MicroPatternsDrawing::drawAsset(const DisplayListItem& item, const MicroPat
         }
     }
     _overdrawSkippedPixels += skipped;
-    esp_task_wdt_reset();
+    mp_wdt_reset();
 }

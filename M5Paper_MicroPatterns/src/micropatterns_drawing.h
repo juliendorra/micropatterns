@@ -34,7 +34,22 @@ private:
     int _canvasWidth;
     int _canvasHeight;
     std::function<bool()> _interrupt_check_cb;
+    // Overdraw map, ONE BIT PER PIXEL.
+    //
+    // This was one byte per pixel: 40,000 bytes on the Watchy's 200x200 panel,
+    // 518,400 on the M5Paper. That is what broke City 2 -- after parsing the
+    // largest script the biggest free block was ~26KB, the 40,000-byte resize
+    // could not be satisfied, and with exceptions disabled std::vector::resize()
+    // calls abort(). One bit per pixel makes it 5,000 bytes on the Watchy and
+    // 64,800 on the M5Paper, which fits with room to spare.
+    //
+    // Rows are byte-aligned so a row pointer can still be hoisted out of the
+    // pixel loop: stride = (width + 7) / 8.
     std::vector<uint8_t> _pixelOccupationMap;
+    int _occStride = 0;
+public:
+    int occStride() const { return _occStride; }
+private:
     bool _usePixelOccupationMap;
     unsigned int _overdrawSkippedPixels; // For stats
 
@@ -50,14 +65,14 @@ public: // Made public for DisplayListRenderer
             return false;
         }
         if (_pixelOccupationMap.empty()) return false;
-        return _pixelOccupationMap[(size_t)sy * _canvasWidth + sx] != 0;
+        return (_pixelOccupationMap[(size_t)sy * _occStride + (sx >> 3)] & (1u << (sx & 7))) != 0;
     }
     void markPixelOccupied(int sx, int sy) {
         if (!_usePixelOccupationMap || sx < 0 || sx >= _canvasWidth || sy < 0 || sy >= _canvasHeight) {
             return;
         }
         if (_pixelOccupationMap.empty()) return;
-        _pixelOccupationMap[(size_t)sy * _canvasWidth + sx] = 1;
+        _pixelOccupationMap[(size_t)sy * _occStride + (sx >> 3)] |= (uint8_t)(1u << (sx & 7));
     }
     unsigned int getOverdrawSkippedPixelsCount() const { return _overdrawSkippedPixels; }
 
@@ -96,9 +111,10 @@ private:
     // member itself cannot be kept in a register across the canvas write.
     inline void emitPixel(int sx, int sy, uint8_t color, uint8_t* occRow, unsigned int& skipped) {
         if (occRow) {
-            uint8_t* slot = occRow + sx;
-            if (*slot) { ++skipped; return; }
-            *slot = 1;
+            uint8_t* slot = occRow + (sx >> 3);
+            const uint8_t mask = (uint8_t)(1u << (sx & 7));
+            if (*slot & mask) { ++skipped; return; }
+            *slot |= mask;
         }
         _canvas->drawPixel(sx, sy, color);
     }
