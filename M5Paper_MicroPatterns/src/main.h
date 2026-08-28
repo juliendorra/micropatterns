@@ -26,7 +26,18 @@
 #define RENDER_TASK_PRIORITY (tskIDLE_PRIORITY + 1)
 #define FETCH_TASK_PRIORITY (tskIDLE_PRIORITY + 1)
 
-#define MAIN_CONTROL_TASK_STACK_SIZE (4096) // Words
+// BYTES, not words -- xTaskCreate() on ESP-IDF takes a byte count, and the
+// original "// Words" comment here was wrong by a factor of four.
+//
+// This was 4096 and survived on under 160 bytes of margin. Extracting
+// FetchTask's body into script_sync.cpp changed inlining in this translation
+// unit, MainControlTask_Function's frame grew 1072 -> 1232 bytes, and the task
+// then tripped its stack canary on every boot -- a crash loop caused by a
+// refactor that never touched the task. The task runs ArduinoJson parsing and
+// SPIFFS calls, so 4KB was never a defensible budget; RenderTask and FetchTask
+// have had 8KB all along. High-water mark is logged at startup so the margin is
+// observable instead of being a cliff.
+#define MAIN_CONTROL_TASK_STACK_SIZE (8192)
 #define INPUT_TASK_STACK_SIZE (2048)
 #define RENDER_TASK_STACK_SIZE (8192) // Rendering can be heavy
 #define FETCH_TASK_STACK_SIZE (8192)  // WiFi/HTTPS needs stack
@@ -88,7 +99,7 @@ extern SystemManager *g_systemManager;
 extern InputManager *g_inputManager;
 extern DisplayManager *g_displayManager;
 extern ScriptManager *g_scriptManager;
-extern NetworkManager *g_networkManager;
+extern MPNetworkManager *g_networkManager;
 // extern RenderController *g_renderController; // RenderController is instantiated by RenderTask
 
 // Note: Original FetchResultStatus enum moved to event_defs.h

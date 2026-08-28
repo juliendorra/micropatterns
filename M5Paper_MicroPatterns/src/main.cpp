@@ -330,6 +330,12 @@ void MainControlTask_Function(void *pvParameters) {
 
     if (!initialHumanIdToLoad.isEmpty()) {
         log_i("MainCtrl: Initial script determined as '%s'. Triggering render.", initialHumanIdToLoad.c_str());
+        // Past the deepest call this task makes (script list JSON + SPIFFS), so
+        // this is the number that matters. Logged because the previous 4096-byte
+        // budget failed silently, as a boot loop, the moment a refactor added
+        // 160 bytes to this frame.
+        log_i("MainCtrl: stack high-water mark %u bytes free",
+              (unsigned)uxTaskGetStackHighWaterMark(NULL));
         triggerScriptRender(initialHumanIdToLoad, false, currentState, currentLoadedScriptId); // false for useAsIsState (fresh)
     } else {
         log_e("MainCtrl: Failed to determine an initial script to load. This should not happen.");
