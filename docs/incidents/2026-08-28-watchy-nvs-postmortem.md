@@ -1,8 +1,8 @@
 # Post-mortem: the Watchy NVS hunt, and how it went wrong
 
-**Status: UNRESOLVED.** NVS writes still do not persist on the Watchy. This
-document exists because the *process* failed badly, and the failure is more
-useful to record than the (still missing) answer.
+**Status: RESOLVED.** Root cause in section 8. The rest of this document is the
+process post-mortem written while it was still unresolved, kept unchanged
+because the wrong turns are the useful part.
 
 Written at the project owner's request, after the observation that "instead of
 following best practices you invented code that doesn't work."
@@ -131,3 +131,56 @@ InkWatchy's exact `platformio.ini` foundation -- its platform version, framework
 packages, and partition table -- rather than `esp32dev` defaults, and see
 whether NVS behaves. That is copying what works instead of reasoning about what
 should work.
+
+
+---
+
+# 8. RESOLVED: NVS is broken on Arduino 2.0.4 / IDF 4.4 for this chip
+
+Found by the bisect that section 6 said to do, on a firmware containing nothing
+but NVS calls -- no display, no BLE, none of this project's code:
+
+| platform | result |
+|---|---|
+| `espressif32@5.1.0` (Arduino 2.0.4 / IDF 4.4) | `set` OK, `commit` OK, **`get` -> `ESP_ERR_NVS_NOT_FOUND`**, 0 entries |
+| pioarduino (Arduino 3.1 / IDF 5.3) | `set`/`commit`/`get` all OK, value read back, survives reopen |
+
+Same chip, same board, same partition table, same flash settings. **Nothing in
+this project was ever going to fix it.**
+
+Verified on the device end to end afterwards:
+
+```
+provision -> 2 network(s) stored, none left blank
+status    -> 2 network(s) stored: OpenWrt2.4 > TP-Link_5GHz_5C53F3
+diag      -> rawGet: ESP_OK  rawValue: 42  entries used: 93
+```
+
+## What the migration then exposed
+
+Moving platforms was correct but not free. Two regressions appeared immediately,
+both now fixed:
+
+1. **Rendering 490ms -> 1197ms.** IDF 5.3 logs an error for every
+   `esp_task_wdt_reset()` called from a task that is not subscribed to the
+   watchdog; the renderer does that every 8 scanlines, and on the Watchy it runs
+   on `loopTask`. Hundreds of serial writes per render. Fixed by checking
+   `esp_task_wdt_status()` first (`mp_wdt.h`). Subscribing `loopTask` instead --
+   tried first -- boot loops, because parsing never feeds the watchdog.
+2. **City 2 rebooted the device.** Arduino 3.1 costs ~37KB of baseline heap
+   (241KB -> 204KB free at boot). Parsing the largest script then left a 26KB
+   largest block, and the 40,000-byte overdraw map could not be allocated --
+   with exceptions disabled, `std::vector::resize()` calls `abort()`. Fixed by
+   packing that map to **1 bit per pixel** (5,000 bytes here, 64,800 on the
+   M5Paper) plus a pre-allocation size check that degrades instead of crashing.
+
+## The lesson, restated
+
+Section 6 said: copy the working reference configuration first, and bisect
+before theorising. Both of those, done properly, found the cause in roughly
+twenty minutes after a day of hypotheses. Ten wrong theories preceded them, six
+of which were real bugs -- but the real bug was in a dependency, and no amount
+of reasoning about our own code could have reached it.
+
+**The single most useful action of the whole investigation was flashing a
+firmware that did nothing but the one thing under test.**
