@@ -1,5 +1,6 @@
 #include "network_manager.h"
 #include "mp_wdt.h"
+#include "esp_heap_caps.h"
 #include "mp_provisioning.h"
 // system_manager.h is deliberately NOT included -- see network_manager.h.
 #include "esp32-hal-log.h"
@@ -519,7 +520,29 @@ FetchResultStatus MPNetworkManager::fetchScriptContent(const String &humanId, Js
             // records, which is why the two 15KB City scripts failed on the
             // Watchy while the five small ones went through. getString() owns
             // the read loop and its timeouts, so it waits for the rest.
-            log_d("fetchScriptContent: Reading %d byte body", contentLength);
+            // Peak memory for a script fetch is about 1.7x its size: the raw
+            // body, plus the JsonDocument holding a copy of the content string,
+            // both alive at once until the body is released after parsing.
+            // Measured on the Watchy mid-sync, with WiFi and TLS resident:
+            // a 15,320-byte script took 25,824 bytes of internal heap.
+            //
+            // Refuse anything that clearly will not fit, BEFORE allocating. An
+            // over-large script would otherwise exhaust the heap somewhere less
+            // predictable -- possibly inside the TLS layer, taking the rest of
+            // the sync with it -- instead of failing as one named script that
+            // the caller reports and moves past.
+            const size_t freeInternal = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+            const size_t needed = (size_t)contentLength * 2 + 8192;   // + working room
+            log_d("fetchScriptContent: '%s' is %d bytes; internal heap free=%u largest=%u",
+                  humanId.c_str(), contentLength, (unsigned)freeInternal,
+                  (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+            if (needed > freeInternal) {
+                log_e("fetchScriptContent: '%s' is %d bytes and needs ~%u; only %u free. Skipping.",
+                      humanId.c_str(), contentLength, (unsigned)needed, (unsigned)freeInternal);
+                http.end();
+                return FetchResultStatus::GENUINE_ERROR;
+            }
+
             String body = http.getString();
             mp_wdt_reset();
             if ((int)body.length() < contentLength) {
@@ -529,8 +552,14 @@ FetchResultStatus MPNetworkManager::fetchScriptContent(const String &humanId, Js
                 return FetchResultStatus::GENUINE_ERROR;
             }
 
+            log_d("fetchScriptContent: body read; internal heap free=%u largest=%u",
+                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                  (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
             DeserializationError error = deserializeJson(outScriptDoc, body);
-            body = String();   // ~15KB back before anything else runs
+            log_d("fetchScriptContent: parsed; internal heap free=%u largest=%u",
+                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                  (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+            body = String();   // the raw copy goes back before anything else runs
             
             if (error) {
                 log_e("fetchScriptContent: JSON parse error for '%s': %s",

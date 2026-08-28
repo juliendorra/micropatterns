@@ -50,7 +50,6 @@ MPNetworkManager* g_networkManager = nullptr;
 // --- Constants ---
 #define FRESH_START_THRESHOLD 10 // Perform full refresh every 10 reboots (approx)
 // Calculate capacity for script content JSON: content length + structural overhead + parsing buffer
-#define SCRIPT_CONTENT_JSON_CAPACITY (MAX_SCRIPT_CONTENT_LEN + 512)
 const TickType_t MAIN_LOOP_IDLE_DELAY = pdMS_TO_TICKS(50);
 const TickType_t SLEEP_IDLE_THRESHOLD_MS = 3000; // 3 seconds of inactivity before sleep
 
