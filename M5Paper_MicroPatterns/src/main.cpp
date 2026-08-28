@@ -5,6 +5,7 @@
 #include "serial_console.h" // Serial command channel (list/run scripts over USB)
 #include "mp_provisioning.h"   // BLE provisioning, shared with the Watchy firmware
 #include "script_sync.h"        // Server sync procedure, shared with the Watchy firmware
+#include "mp_messages.h"       // Panel wording, shared with the Watchy firmware
 
 #if MP_BENCH
 #include "bench/mp_bench.h" // env:m5paper-bench only; compiled out otherwise
@@ -114,7 +115,7 @@ void setup() {
     g_systemManager = new SystemManager();
     if (!g_systemManager || !g_systemManager->initialize()) { // Loads NVS settings
         log_e("FATAL: SystemManager initialization failed.");
-        g_displayManager->showMessage("SysMgr Fail!", 150, 15, false, false);
+        g_displayManager->showMessage(MP_MSG_STARTUP_FAILED, 150, 15, false, false);
         while(1) vTaskDelay(portMAX_DELAY);
     }
     esp_task_wdt_reset();
@@ -122,7 +123,7 @@ void setup() {
     g_scriptManager = new ScriptManager();
     if (!g_scriptManager || !g_scriptManager->initialize()) { // Initializes SPIFFS
         log_e("FATAL: ScriptManager initialization failed.");
-        g_displayManager->showMessage("ScrMgr Fail!", 150, 15, false, false);
+        g_displayManager->showMessage(MP_MSG_STARTUP_FAILED, 150, 15, false, false);
         while(1) vTaskDelay(portMAX_DELAY);
     }
     esp_task_wdt_reset();
@@ -130,7 +131,7 @@ void setup() {
     g_networkManager = new MPNetworkManager(g_systemManager); // Pass SystemManager if needed for config
     if (!g_networkManager) {
         log_e("FATAL: MPNetworkManager instantiation failed.");
-        g_displayManager->showMessage("NetMgr Fail!", 150, 15, false, false);
+        g_displayManager->showMessage(MP_MSG_STARTUP_FAILED, 150, 15, false, false);
         while(1) vTaskDelay(portMAX_DELAY);
     }
     // MPNetworkManager doesn't have an init method in the plan, connects on demand.
@@ -139,7 +140,7 @@ void setup() {
     g_inputManager = new InputManager(g_inputEventQueue);
     if (!g_inputManager || !g_inputManager->initialize()) { // Sets up GPIOs and ISRs
         log_e("FATAL: InputManager initialization failed.");
-        g_displayManager->showMessage("InpMgr Fail!", 150, 15, false, false);
+        g_displayManager->showMessage(MP_MSG_STARTUP_FAILED, 150, 15, false, false);
         while(1) vTaskDelay(portMAX_DELAY);
     }
     esp_task_wdt_reset();
@@ -153,7 +154,7 @@ void setup() {
 
     if (!g_mainControlTaskHandle || !g_inputTaskHandle || !g_renderTaskHandle || !g_fetchTaskHandle || !g_serialConsoleTaskHandle) {
         log_e("FATAL: Failed to create one or more tasks. Halting.");
-        g_displayManager->showMessage("Task Fail!", 150, 15, false, false);
+        g_displayManager->showMessage(MP_MSG_STARTUP_FAILED, 150, 15, false, false);
         while(1) vTaskDelay(portMAX_DELAY);
     }
 
@@ -209,17 +210,17 @@ static bool triggerScriptRender(const String& humanIdToRender, bool useAsIsState
                     return true;
                 } else {
                     log_e("triggerScriptRender: Failed to send render job for default script '%s'.", defaultJobData.script_id.c_str());
-                    g_displayManager->showMessage("Render Q Fail", 150, 15, false, false);
+                    g_displayManager->showMessage(MP_MSG_RENDER_ERROR, 150, 15, false, false);
                     return false;
                 }
             } else {
                  log_e("triggerScriptRender: getScriptForExecution also failed to provide a default script ID.");
-                 g_displayManager->showMessage("No Script ID", 150, 15, false, false);
+                 g_displayManager->showMessage(MP_MSG_NO_SCRIPTS, 150, 15, false, false);
                  return false;
             }
         } else {
             log_e("triggerScriptRender: Failed to get default script details.");
-            g_displayManager->showMessage("Default Load Fail", 150, 15, false, false);
+            g_displayManager->showMessage(MP_MSG_NO_SCRIPTS, 150, 15, false, false);
             return false;
         }
     }
@@ -270,13 +271,13 @@ static bool triggerScriptRender(const String& humanIdToRender, bool useAsIsState
             return true;
         } else {
             log_e("triggerScriptRender: Failed to send render job for '%s'.", jobData.script_id.c_str());
-            g_displayManager->showMessage("Render Q Fail", 150, 15, false, false);
+            g_displayManager->showMessage(MP_MSG_RENDER_ERROR, 150, 15, false, false);
             return false;
         }
     } else {
         // This case should ideally be rare if getScriptForExecution always falls back to default.
         log_e("triggerScriptRender: Failed to get script details for '%s' (even default).", humanIdToRender.c_str());
-        g_displayManager->showMessage("Script Load Fail", 150, 15, false, false);
+        g_displayManager->showMessage(MP_MSG_RENDER_ERROR, 150, 15, false, false);
         return false;
     }
 }
@@ -340,7 +341,7 @@ void MainControlTask_Function(void *pvParameters) {
         triggerScriptRender(initialHumanIdToLoad, false, currentState, currentLoadedScriptId); // false for useAsIsState (fresh)
     } else {
         log_e("MainCtrl: Failed to determine an initial script to load. This should not happen.");
-        g_displayManager->showMessage("Initial Load Fail", 150, 15, true, true);
+        g_displayManager->showMessage(MP_MSG_NO_SCRIPTS, 150, 15, true, true);
     }
     lastActivityTime = xTaskGetTickCount();
     esp_task_wdt_reset();
@@ -382,7 +383,7 @@ void MainControlTask_Function(void *pvParameters) {
         if (xQueueSend(g_fetchCommandQueue, &fetchJob, pdMS_TO_TICKS(100)) == pdTRUE) {
             currentState = AppState::FETCHING_DATA;
             // DisplayManager message handled by FetchTask or here
-            g_displayManager->showMessage(fetchJob.full_refresh ? "Full Refresh..." : "Fetching...", 200, 15);
+            g_displayManager->showMessage(MP_MSG_SYNCING, 200, 15);
         } else {
             log_e("MainCtrl: Failed to send initial fetch job.");
         }
@@ -506,14 +507,19 @@ void MainControlTask_Function(void *pvParameters) {
                     log_i("MainCtrl: Render successful for '%s'. State -> IDLE.", received_script_id.c_str());
                 }
             } else if (renderResultItem.interrupted) {
-                g_displayManager->showMessage("Render Interrupted", 200, 15, false, false); // Brief, no clear
+                g_displayManager->showMessage("Render stopped", 200, 15, false, false); // Brief, no clear
                 vTaskDelay(pdMS_TO_TICKS(100)); // Short delay
                 if (currentState == AppState::RENDERING_SCRIPT) { // If we were rendering
                     currentState = AppState::IDLE;
                     log_i("MainCtrl: Render interrupted for '%s'. State -> IDLE.", received_script_id.c_str());
                 }
             } else { // Render failed (not success, not interrupted)
-                g_displayManager->showMessage("Render Fail: " + received_script_id, 200, 15, false, false); // Brief, no clear
+                // Two lines, matching the Watchy's error frame: what happened,
+                // then which script. One line would be up to 33 glyphs and this
+                // panel fits 30 at text size 3 (6x8 font x3 = 18px per glyph
+                // across 540px), so the ends were being clipped.
+                g_displayManager->showMessage(MP_MSG_RENDER_ERROR, 200, 15, false, false);
+                g_displayManager->showMessage(received_script_id, 250, 15, false, false);
                 if (!received_error_message.isEmpty()) {
                     log_e("Render Error for '%s': %s", received_script_id.c_str(), received_error_message.c_str());
                 }
@@ -585,7 +591,7 @@ void MainControlTask_Function(void *pvParameters) {
                 // User requested to not show message on EPD and not re-render script.
                 // Logging to console is maintained.
             } else if (fetchResultItem.status == FetchResultStatus::SUCCESS) {
-                g_displayManager->showMessage("Fetch: " + fetch_message, 350, 15, false, true); // Show success message
+                g_displayManager->showMessage(fetch_message, 350, 15, false, true); // Show success message
                 vTaskDelay(pdMS_TO_TICKS(1000)); // Display success message for a bit
 
                 g_systemManager->updateLastFetchTimestamp();
@@ -597,7 +603,7 @@ void MainControlTask_Function(void *pvParameters) {
                 }
 
                 if (fetchResultItem.new_scripts_available) {
-                    g_displayManager->showMessage("New Scripts!", 400, 15);
+                    g_displayManager->showMessage("New scripts", 400, 15);
                     vTaskDelay(pdMS_TO_TICKS(1000));
                     bool currentStillValid = false;
                     DynamicJsonDocument listDoc(JSON_DOC_CAPACITY_SCRIPT_LIST);
@@ -634,7 +640,7 @@ void MainControlTask_Function(void *pvParameters) {
                     }
                 }
             } else if (fetchResultItem.status == FetchResultStatus::INTERRUPTED_BY_USER) {
-                g_displayManager->showMessage("Fetch Interrupted", 200, 15, false, false);
+                g_displayManager->showMessage(MP_MSG_SYNC_STOPPED, 200, 15, false, false);
                 vTaskDelay(pdMS_TO_TICKS(100));
                 // User interrupted, new action likely to follow.
             } else { // Other non-success, non-NO_WIFI, non-INTERRUPTED statuses (e.g., GENUINE_ERROR)
@@ -740,7 +746,7 @@ void MainControlTask_Function(void *pvParameters) {
                      if (xQueueSend(g_fetchCommandQueue, &fetchJob, pdMS_TO_TICKS(100)) == pdTRUE) {
                         if (currentState != AppState::RENDERING_SCRIPT) currentState = AppState::FETCHING_DATA;
                         // Display message about fetch starting
-                         g_displayManager->showMessage(fetchJob.full_refresh ? "Full Refresh..." : "Fetching...", 200, 15, false, false); // Don't clear if rendering
+                         g_displayManager->showMessage(MP_MSG_SYNCING, 200, 15, false, false); // Don't clear if rendering
                     }
                 }
             }

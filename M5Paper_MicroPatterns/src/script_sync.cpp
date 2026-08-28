@@ -6,6 +6,7 @@
 #include "script_manager.h"
 #include "mp_wdt.h"
 #include "mp_provisioning.h"
+#include "mp_messages.h"
 
 namespace
 {
@@ -41,7 +42,7 @@ ScriptSyncResult mp_sync_scripts(MPNetworkManager &net,
     if (!net.connectWiFi())
     {
         result.status = FetchResultStatus::NO_WIFI;
-        result.message = "WiFi Connect Fail";
+        result.message = MP_MSG_SYNC_NO_WIFI;
         return result;
     }
 
@@ -74,8 +75,8 @@ ScriptSyncResult mp_sync_scripts(MPNetworkManager &net,
     if (result.status != FetchResultStatus::SUCCESS)
     {
         result.message = (result.status == FetchResultStatus::INTERRUPTED_BY_USER)
-                             ? "Fetch Interrupted"
-                             : "Fetch List Fail";
+                             ? MP_MSG_SYNC_STOPPED
+                             : MP_MSG_SYNC_NO_SERVER;
         net.disconnectWiFi();
         return result;
     }
@@ -84,7 +85,7 @@ ScriptSyncResult mp_sync_scripts(MPNetworkManager &net,
     {
         log_e("Sync: server list is not a JSON array");
         result.status = FetchResultStatus::GENUINE_ERROR;
-        result.message = "Invalid List Format";
+        result.message = MP_MSG_SYNC_BAD_REPLY;
         net.disconnectWiFi();
         return result;
     }
@@ -107,7 +108,7 @@ ScriptSyncResult mp_sync_scripts(MPNetworkManager &net,
     {
         log_e("Sync: failed to save script list (%d items)", result.serverCount);
         result.status = FetchResultStatus::GENUINE_ERROR;
-        result.message = "Save List Fail";
+        result.message = MP_MSG_SYNC_NO_SAVE;
         net.disconnectWiFi();
         return result;
     }
@@ -205,7 +206,7 @@ ScriptSyncResult mp_sync_scripts(MPNetworkManager &net,
         if (allContentFetched)
         {
             result.status = FetchResultStatus::SUCCESS;
-            result.message = fullRefresh ? "Full Refresh OK" : "Fetch OK";
+            result.message = MP_MSG_SYNC_OK;
             mp_wdt_reset();
             report(progress, progressCtx, "Cleanup");
             scripts.cleanupOrphanedContent(serverList);
@@ -216,12 +217,12 @@ ScriptSyncResult mp_sync_scripts(MPNetworkManager &net,
         else
         {
             result.status = FetchResultStatus::GENUINE_ERROR;
-            result.message = "Partial Fetch";
+            result.message = MP_MSG_SYNC_PARTIAL;
         }
     }
     else
     {
-        result.message = "Fetch Interrupted";
+        result.message = MP_MSG_SYNC_STOPPED;
     }
 
     net.disconnectWiFi();

@@ -34,6 +34,7 @@
 #include "script_manager.h"
 #include "network_manager.h"
 #include "script_sync.h"
+#include "mp_messages.h"
 #include <vector>
 #include <Preferences.h>
 #include "nvs_flash.h"
@@ -277,7 +278,7 @@ static bool renderScript(int index)
     if (!g_scriptManager->loadScriptContent(scr.fileId, source) || source.isEmpty()) {
         log_e("Could not load content for '%s' (fileId %s)",
               scr.humanId.c_str(), scr.fileId.c_str());
-        showRenderError(scr.name.c_str(), "content missing on device");
+        showRenderError(scr.name.c_str(), MP_MSG_SCRIPT_MISSING);
         return false;
     }
 
@@ -286,7 +287,7 @@ static bool renderScript(int index)
     if (!parser.parse(source)) {
         log_e("Parse failed for '%s':", scr.humanId.c_str());
         for (const String& e : parser.getErrors()) log_e("  %s", e.c_str());
-        showRenderError(scr.name.c_str(), "script did not parse");
+        showRenderError(scr.name.c_str(), MP_MSG_PARSE_FAILED);
         return false;
     }
     source = String();   // the parser owns the tokens now; ~5KB back to the heap
@@ -341,8 +342,7 @@ static void showScript(int index, bool announce)
 {
     if (g_scripts.empty()) {
         g_lastRenderMs = millis();
-        showNotice("No scripts", "set up WiFi in the web editor, then hold",
-                   "top-left to sync", "");
+        showNotice(MP_MSG_NO_SCRIPTS, MP_MSG_NO_SCRIPTS_HOW, MP_MSG_NO_SCRIPTS_HOW2, "");
         return;
     }
     const int n = (int)g_scripts.size();
@@ -511,7 +511,7 @@ static void showNotice(const char* title, const char* line1, const char* line2,
 
 static void showRenderError(const char* scriptName, const char* reason)
 {
-    showNotice("Render error", scriptName, reason, "");
+    showNotice(MP_MSG_RENDER_ERROR, scriptName, reason, "");
 }
 
 // Full refresh: drive the panel through black and white to clear accumulated
@@ -545,7 +545,7 @@ static void syncScripts(bool announce)
     if (!g_networkManager || !g_scriptManager) return;
 
     if (announce) {
-        showNotice("Syncing", "connecting to WiFi", "", "");
+        showNotice(MP_MSG_SYNCING, MP_MSG_CONNECTING, "", "");
     }
 
     logHeap("before sync");
@@ -569,9 +569,9 @@ static void syncScripts(bool announce)
     loadScriptIndex();
     if (g_scripts.empty()) {
         const char* why = (r.status == FetchResultStatus::NO_WIFI)
-                              ? "no WiFi"
+                              ? MP_MSG_SYNC_NO_WIFI
                               : r.message.c_str();
-        showNotice("Sync failed", why, "", "hold top-left to retry");
+        showNotice(MP_MSG_SYNC_FAILED, why, "", MP_MSG_RETRY_SYNC);
     }
 }
 
