@@ -295,3 +295,121 @@ fit; something M5Paper-specific is required. Ranked candidates:
 Recorded because it is easy to misread: **"could not reproduce" is not proof of
 absence.** The Watchy runs the same suspect code and may simply not be hitting
 the trigger.
+
+---
+
+## 2026-08-28 -- Server sync on the Watchy, and three things it uncovered
+
+The Watchy's scripts were compiled in (`EMBEDDED_SCRIPTS[]`, 1018 lines of
+header). Replacing that with a real sync was meant to be plumbing. It was not.
+
+### The unification actually happened
+
+The instinct was to write a small fetch loop for the Watchy. That would have
+been a second copy of a procedure whose subtleties were paid for by the script
+loss incident -- above all the `clearAllScriptData()` that used to run BEFORE
+the fetch, so a 404 left the device with nothing. Instead `mp_sync_scripts()`
+now holds the whole procedure and knows nothing about tasks, queues or
+displays. `FetchTask` is down to the queue, the watchdog and the interrupt
+flag; the Watchy calls the same function from `loop()`.
+
+`ScriptManager` and `MPNetworkManager` are compiled straight out of the M5Paper
+tree, like the renderer already was. `MPNetworkManager` holds a
+`SystemManager*` it never dereferences, so the Watchy passes `nullptr` rather
+than porting a class that pulls in `M5EPD.h`.
+
+### Dead end 1: `lib_ldf_mode = deep+`
+
+The shared managers arrive via `build_src_filter` from another directory, and
+PlatformIO's dependency finder only scans sources under `src_dir`. So the build
+failed with `HTTPClient.h: No such file or directory`.
+
+`deep+` is the documented answer and it is wrong here. It makes the framework's
+**own** WiFi library fail to build -- `Network.h: No such file or directory` --
+because `WiFi/library.properties` declares no dependency on `Networking`, and
+`deep+` stops PlatformIO from wiring the framework libraries' include paths to
+each other. Reproduced on a bare project containing nothing but
+`#include <WiFi.h>`, which is the only reason this was believed rather than
+blamed on the port.
+
+Naming the libraries in `lib_deps` (`WiFi`, `Networking`, `HTTPClient`, ...)
+does not help either: they appear in the dependency graph and the build still
+fails identically.
+
+What works is four `#include` lines in the Watchy's own `main.cpp`. They are
+not used there; they exist to put the libraries in the graph.
+
+### Dead end 2: `class NetworkManager`
+
+Arduino 3.1 / IDF 5.3 -- the platform the Watchy moved to for the NVS fix --
+ships its own global `class NetworkManager` in the Network library. Ours
+collided with it the moment the Watchy compiled `network_manager.cpp`. The
+M5Paper's Arduino 2.0.4 has no such class, so this was invisible until now.
+Renamed to `MPNetworkManager`.
+
+Worth noting the shape of the error: `redefinition of 'class NetworkManager'`
+pointing at our own header, with the "previous definition" note fifteen lines
+further down in the framework. Easy to read as a broken include guard, which is
+what was assumed first.
+
+### The crash the refactor caused, and what it exposed
+
+After extracting the sync, the M5Paper crash-looped on boot:
+
+    Guru Meditation Error: Core 1 panic'ed (Unhandled debug exception).
+    Debug exception reason: Stack canary watchpoint triggered (MainCtrlTask)
+
+Nothing in the change touched `MainCtrlTask`. Confirmed a real regression by
+building and flashing the previous commit from a git worktree -- clean, zero
+panics -- rather than assuming it was pre-existing.
+
+The cause: removing the large `FetchTask_Function` from `main.cpp` changed
+inlining in that translation unit, and `MainControlTask_Function`'s stack frame
+grew from **1072 to 1232 bytes** (read out of both ELFs with `objdump`, from
+the `entry a1, 0x430` / `entry a1, 0x4d0` instructions).
+
+`MAIN_CONTROL_TASK_STACK_SIZE` was 4096 with a comment claiming `// Words`.
+`xTaskCreate()` on ESP-IDF takes bytes. So a task doing ArduinoJson parsing and
+SPIFFS calls had 4KB, and had been surviving on **under 160 bytes of margin**.
+
+The lesson is not "be careful when refactoring". It is that the margin was
+invisible: nothing reported it, and the failure mode was a boot loop rather
+than a warning. It is 8192 now, matching RenderTask and FetchTask, and the
+high-water mark is logged past the task's deepest call.
+
+### The finding that is not fixed: TLS cannot allocate
+
+With the crash gone, the sync runs end to end and fails at the last step:
+
+    [V][ssl_client.cpp:62] Free internal heap before TLS 23212
+    [E][ssl_client.cpp:37] (-32512) SSL - Memory allocation failed
+
+WiFi associates, DHCP completes, the URL is right. mbedTLS then cannot get its
+handshake buffers out of **23KB of free internal RAM**. Total free heap reads
+3.8MB, which is PSRAM and no use to mbedTLS.
+
+The 23KB is the point. BLE is built at boot (commit e45a995, because lazy init
+from `loop()` crashed the Watchy) and the controller plus host hold roughly
+90KB of internal DRAM for the life of the device. The WiFi driver wants ~40KB
+more on top. The provisioning window and the sync are competing for the same
+scarce pool, and provisioning currently wins permanently.
+
+This is pre-existing, not caused by the sync work -- but the sync work is what
+made it visible, because nothing before it exercised HTTPS with BLE resident.
+
+Not fixed here because the obvious repair -- initialise BLE on demand -- is the
+exact thing e45a995 moved AWAY from after it crashed the Watchy. The options
+worth weighing, none yet tested:
+
+  1. `esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT)` at boot. Frees the
+     Classic-BT half (tens of KB) and keeps BLE. Cheapest if it is not already
+     being done.
+  2. De-init BLE for the duration of a sync and rebuild it after. Reintroduces
+     the failure mode e45a995 was written to avoid, on the device with less
+     headroom.
+  3. Route mbedTLS allocations to PSRAM on the M5Paper. Needs an sdkconfig
+     change the precompiled Arduino libraries do not allow on this platform,
+     and does nothing for the Watchy, which has no PSRAM.
+
+The Watchy is the harder case either way: ~300KB total, no PSRAM, and it must
+hold BLE, WiFi and TLS on the same pool.
