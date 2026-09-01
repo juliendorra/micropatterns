@@ -223,6 +223,68 @@ order. After the fix:
 A memory-starved Watchy now draws the same picture, just slower. The misleading
 comment is corrected in place.
 
+## Which renderer is right where they differ: the device
+
+The divergence turned out not to be two different algorithms. It is one
+rounding convention.
+
+The firmware converts a transformed coordinate to a pixel with `round()`
+(`micropatterns_drawing.cpp`: line endpoints, rect corners drawn as four lines,
+circle centre and radius -- all `round()`). The web renderer used
+`Math.trunc()`. `round(19.6) = 20`, `trunc(19.6) = 19`, which is exactly the
+symptom: at the same y, the web drew rotated lines a consistent **one pixel to
+the left**.
+
+    cpp-only pixels: (20,46) (22,49) (24,52) (45,84) ...
+    js-only  pixels: (19,46) (21,49) (23,52) (44,84) ...
+
+Truncation is not a defensible tie: it biases every coordinate toward the
+origin, and asymmetrically so across zero. Round-to-nearest is correct. **The
+device is right here and the web should follow it.**
+
+Isolating it confirmed the diagnosis -- an unrotated line and a scaled line were
+already byte-identical between the two engines; only rotation differed, which is
+the only case where the transformed coordinate lands off a pixel centre.
+
+Changing `_rawLine` alone -- four `Math.trunc` to `Math.round`:
+
+| | before | after |
+|---|---|---|
+| whole corpus | 33,907 px | **17,290 px** |
+| `LINE` probe | 5,097 px | **0** |
+| `RECT` probe | 2,966 px | 2,267 px |
+| `CIRCLE` probe | 3,013 px | 3,013 px |
+| `PIXEL` probe | 36 px | 36 px |
+
+`drawing.js` has 33 `Math.trunc` sites. The rest of the gap is the same class of
+issue in the circle, rect and pixel paths, and is **not yet done** -- each site
+needs checking individually, because some are array indices where rounding up
+could run off the end of a bounds-relative buffer.
+
+## Editor diagnostics can come from the firmware parser too
+
+The editor's linting comes from the JS parser, which is a second implementation
+of the language and has already been caught disagreeing with the firmware --
+it rejected `LINE`'s `X1`/`Y1`/`X2`/`Y2` outright. The WASM build now exports
+the firmware's own parser:
+
+    mp_parse(src) -> 0/1
+    mp_parse_error_count()
+    mp_parse_error_at(i) -> "Line N: message"
+
+Working, through WASM:
+
+    good script        ok=1  errors=0
+    unknown command    ok=0  Line 2: Unknown command: FLOOP
+    bad argument       ok=0  Line 2: Missing value for parameter 'Y'.
+    undeclared var     ok=0  Line 1: Cannot assign to undeclared variable: $nope
+
+The `Line N:` prefix parses trivially into CodeMirror lint markers. That would
+give the editor the same verdict the device reaches, and remove the second
+parser from the correctness path entirely -- it would still be wanted for
+autocomplete and syntax highlighting, which need a token stream rather than a
+verdict.
+
 ## Still open
 
 - Reconcile `LINE`/`RECT`/`CIRCLE`/`PIXEL` rasterization between the two

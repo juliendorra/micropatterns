@@ -74,10 +74,15 @@ export class MicroPatternsDrawing {
     // Draws individual 1x1 screen pixels for the line.
     // Accepts itemState for color, or falls back to a simple state object if itemState is not fully featured.
     _rawLine(sx1, sy1, sx2, sy2, itemState) {
-        let x1 = Math.trunc(sx1);
-        let y1 = Math.trunc(sy1);
-        const x2 = Math.trunc(sx2);
-        const y2 = Math.trunc(sy2);
+        // round(), not trunc(): the firmware rasterizes a transformed endpoint
+        // with round() (micropatterns_drawing.cpp, drawLine -> rawLine), and
+        // truncation biases every coordinate toward the origin -- which showed
+        // up as this renderer drawing rotated lines a consistent one pixel left
+        // of the device. See docs/analysis/web-device-renderer-audit.md.
+        let x1 = Math.round(sx1);
+        let y1 = Math.round(sy1);
+        const x2 = Math.round(sx2);
+        const y2 = Math.round(sy2);
 
         const dx = Math.abs(x2 - x1);
         const dy = -Math.abs(y2 - y1);

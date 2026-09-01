@@ -14,6 +14,7 @@
 
 #include <string>
 
+#include "micropatterns_parser.h"
 #include "render_path.h"
 
 namespace {
@@ -21,6 +22,10 @@ namespace {
 // heap without a copy on this side.
 RenderResult g_result;
 std::string g_error;
+
+// Kept alive between calls so JS can read the strings out of the heap.
+MicroPatternsParser g_parser;
+std::vector<std::string> g_parseErrors;
 }
 
 extern "C" {
@@ -62,5 +67,32 @@ EMSCRIPTEN_KEEPALIVE int mp_culled_occlusion()   { return g_result.counters.cull
 EMSCRIPTEN_KEEPALIVE double mp_ms_parse()        { return g_result.timings.parseMs; }
 EMSCRIPTEN_KEEPALIVE double mp_ms_displaylist()  { return g_result.timings.displayListMs; }
 EMSCRIPTEN_KEEPALIVE double mp_ms_rasterize()    { return g_result.timings.rasterizeMs; }
+
+// --- parse-only, for editor diagnostics ------------------------------------
+//
+// The editor's linting currently comes from the JS parser, which is a SECOND
+// implementation of the language and has already been caught disagreeing with
+// this one (it rejected LINE's X1/Y1/X2/Y2 outright). Running the firmware's
+// own parser gives the editor the same verdict the device will reach.
+//
+// Errors come back as the parser writes them, which is "Line N: ...".
+EMSCRIPTEN_KEEPALIVE
+int mp_parse(const char* src)
+{
+    g_parseErrors.clear();
+    g_parser.reset();
+    const bool ok = g_parser.parse(String(src ? src : ""));
+    for (const String& e : g_parser.getErrors()) {
+        g_parseErrors.push_back(std::string(e.c_str()));
+    }
+    return ok ? 1 : 0;
+}
+
+EMSCRIPTEN_KEEPALIVE int mp_parse_error_count() { return (int)g_parseErrors.size(); }
+EMSCRIPTEN_KEEPALIVE const char* mp_parse_error_at(int i)
+{
+    if (i < 0 || i >= (int)g_parseErrors.size()) return "";
+    return g_parseErrors[(size_t)i].c_str();
+}
 
 } // extern "C"
