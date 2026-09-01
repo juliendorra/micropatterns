@@ -411,6 +411,28 @@ Every odd level unreachable -- the signature of an affine low-bit map. That
 probe is kept (`probe/corpus/sweep_bad.mp`) precisely so the tool has a case it
 must keep failing.
 
+`make audit-sweep` runs the whole set with **per-case expected exit codes**,
+because two of them must fail and a run-everything-expect-zero loop would call
+those broken. A negative test is only a test if something checks it still goes
+negative.
+
+It also runs `probe/check_city_block.sh`, which re-extracts the zoom block from
+`examples/scripts/city.mp` and from each probe and diffs them. The DSL has no
+include, so the copy cannot be removed -- but it can be made loud instead of
+silent. Editing the source now fails the gate rather than quietly invalidating
+the probes.
+
+That check found real drift the moment it existed: both probes were missing two
+clamp guards (`IF $max_scaling < $min_scaling` and `IF $rare_from < 1`) present
+in the source. At 200x200 both are no-ops, which is exactly why the numbers
+still matched and nobody noticed -- the probes were not verbatim and would have
+diverged from the real script at any other sweep size. Restored; sweep results
+unchanged.
+
+Its own first run reported drift that was not there, too: `s/[[:space:]]\+/ /g`
+is a BSD-sed trap, where `\+` is a literal plus rather than a repetition
+operator, so the normaliser was eating every `+` in the arithmetic.
+
 `cycle` deliberately does **not** fail on a low distinct-frame count. A script that
 legitimately picks one of four positions has four distinct frames however often
 it is drawn; flagging that would make the tool cry wolf on correct scripts. The
@@ -448,11 +470,22 @@ script:
       M=32768   3, 4, 7 and 9 unreachable; 2/5/8 take 89% of renders
       M=32749   none unreachable
 
-  A sweep of my own, same shape but with a seed construction I invented rather
-  than theirs, showed no unreachability at either modulus. That does not refute
-  the above -- it shows the effect depends on the specific seed construction and
-  constants, not on power-of-two modulus alone. The right ground truth is their
-  script, not my approximation of it.
+  Reproduced here on `city.mp`'s **real** zoom block, carried verbatim into
+  `probe/corpus/sweep_city_*.mp`: mod 32768 gives 6 distinct values with 3, 4, 7
+  and 9 unreachable; mod 32749 gives all ten. Percentages agree with their
+  independent sweep to within 0.3 points.
+
+  A sweep of my own, same shape but with a seed construction **I invented**,
+  showed no unreachability at either modulus -- and that reconstruction is kept
+  in the gate as a PASSING case, because it is the sharper lesson:
+
+  > A probe that reconstructs the script under test is testing the
+  > reconstruction. The reconstruction passes at both moduli while the real
+  > block fails at one. Copy the block; do not paraphrase it.
+
+  It also means a power-of-two modulus is not on its own enough to produce the
+  fault. It needs a seed set with the right structure, and the clock supplies
+  one. Nothing weaker than the real script would have shown that.
 
   Recorded at length because the original entry here asserted the opposite with
   more confidence than the evidence supported. The scepticism was fair about
