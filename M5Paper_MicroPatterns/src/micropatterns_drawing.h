@@ -98,8 +98,14 @@ private:
     // loops need the base-logical coordinates for their own shape test anyway.
     uint8_t fillColorFromBase(float base_lx, float base_ly, const DisplayListItem& item) const;
 
+public: // occupancy map accessors -- DisplayListRenderer reads these to mark
+        // the occlusion buffer from actually-painted pixels.
     // Returns the base of the occupancy map if it is live for this pass, else nullptr.
     // Hoisted out of the pixel loop by the fill primitives.
+    const uint8_t* occupancyBase() const {
+        if (!_usePixelOccupationMap || _pixelOccupationMap.empty()) return nullptr;
+        return _pixelOccupationMap.data();
+    }
     uint8_t* occupancyBase() {
         if (!_usePixelOccupationMap || _pixelOccupationMap.empty()) return nullptr;
         return _pixelOccupationMap.data();

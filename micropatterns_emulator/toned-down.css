@@ -808,3 +808,36 @@ hr.separator {
     padding: 0;
     background: transparent;
 }
+/* Pattern header: name plus the clone button. */
+#assetPreviews .asset-preview-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 5px;
+}
+
+#assetPreviews .asset-preview-header label {
+    margin-bottom: 0;
+}
+
+#assetPreviews .asset-clone-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 3px 6px;
+    line-height: 1;
+}
+
+#addPatternRow {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-top: 12px;
+    position: relative;
+    z-index: 1;
+}
+
+#addPatternRow label {
+    margin-bottom: 0;
+}

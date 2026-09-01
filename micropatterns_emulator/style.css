@@ -1172,3 +1172,37 @@ button#runButton span {
     /* transform: none !important; */
     /* border-color: var(--border-color-light) !important; */
 }
+/* Pattern header: name cartouche with the clone button beside it. */
+#assetPreviews .asset-preview-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+
+#assetPreviews .asset-preview-header label {
+    margin-bottom: 0;
+}
+
+#assetPreviews .asset-clone-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 4px 6px;
+    min-width: 0;
+    line-height: 1;
+}
+
+#addPatternRow {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-top: 15px;
+    position: relative;
+    z-index: 1;
+}
+
+#addPatternRow label {
+    margin-bottom: 0;
+}

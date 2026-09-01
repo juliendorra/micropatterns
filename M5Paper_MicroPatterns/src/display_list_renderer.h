@@ -33,6 +33,14 @@ public:
     int getRenderedItems() const { return _renderedItems; }
     int getCulledOffScreen() const { return _culledOffScreen; }
     int getCulledByOcclusion() const { return _culledByOcclusion; }
+
+    // Occlusion culling on/off. On by default -- this exists so the host
+    // harness can render the same script both ways and byte-compare the
+    // result. Culling is meant to be output-NEUTRAL: it only skips items it
+    // has proven are completely covered by opaque items drawn later. If the
+    // two renders ever differ, the culling is wrong, and that is a silent
+    // class of bug no golden image can catch on its own.
+    void setOcclusionEnabled(bool on) { _occlusionEnabled = on; }
     // Pixels the drawing layer skipped because the pixel-occupation map said
     // they were already covered. Already tracked by MicroPatternsDrawing and
     // already logged by render(); this getter just exposes it to callers
@@ -59,6 +67,7 @@ private:
     int _renderedItems;
     int _culledOffScreen;
     int _culledByOcclusion; // Items culled by occlusion buffer
+    bool _occlusionEnabled = true;
 
     std::function<bool()> _interrupt_check_cb;
 

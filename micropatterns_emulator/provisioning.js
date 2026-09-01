@@ -140,12 +140,13 @@ class BleProvisioningClient {
         return !!(this.device && this.device.gatt && this.device.gatt.connected && this.writeChar);
     }
 
-    async connect({ acceptAllDevices = false } = {}) {
-        const options = acceptAllDevices
-            ? { acceptAllDevices: true, optionalServices: [SERVICE_UUID] }
-            : { filters: [{ services: [SERVICE_UUID] }], optionalServices: [SERVICE_UUID] };
-
-        this.device = await navigator.bluetooth.requestDevice(options);
+    // Always filtered by the provisioning service: the picker then lists only
+    // devices that can actually be provisioned, instead of every radio nearby.
+    async connect() {
+        this.device = await navigator.bluetooth.requestDevice({
+            filters: [{ services: [SERVICE_UUID] }],
+            optionalServices: [SERVICE_UUID]
+        });
         this.device.addEventListener('gattserverdisconnected', this._onDisconnect);
 
         this.onLog(`Connecting to "${this.device.name || 'unnamed device'}"...`);
@@ -295,8 +296,9 @@ async function describeConnectError(err) {
             return 'Bluetooth looks switched off. Turn it on in your system settings, then try again.';
         }
         return 'No device was chosen. Either you closed the picker, or the device is not advertising yet — ' +
-            'press its button to open the provisioning window, then try again. ' +
-            'If it is advertising under a different name, tick "Show all Bluetooth devices".';
+            'press its button to open the provisioning window, then try again. The picker only lists ' +
+            'devices offering the MicroPatterns provisioning service, so a device missing from it is ' +
+            'not advertising.';
     }
     if (name === 'SecurityError') {
         return 'The browser blocked the request. This page must be served over HTTPS (or http://localhost).';
@@ -355,7 +357,6 @@ export function initProvisioning(opts = {}) {
     const statusButton = document.getElementById('provStatusButton');
     const forgetButton = document.getElementById('provForgetButton');
     const diagButton = document.getElementById('provDiagButton');
-    const showAllToggle = document.getElementById('provShowAllDevices');
     const logEl = document.getElementById('provLog');
 
     const getUserId = opts.getUserId || (() => '');
@@ -636,7 +637,7 @@ export function initProvisioning(opts = {}) {
         setBusy(true);
         let connectedNow = false;
         try {
-            const name = await client.connect({ acceptAllDevices: showAllToggle.checked });
+            const name = await client.connect();
             log(`Ready to talk to ${name}.`);
             setConnectedUi(true);
             connectedNow = true;
@@ -761,7 +762,7 @@ export function initProvisioning(opts = {}) {
             if (payload.length === 0) {
                 // The device refuses "networks":[] on purpose, so never send it.
                 log('The network list is empty. The device will not accept an empty list — add a network, ' +
-                    'untick "Write the WiFi networks" to change only the user ID, or use "Forget credentials" ' +
+                    'untick "Write the WiFi networks" to change only the user ID, or use "Erase WiFi + ID" ' +
                     'to clear the device.');
                 return;
             }

@@ -177,50 +177,23 @@ ScreenBounds DisplayListRenderer::calculateScreenBounds(const DisplayListItem& i
     bounds.markingBounds.maxX = bounds.maxX;
     bounds.markingBounds.maxY = bounds.maxY;
 
-    // Adjust marking bounds for specific opaque shapes (similar to JS logic)
-    if (item.isOpaque) {
-        if (item.type == CMD_FILL_CIRCLE && validShape && effective_radius_for_circle > 0) {
-            const float markingRadiusScaleFactor = sqrtf(M_PI / 4.0f); // approx 0.886
-            const float markingRadius = effective_radius_for_circle * markingRadiusScaleFactor;
-            bounds.markingBounds.minX = static_cast<int>(floor(std::max(0.0f, s_center_x_for_circle - markingRadius)));
-            bounds.markingBounds.minY = static_cast<int>(floor(std::max(0.0f, s_center_y_for_circle - markingRadius)));
-            bounds.markingBounds.maxX = static_cast<int>(ceil(std::min(static_cast<float>(_canvasWidth), s_center_x_for_circle + markingRadius)));
-            bounds.markingBounds.maxY = static_cast<int>(ceil(std::min(static_cast<float>(_canvasHeight), s_center_y_for_circle + markingRadius)));
-        } else if (item.type == CMD_FILL_RECT && validShape) {
-            int lw = item.w();
-            int lh = item.h();
-            if (lw > 0 && lh > 0) {
-                const float matrixDeterminant = std::abs(item.xf->matrix[0] * item.xf->matrix[3] - item.xf->matrix[1] * item.xf->matrix[2]);
-                const float actualScreenArea = static_cast<float>(lw) * lh * item.xf->scale * item.xf->scale * matrixDeterminant;
-                const float visualAABBWidth = unclippedVisualMaxX - unclippedVisualMinX;
-                const float visualAABBHeight = unclippedVisualMaxY - unclippedVisualMinY;
-                const float visualAABBArea = visualAABBWidth * visualAABBHeight;
+    // The heuristic "marking bounds" that used to be computed here are GONE.
+    //
+    // They shrank an item's AABB to approximate the part of it that was solidly
+    // painted -- a circle became a square of side r*sqrt(pi/4), a rotated rect
+    // became its AABB scaled by sqrt(fillFactor). Both match the shape's AREA
+    // rather than fitting INSIDE it: that square's corners sit at 1.25r, a
+    // quarter-radius outside the circle. Unpainted pixels were marked opaque,
+    // items behind them were culled, and their ink vanished from the render.
+    //
+    // Measured before removal, on the host corpus: 9 of 15 golden images
+    // differed depending on whether culling was on, up to 2488 pixels. Occlusion
+    // culling must be output-neutral -- it may only skip what is provably
+    // covered -- so any such difference is a bug by definition.
+    //
+    // Marking now reads the drawing layer's occupancy bitmap instead, which is
+    // exact and is what the web emulator has always done.
 
-                if (actualScreenArea > 0 && visualAABBArea > 0) {
-                    const float fillFactor = std::max(0.0f, std::min(1.0f, actualScreenArea / visualAABBArea));
-                    if (fillFactor < 0.85f) { // Only adjust if significantly non-axis-aligned
-                        const float scaleDownFactor = sqrtf(fillFactor);
-                        const float markingWidth = visualAABBWidth * scaleDownFactor;
-                        const float markingHeight = visualAABBHeight * scaleDownFactor;
-                        const float centerX = (unclippedVisualMinX + unclippedVisualMaxX) / 2.0f;
-                        const float centerY = (unclippedVisualMinY + unclippedVisualMaxY) / 2.0f;
-                        bounds.markingBounds.minX = static_cast<int>(floor(std::max(0.0f, centerX - markingWidth / 2.0f)));
-                        bounds.markingBounds.minY = static_cast<int>(floor(std::max(0.0f, centerY - markingHeight / 2.0f)));
-                        bounds.markingBounds.maxX = static_cast<int>(ceil(std::min(static_cast<float>(_canvasWidth), centerX + markingWidth / 2.0f)));
-                        bounds.markingBounds.maxY = static_cast<int>(ceil(std::min(static_cast<float>(_canvasHeight), centerY + markingHeight / 2.0f)));
-                    }
-                }
-            }
-        }
-        // Ensure marking bounds are valid
-        if (bounds.markingBounds.minX >= bounds.markingBounds.maxX || bounds.markingBounds.minY >= bounds.markingBounds.maxY) {
-            // Fallback to visual bounds if marking bounds became invalid
-            bounds.markingBounds.minX = bounds.minX;
-            bounds.markingBounds.minY = bounds.minY;
-            bounds.markingBounds.maxX = bounds.maxX;
-            bounds.markingBounds.maxY = bounds.maxY;
-        }
-    }
     return bounds;
 }
 
@@ -295,7 +268,7 @@ void DisplayListRenderer::render(const std::vector<DisplayListItem>& displayList
             continue;
         }
 
-        if (item.isOpaque) { // Only check occlusion for opaque items
+        if (_occlusionEnabled && item.isOpaque) { // Only check occlusion for opaque items
             // Use visual bounds for occlusion check
             if (_occlusionBuffer.isAreaOccluded(bounds.minX, bounds.minY, bounds.maxX, bounds.maxY)) {
                 _culledByOcclusion++;
@@ -306,10 +279,13 @@ void DisplayListRenderer::render(const std::vector<DisplayListItem>& displayList
         renderItem(item);
         _renderedItems++;
 
-        if (item.isOpaque) {
-            // Use marking bounds to update occlusion buffer
-            _occlusionBuffer.markAreaOpaque(bounds.markingBounds.minX, bounds.markingBounds.minY,
-                                            bounds.markingBounds.maxX, bounds.markingBounds.maxY);
+        if (_occlusionEnabled && item.isOpaque) {
+            // Mark from the pixels this item ACTUALLY painted, not from an
+            // estimate of its shape. See OcclusionBuffer::updateFromPixelMap().
+            _occlusionBuffer.updateFromPixelMap(bounds.minX, bounds.minY,
+                                                bounds.maxX, bounds.maxY,
+                                                _drawing.occupancyBase(),
+                                                _drawing.occStride());
         }
     }
     log_i("Render complete: Total=%d, Rendered=%d, OffScreen=%d, Occluded=%d, OverdrawSkippedPixels=%u",

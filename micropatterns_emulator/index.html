@@ -13,10 +13,20 @@
     <link id="themeStylesheet" rel="stylesheet" href="style.css"> <!-- Changed ID and default -->
     <!-- Structural-only rules for the provisioning panel, so it works with every theme above. -->
     <style>
+        /* The panel background is patterned, so the summary needs its own solid
+           backing to read as a line of text - and as something clickable. */
         #provisioningPanel summary {
             cursor: pointer;
             font-size: 0.9em;
+            font-weight: bold;
+            /* list-item, not inline-block: inline-block drops the disclosure triangle. */
+            display: list-item;
+            width: fit-content;
             margin-bottom: 8px;
+            padding: 4px 10px;
+            background-color: var(--bg-color-alt, #fff);
+            color: var(--text-color, #111);
+            border: 2px solid currentColor;
         }
 
         #provisioningPanel .prov-notice {
@@ -108,10 +118,6 @@
             gap: 8px;
             flex-wrap: wrap;
             margin: 8px 0;
-        }
-
-        #provisioningPanel .prov-inline-check {
-            font-size: 0.8em;
         }
 
         #provisioningPanel .prov-log {
@@ -340,6 +346,17 @@ ENDREPEAT
                 <!-- Previews will be generated here -->
                 <p style="color: #777; font-style: italic;">No patterns defined or script not run yet.</p>
             </div>
+            <div id="addPatternRow">
+                <label for="newPatternSize">Size:</label>
+                <select id="newPatternSize">
+                    <option value="8">8x8</option>
+                    <option value="10">10x10</option>
+                    <option value="12">12x12</option>
+                    <option value="16">16x16</option>
+                    <option value="20">20x20 (max)</option>
+                </select>
+                <button id="addPatternButton" title="Add a new DEFINE PATTERN to the script">Add new pattern</button>
+            </div>
         </div>
 
         <!-- Script Management Section -->
@@ -385,13 +402,14 @@ ENDREPEAT
         <div class="controls-group" id="provisioningPanel">
             <h3>Setup Your Device</h3>
             <details id="provisioningDetails">
-                <summary>Send WiFi networks and your User ID to an M5Paper or Watchy over Bluetooth</summary>
+                <summary>Send WiFi and your ID over Bluetooth</summary>
 
                 <p id="provNotice" class="prov-notice"></p>
 
                 <div id="provBody">
                     <p class="prov-hint">
-                        The user ID and the WiFi networks are written independently. Tick only what you
+                        Sends the WiFi networks and your user ID to an M5Paper or a Watchy.
+                        The two are written independently. Tick only what you
                         want to change: anything left unticked is not touched on the device.
                     </p>
 
@@ -419,7 +437,7 @@ ENDREPEAT
                             order, so put the one you are usually on first. Names and their order are remembered
                             in this browser; passwords are not stored here and are never read back from the device.
                             A blank password means "keep whatever the device already has for that name" — each row
-                            says which way it will be read. To clear the device entirely, use "Forget credentials".
+                            says which way it will be read. To clear the device entirely, use "Erase WiFi + ID".
                         </p>
                         <div id="provNetworkList"></div>
                         <div class="prov-actions">
@@ -432,12 +450,9 @@ ENDREPEAT
                         <button id="provDisconnectButton" class="secondary">Disconnect</button>
                     </div>
                     <div class="prov-actions">
-                        <label class="prov-inline-check"><input type="checkbox" id="provShowAllDevices"> Show all Bluetooth devices</label>
-                    </div>
-                    <div class="prov-actions">
                         <button id="provSendButton">Send to device</button>
                         <button id="provStatusButton" class="secondary">Check status</button>
-                        <button id="provForgetButton" class="secondary">Forget credentials</button>
+                        <button id="provForgetButton" class="secondary" title="Wipes both the WiFi networks and the user ID stored on the device.">Erase WiFi + ID</button>
                         <button id="provDiagButton" class="secondary">Diagnostics</button>
                     </div>
 

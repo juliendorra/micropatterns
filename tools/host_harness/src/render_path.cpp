@@ -20,7 +20,17 @@ double msSince(const std::chrono::steady_clock::time_point& t0) {
 // step for step, including the phase boundaries the device times with millis().
 class DisplayListPath : public RenderPath {
 public:
-    const char* name() const override { return "displaylist"; }
+    // occlusion=false gives the same path with occlusion culling switched off.
+    // Culling is supposed to be output-NEUTRAL -- it only skips items proven to
+    // be completely covered by opaque items drawn later -- so the two must
+    // produce byte-identical images. `compare-paths displaylist
+    // displaylist-noocc` is what actually checks that; a golden image alone
+    // cannot, because it only ever exercises one of the two.
+    explicit DisplayListPath(bool occlusion = true)
+        : _occlusion(occlusion),
+          _name(occlusion ? "displaylist" : "displaylist-noocc") {}
+
+    const char* name() const override { return _name; }
 
     void run(const std::string& scriptText, int width, int height,
              const RenderSeed& seed, RenderResult& out) override {
@@ -63,6 +73,7 @@ public:
         // what lets the Watchy firmware reuse this same renderer.
         DisplayListRenderer renderer(displayMgr.getCanvas(), parser.getAssets(),
                                      displayMgr.getWidth(), displayMgr.getHeight());
+        renderer.setOcclusionEnabled(_occlusion);
         t0 = std::chrono::steady_clock::now();
         renderer.render(runtime.getDisplayList());
         out.timings.rasterizeMs = msSince(t0);
@@ -96,15 +107,20 @@ public:
         out.counters.nonWhitePixels = nonWhite;
         out.ok = true;
     }
+
+private:
+    bool _occlusion;
+    const char* _name;
 };
 
 } // namespace
 
 std::unique_ptr<RenderPath> makeRenderPath(const std::string& name) {
-    if (name == "displaylist") return std::unique_ptr<RenderPath>(new DisplayListPath());
+    if (name == "displaylist") return std::unique_ptr<RenderPath>(new DisplayListPath(true));
+    if (name == "displaylist-noocc") return std::unique_ptr<RenderPath>(new DisplayListPath(false));
     return nullptr;
 }
 
 std::vector<std::string> availableRenderPaths() {
-    return {"displaylist"};
+    return {"displaylist", "displaylist-noocc"};
 }

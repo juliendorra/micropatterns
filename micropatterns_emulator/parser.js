@@ -168,7 +168,13 @@ export class MicroPatternsParser {
         const params = {};
         let remainingArgs = argsString.trim();
 
-        const argRegex = /^([a-zA-Z_]+)\s*=\s*/; // Matches "KEY=" part
+        // Digits are allowed AFTER the first character. The firmware's parser
+        // accepts `isalnum(c) || c == '_'` throughout a key, and LINE's
+        // parameters are X1/Y1/X2/Y2 -- so this regex, without the digits, made
+        // LINE unparseable in the editor while it worked on the device. The
+        // only script exercising it was the harness corpus, which is how it
+        // stayed hidden.
+        const argRegex = /^([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*/; // Matches "KEY=" part
 
         while (remainingArgs.length > 0) {
             const match = remainingArgs.match(argRegex);

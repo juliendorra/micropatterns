@@ -510,3 +510,34 @@ button#runButton span {
     input[type="number"], input[type="text"], input[type="password"], select { padding: 0.3rem 0.6rem; font-size: 0.8rem; }
     .controls-group { padding: 10px; }
 }
+/* Pattern header: name plus the clone button. */
+#assetPreviews .asset-preview-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 3px;
+}
+
+#assetPreviews .asset-preview-header label {
+    margin-bottom: 0;
+}
+
+#assetPreviews .asset-clone-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 2px 5px;
+    line-height: 1;
+}
+
+#addPatternRow {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin-top: 10px;
+}
+
+#addPatternRow label {
+    margin-bottom: 0;
+}

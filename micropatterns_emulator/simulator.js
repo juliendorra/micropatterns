@@ -31,6 +31,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     const ctx = canvas.getContext('2d');
     const errorLog = document.getElementById('errorLog');
     const assetPreviewsContainer = document.getElementById('assetPreviews');
+    const addPatternButton = document.getElementById('addPatternButton');
+    const newPatternSizeSelect = document.getElementById('newPatternSize');
     const realTimeHourSpan = document.getElementById('realTimeHourSpan');
     const realTimeMinuteSpan = document.getElementById('realTimeMinuteSpan');
     const realTimeSecondSpan = document.getElementById('realTimeSecondSpan');
@@ -893,12 +895,30 @@ document.addEventListener('DOMContentLoaded', async () => {
         const container = document.createElement('div');
         container.className = 'asset-preview-item';
 
+        const header = document.createElement('div');
+        header.className = 'asset-preview-header';
+
         const label = document.createElement('label');
         // Use the original case name if stored, otherwise use the uppercase key
         const displayName = asset.originalName || asset.name;
         // Label just shows PATTERN now
         label.textContent = `${displayName} (${asset.width}x${asset.height})`;
-        container.appendChild(label);
+        header.appendChild(label);
+
+        const cloneButton = document.createElement('button');
+        cloneButton.type = 'button';
+        cloneButton.className = 'secondary asset-clone-button';
+        cloneButton.title = `Duplicate pattern "${displayName}"`;
+        cloneButton.setAttribute('aria-label', `Duplicate pattern ${displayName}`);
+        // Two offset squares: the usual "duplicate" glyph.
+        cloneButton.innerHTML = `<svg viewBox="0 0 24 24" width="14" height="14" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <rect x="8" y="8" width="12" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="2" />
+            <path d="M16 5H6a2 2 0 0 0-2 2v9" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+        </svg>`;
+        cloneButton.addEventListener('click', () => clonePattern(asset));
+        header.appendChild(cloneButton);
+
+        container.appendChild(header);
 
         const canvas = document.createElement('canvas');
         const canvasWidth = asset.width * PREVIEW_SCALE;
@@ -1179,6 +1199,107 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     // --- End Drag Drawing Handlers ---
+
+
+    // --- Pattern Creation / Cloning ---
+
+    const DEFINE_PATTERN_LINE_REGEX = /^\s*DEFINE\s+PATTERN\s+.*?\bNAME\s*=\s*"([^"]*)"/i;
+    const MAX_PATTERN_DIMENSION = 20; // Mirrors the parser's WIDTH/HEIGHT limit.
+
+    // Names are matched case-insensitively by the parser, so collect them uppercased.
+    // Read from the editor text, not the parse result: a script that fails to parse
+    // still holds names we must not collide with.
+    function collectPatternNamesFromEditor() {
+        const names = new Set();
+        for (let i = 0; i < codeMirrorEditor.lineCount(); i++) {
+            const match = codeMirrorEditor.getLine(i).match(DEFINE_PATTERN_LINE_REGEX);
+            if (match) names.add(match[1].toUpperCase());
+        }
+        return names;
+    }
+
+    function uniquePatternName(base) {
+        const taken = collectPatternNamesFromEditor();
+        if (!taken.has(base.toUpperCase())) return base;
+        let n = 2;
+        while (taken.has(`${base}${n}`.toUpperCase())) n++;
+        return `${base}${n}`;
+    }
+
+    // Where a new DEFINE belongs: right after the last existing one, otherwise
+    // after the script's leading comment header (DEFINE must precede any FILL/DRAW use).
+    function patternInsertLine() {
+        let lastDefine = -1;
+        for (let i = 0; i < codeMirrorEditor.lineCount(); i++) {
+            if (DEFINE_PATTERN_LINE_REGEX.test(codeMirrorEditor.getLine(i))) lastDefine = i;
+        }
+        if (lastDefine !== -1) return lastDefine + 1;
+
+        let i = 0;
+        while (i < codeMirrorEditor.lineCount()) {
+            const trimmed = codeMirrorEditor.getLine(i).trim();
+            if (trimmed === '' || trimmed.startsWith('#')) i++;
+            else break;
+        }
+        return i;
+    }
+
+    function insertPatternDefinition(name, width, height, data) {
+        const line = `DEFINE PATTERN NAME="${name}" WIDTH=${width} HEIGHT=${height} DATA="${data.join('')}"`;
+        const insertAt = patternInsertLine();
+        const lineCount = codeMirrorEditor.lineCount();
+
+        if (insertAt >= lineCount) {
+            // Appending past the end: anchor to the end of the last line instead.
+            const lastLine = codeMirrorEditor.getLine(lineCount - 1);
+            const prefix = lastLine.trim() === '' ? '' : '\n';
+            codeMirrorEditor.replaceRange(
+                `${prefix}${line}\n`,
+                CodeMirror.Pos(lineCount - 1, lastLine.length)
+            );
+        } else {
+            codeMirrorEditor.replaceRange(`${line}\n`, CodeMirror.Pos(insertAt, 0));
+        }
+
+        const newLine = insertAt >= lineCount ? codeMirrorEditor.lineCount() - 1 : insertAt;
+        codeMirrorEditor.setCursor(CodeMirror.Pos(newLine, 0));
+        codeMirrorEditor.scrollIntoView(CodeMirror.Pos(newLine, 0), 60);
+
+        // The previews are rebuilt from a fresh parse, so the new pattern appears
+        // through the same path as any hand-typed DEFINE.
+        runScript();
+    }
+
+    function addNewPattern() {
+        const size = parseInt(newPatternSizeSelect ? newPatternSizeSelect.value : '8', 10);
+        const dimension = (Number.isInteger(size) && size >= 1 && size <= MAX_PATTERN_DIMENSION) ? size : 8;
+
+        // A checkerboard, so the new pattern is visible the moment it is used.
+        const data = [];
+        for (let y = 0; y < dimension; y++) {
+            for (let x = 0; x < dimension; x++) data.push((x + y) % 2);
+        }
+
+        insertPatternDefinition(uniquePatternName('pattern'), dimension, dimension, data);
+    }
+
+    function clonePattern(asset) {
+        const sourceName = asset.originalName || asset.name;
+        // Cloning a clone gives "foo-copy2", not "foo-copy-copy".
+        const stem = sourceName.replace(/-copy\d*$/i, '') || sourceName;
+        insertPatternDefinition(
+            uniquePatternName(`${stem}-copy`),
+            asset.width,
+            asset.height,
+            asset.data.slice()
+        );
+    }
+
+    if (addPatternButton) {
+        addPatternButton.addEventListener('click', addNewPattern);
+    }
+
+    // --- End Pattern Creation / Cloning ---
 
 
     // Updated: assetType parameter is used, regex looks for DEFINE PATTERN

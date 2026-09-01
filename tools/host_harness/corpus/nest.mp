@@ -7,16 +7,16 @@ REPEAT COUNT=8
   REPEAT COUNT=6
     LET $b = $INDEX * 3 + $a % 4 - 1
     IF $b > 4 THEN
-      FILL NAME=chk
+      FILL NAME="chk"
       COLOR NAME=BLACK
       FILL_RECT X=$b Y=$a WIDTH=25 HEIGHT=15
     ELSE
       FILL NAME=SOLID
       COLOR NAME=WHITE
-      DRAW NAME=sol X=$b Y=$a
+      DRAW NAME="sol" X=$b Y=$a
     ENDIF
     TRANSLATE DX=12 DY=7
-    DRAW NAME=chk X=$a Y=$b
+    DRAW NAME="chk" X=$a Y=$b
   ENDREPEAT
   RESET_TRANSFORMS
 ENDREPEAT

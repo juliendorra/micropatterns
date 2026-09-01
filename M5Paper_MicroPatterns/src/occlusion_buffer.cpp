@@ -64,3 +64,33 @@ bool OcclusionBuffer::isAreaOccluded(int screenMinX, int screenMinY, int screenM
     _culledByOcclusionCount++;
     return true; // All blocks covered by the area are opaque
 }
+
+void OcclusionBuffer::updateFromPixelMap(int screenMinX, int screenMinY,
+                                         int screenMaxX, int screenMaxY,
+                                         const uint8_t* map, int stride)
+{
+    if (!map || stride <= 0) return;   // no map live: mark nothing, cull nothing
+
+    GridIndices g = _getGridIndices(screenMinX, screenMinY, screenMaxX, screenMaxY);
+
+    for (int row = g.startRow; row <= g.endRow; ++row) {
+        for (int col = g.startCol; col <= g.endCol; ++col) {
+            uint8_t& cell = _grid[(size_t)row * _gridWidth + col];
+            if (cell) continue;                       // already opaque
+
+            const int pxMinX = col * _blockSize;
+            const int pxMinY = row * _blockSize;
+            const int pxMaxX = std::min(pxMinX + _blockSize, _canvasWidth);
+            const int pxMaxY = std::min(pxMinY + _blockSize, _canvasHeight);
+
+            bool allFilled = true;
+            for (int y = pxMinY; y < pxMaxY && allFilled; ++y) {
+                const uint8_t* rowBase = map + (size_t)y * stride;
+                for (int x = pxMinX; x < pxMaxX; ++x) {
+                    if ((rowBase[x >> 3] & (1u << (x & 7))) == 0) { allFilled = false; break; }
+                }
+            }
+            if (allFilled) cell = 1;
+        }
+    }
+}
