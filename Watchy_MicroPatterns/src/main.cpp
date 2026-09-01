@@ -486,6 +486,8 @@ static void renderIfSettled()
 }
 
 // Minimal serial channel, mirroring the M5Paper console: list / run N / next.
+// Plus rtc / rtc-unset, which have no M5Paper counterpart: they exist to stage
+// and inspect the clock state that otherwise needs the case opened.
 static void pollSerial()
 {
     static char line[64];
@@ -513,12 +515,35 @@ static void pollSerial()
                 // behaviour can be exercised over a cable.
                 Serial.printf("MPCON|ok %s\n", cmd.c_str());
                 browseScript(cmd == "next" ? +1 : -1);
+            } else if (cmd == "rtc") {
+                int h = 0, m = 0, sec = 0;
+                const bool ok = WatchyRTC::now(h, m, sec);
+                uint8_t raw = 0; const bool haveRaw = WatchyRTC::statusByte(raw);
+                Serial.printf("MPCON|rtc %s %s %02d:%02d:%02d flagreg=%s\n",
+                              WatchyRTC::chipName(),
+                              WatchyRTC::valid() ? "ok"
+                                  : (WatchyRTC::forcedUntrusted() ? "unset(forced)" : "unset"),
+                              ok ? h : 0, ok ? m : 0, ok ? sec : 0,
+                              haveRaw ? String("0x" + String(raw, 16)).c_str() : "?");
+            } else if (cmd == "rtc-unset") {
+                // Stages the cold-clock state a battery pull produces, so the
+                // "clock is not trustworthy -> go to NTP" branch can be tested
+                // on every build instead of once with a screwdriver. Reboot (or
+                // just watch the next sync) to see the path run.
+                //
+                // Does NOT itself re-sync: the point is to leave the watch in
+                // the state a fresh one boots into.
+                if (WatchyRTC::invalidate()) {
+                    Serial.println("MPCON|ok rtc-unset -- clock marked untrusted (NVS override, not the chip's own flag: it is clear-only); reboot to exercise the NTP path");
+                } else {
+                    Serial.printf("MPCON|rtc-unset FAILED (chip: %s)\n", WatchyRTC::chipName());
+                }
             } else if (cmd.startsWith("run ")) {
                 int idx = cmd.substring(4).toInt();
                 Serial.printf("MPCON|ok run %d\n", idx);
                 showScript(idx, true);
             } else {
-                Serial.println("MPCON|commands: list | run <index> | next | prev | sync");
+                Serial.println("MPCON|commands: list | run <index> | next | prev | sync | rtc | rtc-unset");
             }
         } else if (len < sizeof(line) - 1) {
             line[len++] = (char)c;
@@ -979,7 +1004,7 @@ void setup()
     }
 
     g_stage = 5;                                  // first script rendered; loop() runs
-    Serial.println("MPCON|ready -- commands: list | run <index> | next | prev | sync");
+    Serial.println("MPCON|ready -- commands: list | run <index> | next | prev | sync | rtc | rtc-unset");
 }
 
 // Light sleep between renders.

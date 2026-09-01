@@ -664,3 +664,45 @@ carried unrelated in-progress edits to the shared renderer that did not compile
 (`display_list_renderer.cpp` calling a then-private `occupancyBase()`). Worth
 remembering as a technique -- it flashed exactly the change under test, with
 none of the uncommitted work around it.
+
+### `rtc-unset`, and the bit that would not be set (same day)
+
+Testing the cold-clock path meant opening the watch and disconnecting the
+battery, so the plan was a console command staging the same state: set the
+chip's VL bit by hand, reboot, watch boot go to NTP.
+
+**It does not work, and the device said so in one line.** Writing `0x80` to the
+PCF8563's VL_seconds register (0x02) put the seconds through fine and left bit 7
+clear -- the register read back `0x03`, then counted on. **VL is clear-only in
+software on this part**: only the low-voltage detector raises it. The datasheet
+wording ("remains set until overwritten") reads as though it were writable in
+both directions, which is exactly the sort of thing worth checking on the chip
+rather than in the PDF.
+
+Finding that took one round trip because the `rtc` console command was extended
+to print the raw flag register (`flagreg=0x03`) instead of only the interpreted
+verdict. "The flag did not take" and "the flag is not what decides" produce the
+same `ok`, and nothing else on this device can look at that register. The raw
+byte stayed in the command for that reason.
+
+So the override is ours, in NVS, honoured by `valid()`. That is a test hook in
+production logic, which is a real cost -- but it buys the decision *and the
+recovery*: `set()` lifts the override exactly where it clears the hardware flag,
+and only on success, so one failed NTP reply cannot quietly end the test it was
+staged for. Verified end to end on the watch:
+
+```
+rtc-unset            -> unset(forced) 00:00:03
+reboot               -> RTC: PCF8563, NOT SET, 00:00:07
+                        RTC not set; going to NTP
+                        NTP: RTC set to 22:51:46 (UTC+1)
+then                 -> rtc  ->  ok 22:52:58
+```
+
+DS3231's OSF *is* writable, so on that chip the honest version would have
+worked -- but one mechanism that behaves the same on both parts beats two that
+diverge on hardware nobody can see.
+
+What this still does not cover, and what the battery pull remains the only test
+for: what the time registers actually read after a true power loss. They are
+undefined. `invalidate()` zeroes them, which is a guess at the pessimistic case.

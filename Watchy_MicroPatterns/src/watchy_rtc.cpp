@@ -1,6 +1,7 @@
 #include "watchy_rtc.h"
 
 #include <Wire.h>
+#include <Preferences.h>
 
 // I2C pins, from InkWatchy's condition.h for Watchy 2.0 (SDA 21 / SCL 22, with
 // the RTC's interrupt on 27 -- unused here: this firmware reads the clock, it
@@ -24,6 +25,21 @@ namespace {
 
 WatchyRTC::Chip g_chip = WatchyRTC::CHIP_NONE;
 bool            g_begun = false;
+
+// The test override lives in NVS rather than RAM so it survives the reboot it
+// exists to test -- a RAM flag would be gone by the time boot read it.
+const char* NVS_NS  = "mprtc";
+const char* NVS_KEY = "untrusted";
+bool g_forcedUntrusted = false;
+
+void storeForced(bool v)
+{
+    Preferences p;
+    if (!p.begin(NVS_NS, false)) return;
+    p.putBool(NVS_KEY, v);
+    p.end();
+    g_forcedUntrusted = v;
+}
 
 uint8_t bcdToBin(uint8_t v) { return (uint8_t)((v >> 4) * 10 + (v & 0x0F)); }
 uint8_t binToBcd(uint8_t v) { return (uint8_t)(((v / 10) << 4) | (v % 10)); }
@@ -65,6 +81,11 @@ bool begin()
 
     Wire.begin(RTC_SDA_PIN, RTC_SCL_PIN);
 
+    {
+        Preferences p;
+        if (p.begin(NVS_NS, true)) { g_forcedUntrusted = p.getBool(NVS_KEY, false); p.end(); }
+    }
+
     if      (present(ADDR_PCF8563)) g_chip = CHIP_PCF8563;
     else if (present(ADDR_DS3231))  g_chip = CHIP_DS3231;
     else                            g_chip = CHIP_NONE;
@@ -83,8 +104,12 @@ const char* chipName()
     }
 }
 
+bool forcedUntrusted() { return g_forcedUntrusted; }
+
 bool valid()
 {
+    if (g_forcedUntrusted) return false;
+
     uint8_t b = 0;
     switch (g_chip) {
         case CHIP_PCF8563:
@@ -132,7 +157,32 @@ bool now(int& hour, int& minute, int& second)
            second >= 0 && second < 60;
 }
 
-bool set(const struct tm& t)
+bool statusByte(uint8_t& out)
+{
+    switch (g_chip) {
+        case CHIP_PCF8563: return readRegs(ADDR_PCF8563, PCF_SECONDS, &out, 1);
+        case CHIP_DS3231:  return readRegs(ADDR_DS3231,  DS_STATUS,  &out, 1);
+        default:           return false;
+    }
+}
+
+bool invalidate()
+{
+    if (g_chip == CHIP_NONE) return false;
+
+    storeForced(true);
+
+    // Zero the visible time too, so the watch shows the midnight a cold chip
+    // would rather than carrying on with the correct time behind an override.
+    // The trust flag itself is untouched -- see the header for why it cannot be
+    // set from here.
+    uint8_t r[3] = { 0x00, 0x00, 0x00 };
+    const uint8_t addr = (g_chip == CHIP_PCF8563) ? ADDR_PCF8563 : ADDR_DS3231;
+    const uint8_t reg  = (g_chip == CHIP_PCF8563) ? PCF_SECONDS  : DS_SECONDS;
+    return writeRegs(addr, reg, r, 3);
+}
+
+static bool writeClock(const struct tm& t)
 {
     const int year = t.tm_year + 1900;
 
@@ -181,6 +231,17 @@ bool set(const struct tm& t)
     }
 
     return false;
+}
+
+bool set(const struct tm& t)
+{
+    if (!writeClock(t)) return false;
+
+    // The time is trustworthy again, so the test override lifts exactly where
+    // the hardware flag is cleared -- and only on success, or one failed NTP
+    // reply would quietly end the test it was staged for.
+    if (g_forcedUntrusted) storeForced(false);
+    return true;
 }
 
 }  // namespace WatchyRTC
