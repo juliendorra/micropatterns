@@ -256,10 +256,51 @@ Changing `_rawLine` alone -- four `Math.trunc` to `Math.round`:
 | `CIRCLE` probe | 3,013 px | 3,013 px |
 | `PIXEL` probe | 36 px | 36 px |
 
-`drawing.js` has 33 `Math.trunc` sites. The rest of the gap is the same class of
-issue in the circle, rect and pixel paths, and is **not yet done** -- each site
-needs checking individually, because some are array indices where rounding up
-could run off the end of a bounds-relative buffer.
+`drawing.js` has 33 `Math.trunc` sites, but only the ones that PLACE a
+transformed coordinate should round. The ones that compute a clipping box stay
+truncating -- `fillRect`'s canvas clamp, `fillCircle`'s and `drawAsset`'s
+iteration bounds -- because rounding a lower bound upward clips content, and the
+firmware uses `floor`/`ceil` for exactly those. Sites changed: `_rawLine`
+(4), `drawCircle` centre and radius (3), `setPixel` (2).
+
+Finishing the alignment closed almost all of it:
+
+| | before | after |
+|---|---|---|
+| whole corpus | 33,907 px | **1,228 px** |
+| `LINE` | 5,097 | **0** |
+| `CIRCLE` | 3,013 | **0** |
+| `RECT` | 2,966 | **0** |
+| `PIXEL` | 36 | 6 |
+
+### RECT was the device's bug, not the web's
+
+`RECT` did not close by rounding. The two engines disagreed on the rectangle's
+*extent*: the firmware transformed corners at `lx + lw`, the web at
+`x + width - 1`. Measured with `RECT X=10 Y=10 WIDTH=20 HEIGHT=20`:
+
+    RECT      cpp  x 10..30  (21 wide)      js  x 10..29  (20 wide)
+    FILL_RECT cpp  x 10..29  (20 wide)      js  x 10..29  (20 wide)
+
+`WIDTH` is a pixel count, so 20 is right -- and the firmware's own `FILL_RECT`,
+in the same file, already agreed. Its outline was one pixel wider than its fill
+for identical arguments. **The web was correct here and the device was not**,
+which is worth stating plainly: the direction of the fix is not uniform, and
+"the device is the reference" is a rule about which to converge on, not a claim
+that it is right in every case.
+
+### What is left
+
+`PIXEL` keeps a 6-pixel residual and it is not a rounding difference. The two
+engines use different algorithms: the firmware transforms the 1x1 logical
+pixel's corners, takes the screen AABB, and inverse-maps every pixel in it to
+test membership; the web transforms one point and stamps a `scale x scale`
+block. They agree unrotated and diverge slightly under rotation. Closing it
+means porting one algorithm to the other, which changes how PIXEL renders for
+real scripts -- a decision, not a cleanup.
+
+`artdeco_default` keeps 76-263 pixels, still unexplained, still plausibly float
+rounding in the transform stack.
 
 ## Editor diagnostics can come from the firmware parser too
 

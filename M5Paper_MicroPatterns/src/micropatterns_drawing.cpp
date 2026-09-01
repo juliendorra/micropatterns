@@ -431,10 +431,16 @@ void MicroPatternsDrawing::drawRect(const DisplayListItem& item) {
     if (lw <= 0 || lh <= 0) return;
 
     float s_tl_x, s_tl_y, s_tr_x, s_tr_y, s_bl_x, s_bl_y, s_br_x, s_br_y;
+    // lw-1 / lh-1, not lw / lh: WIDTH is a pixel COUNT, so the last pixel of a
+    // 20-wide rect is at x+19. Using lx+lw drew a 21-pixel outline for
+    // WIDTH=20 -- one pixel wider than FILL_RECT with identical arguments, in
+    // this same file. Measured: RECT X=10 WIDTH=20 covered x 10..30 while
+    // FILL_RECT covered 10..29. The web emulator always used width-1 and was
+    // right; see docs/analysis/web-device-renderer-audit.md.
     transformPoint(static_cast<float>(lx), static_cast<float>(ly), item, s_tl_x, s_tl_y);
-    transformPoint(static_cast<float>(lx + lw), static_cast<float>(ly), item, s_tr_x, s_tr_y);
-    transformPoint(static_cast<float>(lx), static_cast<float>(ly + lh), item, s_bl_x, s_bl_y);
-    transformPoint(static_cast<float>(lx + lw), static_cast<float>(ly + lh), item, s_br_x, s_br_y);
+    transformPoint(static_cast<float>(lx + lw - 1), static_cast<float>(ly), item, s_tr_x, s_tr_y);
+    transformPoint(static_cast<float>(lx), static_cast<float>(ly + lh - 1), item, s_bl_x, s_bl_y);
+    transformPoint(static_cast<float>(lx + lw - 1), static_cast<float>(ly + lh - 1), item, s_br_x, s_br_y);
 
     rawLine(round(s_tl_x), round(s_tl_y), round(s_tr_x), round(s_tr_y), item.color); // Top
     rawLine(round(s_tr_x), round(s_tr_y), round(s_br_x), round(s_br_y), item.color); // Right

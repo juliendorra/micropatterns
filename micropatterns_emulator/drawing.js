@@ -289,8 +289,8 @@ export class MicroPatternsDrawing {
     // screenX, screenY are the top-left coordinates of the block on the canvas.
     // This is used by DRAW_PIXEL and DRAW_FILLED_PIXEL.
     setPixel(screenX, screenY, color, itemState) { // Takes itemState for scaleFactor
-        const sx = Math.trunc(screenX);
-        const sy = Math.trunc(screenY);
+        const sx = Math.round(screenX);
+        const sy = Math.round(screenY);
         const scaleToUse = (itemState.scaleFactor !== undefined ? itemState.scaleFactor : itemState.scale);
         const scale = Math.round(scaleToUse);
         
@@ -713,7 +713,10 @@ export class MicroPatternsDrawing {
         const center = this.transformPoint(cx, cy, itemState);
         const p_edge = this.transformPoint(cx + radius, cy, itemState);
         const scaledRadius = Math.hypot(p_edge.x - center.x, p_edge.y - center.y);
-        const screenRadius = Math.max(1, Math.trunc(scaledRadius));
+        // round(), not trunc() -- the firmware rounds both the centre and the
+        // radius (micropatterns_drawing.cpp drawCircle). See the note in
+        // _rawLine and docs/analysis/web-device-renderer-audit.md.
+        const screenRadius = Math.max(1, Math.round(scaledRadius));
 
         let x_coord = screenRadius; // Renamed from x to avoid conflict
         let y_coord = 0;            // Renamed from y
@@ -730,8 +733,8 @@ export class MicroPatternsDrawing {
             ];
 
             for (const pt of points) {
-                const sx = Math.trunc(center.x + pt.dx);
-                const sy = Math.trunc(center.y + pt.dy);
+                const sx = Math.round(center.x) + pt.dx;
+                const sy = Math.round(center.y) + pt.dy;
                 if (sx >= 0 && sx < this.display_width && sy >= 0 && sy < this.display_height) {
                      this.ctx.fillRect(sx, sy, 1, 1);
                 }
