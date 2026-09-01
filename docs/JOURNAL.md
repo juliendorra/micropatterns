@@ -584,3 +584,83 @@ M5Paper emits both a console echo and a firmware log per step (double count),
 and "Triggering render" also matches the 77s timer wake (false positive). A
 measurement tool is not evidence until it has been checked against a case whose
 answer is already known.
+
+---
+
+## 2026-09-01 -- The Watchy's clock, and $COUNTER per script
+
+Two things the Watchy had been getting wrong quietly, both the same shape: the
+shared runtime was fully wired, and the platform layer under it never supplied
+the values.
+
+### $HOUR/$MINUTE/$SECOND were always zero
+
+`main.cpp` called `runtime.setTime(0, 0, 0)` on every render. Not a stub that
+failed loudly -- a plausible-looking call that made every time-dependent script
+draw midnight, forever, while the panel kept updating every 77s as if something
+were happening. The parser, the slot table, the variables and `setTime()` are
+all compiled from the M5Paper tree and were always correct; `system_manager` is
+the file that reads the RTC there, and it was never ported (the port design doc
+says as much: "Not ported at all -- nothing on the Watchy needed it").
+
+`watchy_rtc.{h,cpp}` is the missing piece: probe I2C, read BCD time, done.
+
+**It does not use SmallRTC, which the design doc named.** SmallRTC is a Watchy
+library component and pulls that library's own GxEPD2 assumptions into a build
+that already pins the Szybet fork; `Rtc_Pcf8563` is light but PCF8563-only, and
+this watch's chip had never actually been identified -- the hardware doc records
+DS3231 on v1.0 and PCF8563 on v1.5/2.0 *per SQFMI*, unverified, and says a bus
+scan is the only way to settle it. The two chips answer at 0x51 and 0x68, which
+do not overlap, so probing both identifies the part instead of guessing at it.
+About 130 lines, two register maps, no new dependency.
+
+**The bus scan settled the open hardware question: this watch has a PCF8563.**
+
+Both chips carry a flag meaning "my oscillator stopped, do not trust me" --
+PCF8563's VL bit, DS3231's OSF. `valid()` reports it, and that is what decides
+whether boot goes to NTP. The M5Paper infers the same condition from the clock
+reading exactly `00:00:00`, which is a guess that is wrong once a day.
+
+NTP runs at boot only when the chip says it is untrustworthy, and again on the
+manual sync gesture -- both parts drift minutes a month, nothing else corrects
+them, and the sync is already bringing up WiFi. Timezone is a hardcoded `+1`
+constant matching the M5Paper's `SystemManager` default, because this firmware
+has no settings store to hold anything else. **Neither device handles DST**; the
+M5Paper passes `daylightOffset_sec = 0` too, so both are an hour out in summer.
+
+### $COUNTER was one number for the whole device
+
+`static int g_counter` incremented once per render. It advanced correctly on
+every path (manual, auto re-render, and exactly once per settled title-browse
+rather than once per press) -- but it was **one sequence shared by every
+script**, and it lived only in RAM, so leaving a script and coming back resumed
+wherever the others had got to, and any reboot sent all of them to zero.
+
+The M5Paper has had per-script persisted counters all along, in
+`script_states.json` via `ScriptManager` -- and that file is already compiled
+into the Watchy firmware. The fix is to use it: load the script's own state,
+increment, render, save. `renderScript()` now takes the state in and reports the
+time it used back out, the same in/out shape `RenderController` has on the
+M5Paper. Same storage format, so a script moved between the two devices keeps
+counting.
+
+An abandoned render (button pressed mid-raster) does **not** save, so a frame
+that was never shown does not consume a tick -- the same principle as winding
+back the de-ghost counter for the same case.
+
+### Verified on the device, not just built
+
+Flashed to the watch over `/dev/cu.usbserial-10`, then driven from the serial
+console:
+
+- `MPCON|rtc PCF8563 ok 22:28:25` at boot -- chip identified, time trusted.
+- `sync` re-fetched all 7 scripts (ok 7, failed 0) and set the RTC from NTP.
+- Counter across a reboot: 0 -> 1 -> 2, then 3 on the 77s auto re-render.
+- Per-script isolation, which is the actual claim: `run 0` twice took
+  `art-deco-4` 0 -> 1 while `eyes` independently resumed 5 -> 6.
+
+Building had to happen in a throwaway `git worktree` at HEAD: the working tree
+carried unrelated in-progress edits to the shared renderer that did not compile
+(`display_list_renderer.cpp` calling a then-private `occupancyBase()`). Worth
+remembering as a technique -- it flashed exactly the change under test, with
+none of the uncommitted work around it.
