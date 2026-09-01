@@ -221,8 +221,8 @@ This is the dangerous kind of dependency: invisible in the code, fatal on remova
 | `micropatterns_drawing.cpp:43` | `_pixelOccupationMap` — 1 byte/pixel | 518,400 B | 40,000 B |
 | — same, as 1bpp | | 64,800 B | **5,000 B** |
 | `occlusion_buffer.cpp:14` | 16×16 block grid, 1 B/block | 2,040 B | 169 B |
-| `micropatterns_command.h:113-134` | `DisplayListItem` struct | **128 B each** | 128 B each |
-| — plus per-item `std::map` nodes | ~4 int params typical | **~240 B each** | ~240 B each |
+| `micropatterns_command.h:113-134` | `DisplayListItem` struct | ~~**128 B each**~~ → **40 B** | ~~128 B~~ → **40 B** |
+| — plus per-item `std::map` nodes | ~~~4 int params typical~~ | ~~**~240 B each**~~ → **0** | ~~~240 B~~ → **0** |
 | `micropatterns_command.h:56-84` | `MicroPatternsCommand` | **256 B each** | 256 B each |
 | `micropatterns_command.h` | `MicroPatternsAsset` | 80 B + `w*h` bytes data | same |
 | `event_defs.h:10` | `MAX_SCRIPT_CONTENT_LEN` | 5,600 B per queue slot | 5,600 B |
@@ -233,6 +233,21 @@ This is the dangerous kind of dependency: invisible in the code, fatal on remova
 `DisplayListItem` lands around 112–128 B. Same order of magnitude either way.
 
 **A 2,000-item display list therefore costs roughly 740 KB of heap.** On a device with ~200 KB free.
+
+> **Superseded, 2026-09-02.** Two of the rows above no longer describe the code, and the struck-through
+> figures are kept only so the reasoning that followed from them stays readable.
+>
+> - `DisplayListItem` is now a **trivially-copyable 40-byte POD** (`micropatterns_command.h`). The two
+>   `std::map`s per item are gone: parameters live in a fixed `int32_t p[4]`, the DRAW asset is a
+>   resolved pointer, and the transform is a pointer into a pooled snapshot. The per-item heap
+>   allocations — the 480 KB row in §7.3(a) — are **zero**.
+> - `_pixelOccupationMap` is now **1 bit per pixel** (commit `14a5304`), i.e. the 5,000 B row above, not
+>   the 40,000 B one. It also degrades instead of aborting when the allocation cannot be satisfied.
+>
+> Net effect: **§7.3(a) "does not fit" is no longer true, and the naive port is what actually
+> shipped** — `Watchy_MicroPatterns/src/main.cpp` parses, generates a display list, and rasterizes it
+> with the occupancy map, from the same sources as the M5Paper. The streaming renderer of §7.3(b) was
+> never built. See the correction block in §7.3.
 
 ### 2.6 `std::map<String, ...>` heap churn
 
@@ -904,19 +919,41 @@ the failure mode here; risk §10.6.)*
 
 Now the two candidate designs:
 
-**(a) Naive port — display list, as on M5Paper.** *Does not fit.*
+**(a) Naive port — display list, as on M5Paper.** *~~Does not fit.~~ **It fits, and it is what
+shipped.** See the correction below the table.*
 
-| Item | Bytes |
-|---|---:|
-| Framebuffer 200×200×1bpp (GxEPD2's page buffer, on the heap) | 5,000 |
-| Parsed script: ~200 `MicroPatternsCommand` @ 256 B + map nodes | ~80,000 |
-| Display list: 2,000 `DisplayListItem` @ 128 B | 256,000 |
-| …plus ~4 map nodes each @ ~60 B | 480,000 |
-| Pixel occupancy map, 1 B/px | 40,000 |
-| Occlusion grid | 169 |
-| **Total** | **~861,000** |
+| Item | Bytes (as estimated) | Bytes (as built) |
+|---|---:|---:|
+| Framebuffer 200×200×1bpp (GxEPD2's page buffer, on the heap) | 5,000 | 5,000 |
+| Parsed script: ~200 `MicroPatternsCommand` @ 256 B + map nodes | ~80,000 | ~80,000 |
+| Display list: 2,000 `DisplayListItem` | 256,000 @ 128 B | **80,000 @ 40 B** |
+| …plus ~4 map nodes each @ ~60 B | 480,000 | **0** |
+| Pixel occupancy map | 40,000 @ 1 B/px | **5,000 @ 1 bpp** |
+| Occlusion grid | 169 | 169 |
+| **Total** | **~861,000** | **~170,000** |
 
-Over budget by roughly 7×. Unfixable by tuning.
+> **Correction, 2026-09-02.** The 861 KB column was written against a `DisplayListItem` that carried two
+> `std::map`s and an occupancy map at one byte per pixel. Neither survives: the item is a 40-byte POD
+> and the map is 1bpp (§2.5). The overage was never fixed by *this* section's recommendation — it was
+> fixed underneath it, and the naive port then fit on the first try.
+>
+> Measured on the built firmware (`watchy-port-attempt-log.md` §1): **static RAM 21,756 B**, well under
+> the 50–70 KB working estimate above, leaving on the order of **300 KB** of heap rather than 230 KB.
+>
+> Two things this does *not* retire:
+>
+> 1. **The slope.** The display list is O(primitives drawn), and a `REPEAT` multiplies that without
+>    lengthening the script. At 40 B/item the working set crosses ~300 KB somewhere north of 5,000
+>    primitives. Streaming (b) is still the only change that flattens this; it is now a headroom
+>    argument rather than a fits/does-not-fit one.
+> 2. **Fragmentation, which is the failure actually observed.** `micropatterns_drawing.cpp:131` records
+>    a real, reproducible Watchy abort: parsing the largest script fragmented the heap down to a
+>    **~26 KB largest free block**, so the occupancy map's allocation called `abort()` mid-render and
+>    the watch rebooted. The fix shipped was to check `heap_caps_get_largest_free_block()` and degrade
+>    to painter's order. That is a graceful failure, not a solved problem — the fragmentation comes from
+>    the parse tree's thousands of small `String` and tree-node allocations, which is precisely what
+>    follow-on optimisation 2 (flattened bytecode) removes. **Reweight it accordingly: it is no longer
+>    a "defer until measured" item, because it has now been measured, by a crash.**
 
 **(b) Streaming renderer — recommended.** Delete the display list. Delete the occupancy map. Delete
 the occlusion buffer. Interpret the command tree and rasterize each primitive immediately into the

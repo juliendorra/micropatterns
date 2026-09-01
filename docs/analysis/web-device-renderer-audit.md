@@ -393,7 +393,25 @@ script cycles within the window. Two scripts differing only in the modulus:
     modulus 32768   distinct frames 4 of 64   repeats every 32 draws   exit 1
     modulus 32749   distinct frames 4 of 64   no repeat within 64      exit 0
 
-It deliberately does **not** fail on a low distinct-frame count. A script that
+`cycle` catches a script that repeats. It cannot catch one that never repeats
+and still only reaches six of its ten variations -- every frame genuinely
+differs, there are just fewer of them than there should be. That needs a
+different question, so `mpharness sweep <script.mp> --levels N` asks it: sweep
+the clock rather than the counter, and tally what comes out. The script must
+encode one integer as its **non-white pixel count** (draw N isolated pixels for
+choice N), which makes the frame directly countable.
+
+Proven to detect what it claims, with a script whose clock-derived seed only
+ever sets high bits:
+
+    2:16.7%  4:25.0%  6:29.2%  8:4.2%  10:25.0%
+    distinct values 5     unreachable of 1..10:  1 3 5 7 9
+
+Every odd level unreachable -- the signature of an affine low-bit map. That
+probe is kept (`probe/corpus/sweep_bad.mp`) precisely so the tool has a case it
+must keep failing.
+
+`cycle` deliberately does **not** fail on a low distinct-frame count. A script that
 legitimately picks one of four positions has four distinct frames however often
 it is drawn; flagging that would make the tool cry wolf on correct scripts. The
 period is the signal, the count is context.
@@ -409,10 +427,37 @@ script:
   opposite answer because Python's `%` returns non-negative; the tool was right
   and the model was wrong.
 - Two related claims from the same report -- unreachable choices and a heavy
-  concentration on a few of them -- did **not** reproduce with this LCG. Over
-  400 draws mod 32768 all ten levels appeared and the top two took 24% of
-  draws, against 27% for the prime. Whatever caused that in the original
-  scripts, it was not this mechanism on its own.
+  concentration on a few of them -- did not reproduce **in my measurement, which
+  measured the wrong quantity**. I took 400 consecutive draws from one seed and
+  found all ten levels present. That test cannot show the bug and never could:
+  over a full period an LCG visits every state exactly once, so any function of
+  the state comes out uniform. A long stream is guaranteed to look fine.
+
+  The quantity that matters for a script like `city.mp` is different. It
+  **re-seeds from the clock on every render** and consumes one or two draws,
+  then stops. So what is being sampled is the seed-to-first-output map over the
+  seed set the clock actually produces -- and that seed set is itself a linear
+  function of the clock. With a power-of-two modulus the low bits of the first
+  output are an affine function of the low bits of the seed, so structure in the
+  seed set survives into the output; a prime modulus mixes across all bits and
+  destroys it.
+
+  Their measurement, taken on this harness rather than from a model: 384 renders
+  sweeping hour/minute/second/counter, level encoded as a pixel count.
+
+      M=32768   3, 4, 7 and 9 unreachable; 2/5/8 take 89% of renders
+      M=32749   none unreachable
+
+  A sweep of my own, same shape but with a seed construction I invented rather
+  than theirs, showed no unreachability at either modulus. That does not refute
+  the above -- it shows the effect depends on the specific seed construction and
+  constants, not on power-of-two modulus alone. The right ground truth is their
+  script, not my approximation of it.
+
+  Recorded at length because the original entry here asserted the opposite with
+  more confidence than the evidence supported. The scepticism was fair about
+  what had been *written* -- it read as a claim about a stream -- but the
+  conclusion drawn from it was wrong.
 
 ## Still open
 

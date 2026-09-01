@@ -198,6 +198,7 @@ struct Opts {
     int counter = 0, hour = 12, minute = 34, second = 56;
     int reps = 5;
     int draws = 0;   // `cycle` mode: number of $COUNTER values to render
+    int levels = 0;  // `sweep` mode: expected value range 1..levels
     bool quiet = false;
 };
 
@@ -224,6 +225,9 @@ int usage() {
       "  list                    List corpus scripts, seeds and available render paths.\n"
       "  cycle <script.mp>       Render N counters; report distinct frames and repeat period.\n"
       "      --draws N              (default 64)\n"
+      "  sweep <script.mp>       Sweep the clock; tally the value the script encodes as\n"
+      "                          its non-white pixel count. Flags unreachable choices.\n"
+      "      --levels N             expected range 1..N (default 10)\n"
       "\n"
       "Common options: --corpus DIR  --golden DIR  --quiet\n");
     return 2;
@@ -267,6 +271,7 @@ int main(int argc, char** argv) {
         else if (a == "--second") o.second = atoi(next().c_str());
         else if (a == "--reps") o.reps = atoi(next().c_str());
         else if (a == "--draws") o.draws = atoi(next().c_str());
+        else if (a == "--levels") o.levels = atoi(next().c_str());
         else if (a == "--quiet") o.quiet = true;
         else if (a == "-h" || a == "--help") return usage();
         else positional.push_back(a);
@@ -429,6 +434,75 @@ int main(int argc, char** argv) {
         // however many times it is drawn, and flagging that would make this
         // tool cry wolf on correct scripts. The repeat PERIOD is the signal;
         // the count is context.
+        return 0;
+    }
+
+    // Which values can a script actually PRODUCE, across the clock?
+    //
+    // `cycle` catches a script that repeats. It cannot catch one that never
+    // repeats and still only ever reaches six of its ten variations, because
+    // every frame genuinely differs -- there are simply fewer of them than
+    // there should be. That failure needs a different question: sweep the
+    // inputs, not the counter, and count what comes out.
+    //
+    // The script must encode one integer as a COUNT of non-white pixels; the
+    // frame's ink count is then the value chosen. Have it draw N isolated
+    // pixels for choice N.
+    //
+    // Why the clock and not just $COUNTER: a script that re-seeds from
+    // ($HOUR,$MINUTE,$SECOND,$COUNTER) on every render and takes one draw is
+    // not sampling its generator's stream at all -- it is sampling the
+    // seed-to-first-output map over whatever seed set the clock produces. Over
+    // a full period an LCG visits every state once, so a long stream ALWAYS
+    // looks uniform and can never show this. The sweep is the honest test.
+    if (mode == "sweep") {
+        if (positional.empty()) return usage();
+        std::string script;
+        if (!readTextFile(positional[0], script)) {
+            fprintf(stderr, "cannot read script: %s\n", positional[0].c_str());
+            return 1;
+        }
+        const int levels = o.levels > 0 ? o.levels : 10;
+
+        std::map<long, int> tally;
+        int n = 0;
+        for (int h = 0; h < 24; ++h)
+            for (int mi = 0; mi < 60; mi += 15)
+                for (int sec = 0; sec < 60; sec += 30)
+                    for (int c = 0; c < 2; ++c) {
+                        RenderSeed seed{c, h, mi, sec};
+                        RenderResult r;
+                        path->run(script, o.width, o.height, seed, r);
+                        if (!r.ok) {
+                            fprintf(stderr, "render failed at %02d:%02d:%02d c=%d: %s\n",
+                                    h, mi, sec, c, r.error.c_str());
+                            return 1;
+                        }
+                        tally[r.counters.nonWhitePixels]++;
+                        ++n;
+                    }
+
+        printf("SWEEP over %d renders (hour x minute x second x counter)\n", n);
+        printf("value is the frame's non-white pixel count\n\n");
+        std::vector<long> unreachable;
+        for (int v = 1; v <= levels; ++v) if (!tally.count(v)) unreachable.push_back(v);
+
+        for (const auto& kv : tally) {
+            printf("  %6ld  %5.1f%%  %s\n", kv.first, 100.0 * kv.second / n,
+                   std::string(kv.second * 40 / n, '#').c_str());
+        }
+        printf("\n  distinct values      %d\n", (int)tally.size());
+        if (!unreachable.empty()) {
+            printf("  unreachable of 1..%d ", levels);
+            for (long v : unreachable) printf("%ld ", v);
+            printf("\n\n  Some choices never occur. If the value comes from a generator\n"
+                   "  re-seeded from the clock, suspect a power-of-two modulus: the low\n"
+                   "  bits of the first output are then an affine function of the low\n"
+                   "  bits of the seed, so structure in the seed set survives into the\n"
+                   "  output. A prime modulus mixes across all bits.\n");
+            return 1;
+        }
+        printf("  unreachable of 1..%d none\n", levels);
         return 0;
     }
 

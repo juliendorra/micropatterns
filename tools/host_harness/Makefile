@@ -8,6 +8,7 @@
 #   make profile    build a -pg / frame-pointer flavour for profiling
 #   make audit-js   web-renderer vs C++ goldens (needs node)
 #   make cycle S=<script.mp>  does a script vary as $$COUNTER advances?
+#   make sweep S=<script.mp>  which values can it reach across the clock?
 #   make wasm       build the firmware renderer to WebAssembly (needs emsdk)
 #   make verify-wasm  byte-compare the WASM build against the goldens
 #   make clean
@@ -180,3 +181,11 @@ verify-wasm: wasm
 cycle:
 	@test -n "$(S)" || { echo "usage: make cycle S=<script.mp> [DRAWS=64]"; exit 2; }
 	./build/mpharness cycle $(S) --draws $(or $(DRAWS),64)
+
+# Which values can a script REACH? `cycle` catches repeats; this catches a
+# script that never repeats and still only reaches six of its ten variations.
+# The script must encode one integer as its non-white pixel count.
+#   make sweep S=probe/corpus/sweep_32749.mp LEVELS=10
+sweep:
+	@test -n "$(S)" || { echo "usage: make sweep S=<script.mp> [LEVELS=10]"; exit 2; }
+	./build/mpharness sweep $(S) --levels $(or $(LEVELS),10) --width 200 --height 200
