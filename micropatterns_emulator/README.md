@@ -29,6 +29,9 @@ For the full MicroPatterns language specification and project details, please se
     *   Manually changing the `$COUNTER` value in its input field is always possible, regardless of the lock state. The "Run Script" button will always use the currently displayed `$COUNTER` value.
 9.  **Errors:** Any parsing or runtime errors will appear in the red box below the script input, indicating the line number and error message.
 10. **Patterns:** Patterns defined using `DEFINE PATTERN` in the script will be listed under "Patterns Defined" after a successful parse. Click on a preview to interactively edit its pixels in the editor. You can also drag & drop image files onto previews to import them.
+    *   **Add a pattern:** Pick a size (8x8 up to 20x20, the parser's maximum) below the previews and click "Add new pattern". A new `DEFINE PATTERN` line is written into the script — after the last existing `DEFINE PATTERN`, or after the leading comment header if there is none, so it always precedes any `FILL`/`DRAW` that could use it. It starts as a checkerboard, visible as soon as you use it, and is then editable like any other preview.
+    *   **Clone a pattern:** The duplicate icon next to a pattern's name copies its size and pixel data into a new `DEFINE PATTERN`. The copy is independent — editing it rewrites only its own line.
+    *   **Naming:** Generated names never collide with a pattern already in the script. Existing names are read from the editor text rather than the last parse, so a script that currently fails to parse is still respected, and the comparison is case-insensitive to match the parser. New patterns are `pattern`, `pattern2`, …; clones are `foo-copy`, and cloning a clone gives `foo-copy2` rather than `foo-copy-copy`.
 11. **New Command:** Includes the `FILL_PIXEL` command for drawing pixels conditionally based on the current fill pattern.
 
 ## Emulator Implementation Notes
