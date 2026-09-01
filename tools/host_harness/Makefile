@@ -7,6 +7,8 @@
 #   make bake       REGENERATE goldens -- read README.md first
 #   make profile    build a -pg / frame-pointer flavour for profiling
 #   make audit-js   web-renderer vs C++ goldens (needs node)
+#   make wasm       build the firmware renderer to WebAssembly (needs emsdk)
+#   make verify-wasm  byte-compare the WASM build against the goldens
 #   make clean
 
 CXX      ?= c++
@@ -155,3 +157,17 @@ audit-js:
 # Does the WEB renderer's own occlusion culling change its output? It must not.
 audit-js-occlusion:
 	node js/render.mjs --compare-occlusion
+
+# --- WebAssembly build of the firmware renderer -----------------------------
+# The same six core .cpp files this Makefile compiles for native, compiled by
+# Emscripten instead. Not a port: the core is already free of Arduino, FreeRTOS
+# and hardware, which is what makes both builds possible from one source.
+#
+# Needs an emsdk; wasm/build.sh explains where it looks. Output is gitignored --
+# it is reproducible, and deploying it is a separate decision.
+.PHONY: wasm verify-wasm
+wasm:
+	./wasm/build.sh
+
+verify-wasm: wasm
+	node wasm/verify.mjs

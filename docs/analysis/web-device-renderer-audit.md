@@ -133,6 +133,60 @@ places. That is a rasterization-algorithm difference under rotation and scale
 These are exactly the primitives that had **no golden coverage at all** until
 `prims.mp` was added. They were never compared because nothing rendered them.
 
+## The other answer: compile the firmware renderer to WebAssembly
+
+Auditing the gap between two implementations is worth doing, but the gap only
+exists because there *are* two. The device's renderer runs in the browser as-is:
+
+    cd tools/host_harness
+    make wasm            # build it
+    make verify-wasm     # byte-compare it to the same goldens
+
+**Result: 15/15 identical to the C++ goldens.** Not "close" -- the same bytes,
+because it is the same code.
+
+This was nearly free, and the reason is worth stating: the host harness had
+already done the hard part. It compiles the six core files **verbatim** from the
+firmware tree (2,903 lines) against a 326-line shim, with no Arduino, no
+FreeRTOS and no hardware -- the single ESP-specific include in the core is
+already `#if defined(ARDUINO_ARCH_ESP32)`-guarded. Emscripten consumes that
+same file list. The output side needed no translation either: `render_path.cpp`
+already hands back a flat `width*height` greyscale buffer, which is an
+`ImageData` blit away from a canvas.
+
+    mp_render.wasm   87 KB
+    mp_render.mjs    13 KB   (Emscripten glue, ES module)
+
+Rasterization in the browser is not a compromise: `city`, the heaviest corpus
+script at 20,737 display-list items, rasterizes in **4.6ms**.
+
+Exceptions and RTTI are off in the WASM build, matching Arduino. Leaving them on
+would let code compile here that cannot run on the device -- exactly the class of
+divergence this exercise exists to remove.
+
+What it buys beyond pixel fidelity: the preview would use the **firmware's
+parser**, so both parser divergences above disappear from the preview path
+without touching the JS parser at all.
+
+What it does not solve:
+
+- It does not delete the JS renderer, and should not. The editor needs fast
+  incremental feedback while typing, and the JS parser drives linting and
+  autocomplete. WASM makes the JS renderer stop being the *source of truth*, not
+  redundant.
+- Error messages and editor diagnostics still come from the JS parser unless
+  those are routed through WASM too. Two parsers is the deeper problem.
+- It matches the **host** build, not a heap-starved Watchy: the occupancy-map
+  degradation path is `ARDUINO_ARCH_ESP32`-only, so WASM never simulates the
+  Watchy dropping the map under memory pressure.
+- It is 960x540 4bpp. A faithful Watchy preview needs the 200x200 1bpp canvas
+  modelled as well -- the same gap the audit already has.
+
+Emscripten is not on `PATH` on this machine. `wasm/build.sh` falls back to the
+one vendored at `qemu-ipod_touch_1g/.wasm-toolchain/emsdk` (4.0.10); set `EMSDK`
+to override. Build output is gitignored -- it is reproducible, and shipping it
+to the editor is a separate decision.
+
 ## Still open
 
 - Reconcile `LINE`/`RECT`/`CIRCLE`/`PIXEL` rasterization between the two

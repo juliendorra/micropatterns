@@ -4,3 +4,7 @@ build_strict/
 build_soak/
 out/
 stress/generated/
+wasm/out/
+js/out*/
+probe/js/
+probe/cpp/
