@@ -4,11 +4,15 @@ import { MicroPatternsParser } from './parser.js';
 import { MicroPatternsRuntime } from './runtime.js';
 import { DisplayListGenerator } from './display_list_generator.js';
 import { DisplayListRenderer } from './display_list_renderer.js';
+import { DeviceRenderer } from './device_renderer.js';
 import { initProvisioning } from './provisioning.js';
 
 document.addEventListener('DOMContentLoaded', async () => {
 
-    let executionPath = 'displayList'; // 'interpreter', 'compiler', or 'displayList'
+    let executionPath = 'displayList'; // 'interpreter', 'compiler', 'displayList', or 'device'
+    // The firmware's renderer compiled to WASM. Constructed eagerly, loaded lazily
+    // -- the module is only fetched the first time this path is actually used.
+    const deviceRenderer = new DeviceRenderer();
     // let USE_COMPILER = true; // This will be replaced by executionPath logic
     let currentRuntimeInstance = null; // Store runtime instance for profiling access
     let currentCompilerInstance = null; // For compiler instance access
@@ -669,6 +673,58 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         const scriptText = codeMirrorEditor.getValue();
         const environment = getEnvironmentVariables();
+        if (executionPath === 'device') {
+            // The firmware's own renderer and parser, compiled to WASM. Nothing
+            // above this point applies: it does its own parsing, so the JS
+            // parser's verdict is not used, and the optimisation checkboxes
+            // describe the JS renderer's internals, not this one's.
+            console.log("Taking Device (WASM) Path");
+
+            // Asset previews come from the JS parser, best-effort. Deliberately
+            // NOT allowed to abort this path: the whole point of running the
+            // firmware's parser is to see what the DEVICE makes of a script,
+            // including a script the editor's own parser rejects. Letting the
+            // JS verdict gate it would hide exactly the disagreements this
+            // path exists to expose.
+            try {
+                const preview = new MicroPatternsParser().parse(scriptText);
+                renderAssetPreviews(preview.assets);
+            } catch (e) {
+                console.warn("Device path: asset preview parse failed, continuing.", e);
+            }
+
+            (async () => {
+                try {
+                    const lint = await deviceRenderer.lint(scriptText);
+                    lint.forEach((e) => displayError(
+                        e.line !== null ? `Line ${e.line}: ${e.message}` : e.message,
+                        "Device parser"));
+
+                    const result = await deviceRenderer.render(scriptText, ctx, environment);
+                    if (!result.ok) {
+                        // lint() already reported parse errors; only add
+                        // anything the render itself objected to.
+                        if (lint.length === 0) displayError(result.error || 'render failed', "Device");
+                        return;
+                    }
+                    if (optimizationConfig.logOptimizationStats) {
+                        const s = result.stats;
+                        displayError(
+                            `items ${s.totalItems}, rendered ${s.renderedItems}, ` +
+                            `off-screen ${s.culledOffScreen}, occluded ${s.culledByOcclusion}, ` +
+                            `parse ${s.msParse.toFixed(1)}ms, list ${s.msDisplayList.toFixed(1)}ms, ` +
+                            `raster ${s.msRasterize.toFixed(1)}ms`, "Device stats");
+                    }
+                } catch (err) {
+                    displayError(
+                        `WebAssembly renderer unavailable: ${err && err.message ? err.message : err}`,
+                        "Device");
+                }
+            })();
+            displayProfilingResults();
+            return;
+        }
+
         const parser = new MicroPatternsParser();
         let parseResult;
         let hasErrors = false;
