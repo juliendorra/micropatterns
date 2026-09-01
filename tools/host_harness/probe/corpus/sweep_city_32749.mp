@@ -29,8 +29,14 @@ VAR $min_scaling = 1
 IF $WIDTH >= 400 THEN
     LET $min_scaling = 2
 ENDIF
+IF $max_scaling < $min_scaling THEN
+    LET $max_scaling = $min_scaling
+ENDIF
 VAR $scale_steps = $max_scaling - $min_scaling + 1
 VAR $rare_from = $scale_steps - 2
+IF $rare_from < 1 THEN
+    LET $rare_from = 1
+ENDIF
 
 LET $rng = $rng * 2053 + 13849
 LET $rng = $rng % 32749

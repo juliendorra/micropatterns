@@ -3,7 +3,7 @@
 # re-roll below are copied from examples/scripts/city.mp. It draws exactly
 # $scaling isolated pixels, so the non-white pixel count IS the level.
 #
-# sweep_city_32768.mp must PASS  -- all ten levels reachable.
+# sweep_city_32749.mp must PASS -- all ten levels reachable.
 # sweep_city_32768.mp must FAIL -- levels 3, 4, 7 and 9 never occur.
 #
 # The bug is NOT a stream property. city.mp re-seeds from the clock every
@@ -29,8 +29,14 @@ VAR $min_scaling = 1
 IF $WIDTH >= 400 THEN
     LET $min_scaling = 2
 ENDIF
+IF $max_scaling < $min_scaling THEN
+    LET $max_scaling = $min_scaling
+ENDIF
 VAR $scale_steps = $max_scaling - $min_scaling + 1
 VAR $rare_from = $scale_steps - 2
+IF $rare_from < 1 THEN
+    LET $rare_from = 1
+ENDIF
 
 LET $rng = $rng * 2053 + 13849
 LET $rng = $rng % 32768

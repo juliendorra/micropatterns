@@ -9,6 +9,7 @@
 #   make audit-js   web-renderer vs C++ goldens (needs node)
 #   make cycle S=<script.mp>  does a script vary as $$COUNTER advances?
 #   make sweep S=<script.mp>  which values can it reach across the clock?
+#   make audit-sweep  the sweep gate, including the cases that must FAIL
 #   make wasm       build the firmware renderer to WebAssembly (needs emsdk)
 #   make verify-wasm  byte-compare the WASM build against the goldens
 #   make clean
@@ -189,3 +190,9 @@ cycle:
 sweep:
 	@test -n "$(S)" || { echo "usage: make sweep S=<script.mp> [LEVELS=10]"; exit 2; }
 	./build/mpharness sweep $(S) --levels $(or $(LEVELS),10) --width 200 --height 200
+
+# The sweep gate. Two cases must FAIL, so expectations are declared per case --
+# a negative test is only a test if something checks it still goes negative.
+# Also verifies the city.mp probes are still verbatim copies of their source.
+audit-sweep:
+	./probe/audit_sweep.sh
