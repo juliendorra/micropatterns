@@ -1,3 +1,4 @@
+import { i32add, i32sub, i32mul, i32div, i32mod } from './int32.js';
 import { MicroPatternsDrawing } from './drawing.js';
 
 export class MicroPatternsRuntime {
@@ -249,18 +250,19 @@ export class MicroPatternsRuntime {
                  throw this.runtimeError(`Cannot perform operation '${op}' on non-numeric values: ${val1}, ${val2}`, lineNumber);
              }
              switch (op) {
-                 case '+': return val1 + val2;
-                 case '-': return val1 - val2;
-                 case '*': return val1 * val2;
+                 // 32-bit, like the firmware. See int32.js.
+                 case '+': return i32add(val1, val2);
+                 case '-': return i32sub(val1, val2);
+                 case '*': return i32mul(val1, val2);
                  case '/':
                      if (val2 === 0) throw this.runtimeError(`Division by zero.`, lineNumber);
-                     return Math.trunc(val1 / val2);
+                     return i32div(val1, val2);
                  case '%':
                      if (val2 === 0) throw this.runtimeError(`Modulo by zero.`, lineNumber);
                      if (!Number.isInteger(val1) || !Number.isInteger(val2)) {
                          throw this.runtimeError(`Modulo requires integer operands. Got: ${val1}, ${val2}`, lineNumber);
                      }
-                     return val1 % val2;
+                     return i32mod(val1, val2);
                  default: throw this.runtimeError(`Unknown operator: ${op}`, lineNumber);
              }
          };

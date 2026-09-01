@@ -12,6 +12,8 @@
  * @property {number} sourceLine - The original script line number for debugging.
  */
 
+import { i32add, i32sub, i32mul, i32div, i32mod } from './int32.js';
+
 export class DisplayListGenerator {
     constructor(assetsDefinition, environmentDefinition) {
         this.assets = assetsDefinition; // e.g., { "PATTERN_NAME": { width, height, data } }
@@ -120,15 +122,16 @@ export class DisplayListGenerator {
                 const b = stack.pop();
                 const a = stack.pop();
                 switch (token.value) {
-                    case '+': stack.push(a + b); break;
-                    case '-': stack.push(a - b); break;
-                    case '*': stack.push(a * b); break;
+                    // 32-bit, like the firmware. See int32.js.
+                    case '+': stack.push(i32add(a, b)); break;
+                    case '-': stack.push(i32sub(a, b)); break;
+                    case '*': stack.push(i32mul(a, b)); break;
                     case '/':
                         if (b === 0) {
                             this.errors.push(`Generator Error (Line ${lineNumber}): Division by zero.`);
                             stack.push(0);
                         } else {
-                            stack.push(Math.trunc(a / b));
+                            stack.push(i32div(a, b));
                         }
                         break;
                     case '%':
@@ -136,7 +139,7 @@ export class DisplayListGenerator {
                             this.errors.push(`Generator Error (Line ${lineNumber}): Modulo by zero.`);
                             stack.push(0);
                         } else {
-                            stack.push(a % b);
+                            stack.push(i32mod(a, b));
                         }
                         break;
                     default:

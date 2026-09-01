@@ -326,6 +326,42 @@ parser from the correctness path entirely -- it would still be wanted for
 autocomplete and syntax highlighting, which need a token stream rather than a
 verdict.
 
+## Integer width: the device is 32-bit, the web was not
+
+Relayed from another session and confirmed here. The C++ runtime evaluates every
+expression as `int` (`micropatterns_runtime.cpp`, `evaluateExpressionRange`);
+JavaScript numbers are doubles. The two agree right up until a script overflows,
+and then they disagree **silently** -- no error on either side.
+
+Probe (`corpus/i32.mp`):
+
+    VAR $a = 100000
+    LET $a = $a * 100000      # 10,000,000,000 -- does not fit in int32
+    LET $a = $a % 97
+    FILL_RECT X=$a ...
+
+    device (int32 wrap)   1410065408 % 97 = 76
+    web    (double)      10000000000 % 97 = 49
+
+The rect landed 27 pixels apart. This is not a corner case: scripts that seed a
+pseudo-random sequence from `$SECOND`/`$COUNTER` multiply exactly like this, so
+it is the mechanism by which a script that looks right in the editor renders
+differently on the watch.
+
+The device is the reference -- it is the target the language exists for -- so
+the web now emulates its width. `int32.js` holds the operations and both JS
+evaluators (`display_list_generator.js` and `runtime.js`) use them.
+`Math.imul()` is required for multiplication: `a * b | 0` is wrong for large
+operands, because the double product loses low bits *before* the truncation.
+
+`corpus/i32.mp` is now a permanent corpus entry covering both positive and
+negative wrap, so the harness gates this rather than trusting it.
+
+Note for the C++ side: signed overflow is formally undefined behaviour. Every
+compiler targeting these devices wraps in practice, and that wrap is now the
+specified behaviour of the language, so it would be worth making it explicit
+(compute through `uint32_t` and cast back) rather than relying on it.
+
 ## Still open
 
 - Reconcile `LINE`/`RECT`/`CIRCLE`/`PIXEL` rasterization between the two
