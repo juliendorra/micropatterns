@@ -17,6 +17,7 @@
 #include "micropatterns_runtime.h"
 #include "display_list_renderer.h"
 #include "watchy_canvas.h"
+#include "watchy_rtc.h"
 #include "mp_provisioning.h"
 
 // These four are pulled in by the shared managers below, not used directly
@@ -112,7 +113,6 @@ static int  g_currentScript = 0;
 static int           g_pendingScript = -1;   // -1: nothing waiting to render
 static unsigned long g_renderDueAt   = 0;
 
-static int  g_counter = 0;
 
 // STAGE REPORTER -- the only working instrument on this device.
 //
@@ -181,6 +181,9 @@ static void browseScript(int delta);
 static void renderIfSettled();
 static bool anyButtonDown();
 static void syncScripts(bool announce);
+static bool syncTimeFromNTP();
+
+static int  g_counter = 0;
 
 // --- Panel update policy --------------------------------------------------
 //
@@ -228,6 +231,18 @@ static const unsigned long CONSOLE_AWAKE_MS = 60000;
 static unsigned long g_lastSerialMs = 0;
 
 static const unsigned long AUTO_RERUN_INTERVAL_MS = 77UL * 1000UL;
+
+// Hours east of UTC written into the RTC at NTP sync. The chip holds no
+// timezone of its own, so whatever offset is applied here is simply what
+// $HOUR reads afterwards.
+//
+// Fixed, and matching the M5Paper's default (SystemManager's _timezone starts
+// at 1) so the same script shows the same hour on both devices. That firmware
+// can at least store a different value in NVS; this one has no settings store
+// and no UI to reach one, so changing zone means changing this line. DST is
+// not handled on either device -- the M5Paper passes daylightOffset_sec = 0
+// too, so both are an hour out in summer.
+static const int MP_TZ_OFFSET_HOURS = 1;
 static unsigned long g_lastRenderMs = 0;
 static int g_updatesSinceFull = WATCHY_DEGHOST_INTERVAL;  // force full on first use
 
@@ -337,7 +352,15 @@ static bool renderScript(int index)
     runtime.setCommands(&parser.getCommands());
     runtime.setDeclaredVariables(&parser.getDeclaredVariables());
     runtime.setCounter(g_counter);
-    runtime.setTime(0, 0, 0);
+    // Real wall-clock time, so $HOUR/$MINUTE/$SECOND move as they do in the
+    // editor and on the M5Paper. This used to pass 0,0,0 unconditionally, which
+    // froze every clock-driven script at midnight -- the runtime and the
+    // variables were always wired, the platform simply never read the RTC.
+    // With no chip or an unset one the zeros come back, and that is the right
+    // fallback: a script drawing midnight is better than one drawing garbage.
+    int rtcH = 0, rtcM = 0, rtcS = 0;
+    if (!WatchyRTC::now(rtcH, rtcM, rtcS)) rtcH = rtcM = rtcS = 0;
+    runtime.setTime(rtcH, rtcM, rtcS);
     runtime.generateDisplayList();
     unsigned long tGen = millis() - t0;
 
@@ -615,6 +638,44 @@ static void fullRefresh()
     }
 }
 
+// Sets the RTC from NTP. The M5Paper does this in SystemManager; there is no
+// SystemManager on this device, so the same few steps live here.
+//
+// stopRadio() first for the reason mp_provisioning documents: BLE holds tens of
+// KB of internal DRAM and the TLS-capable WiFi stack cannot get its own
+// allocation while that is resident.
+static bool syncTimeFromNTP()
+{
+    if (!g_networkManager) return false;
+
+    MPProvisioning::stopRadio();
+    if (!g_networkManager->connectWiFi(pdMS_TO_TICKS(15000))) {
+        log_w("NTP: no WiFi; leaving the clock as it is");
+        return false;
+    }
+
+    configTime((long)MP_TZ_OFFSET_HOURS * 3600, 0, "pool.ntp.org");
+
+    struct tm t;
+    // 10s: SNTP needs a round trip and often a DNS lookup first.
+    const bool got = getLocalTime(&t, 10000);
+    g_networkManager->disconnectWiFi();
+
+    if (!got) {
+        log_w("NTP: no reply within 10s");
+        return false;
+    }
+    if (!WatchyRTC::set(t)) {
+        log_e("NTP: got the time but could not write the RTC (%s)", WatchyRTC::chipName());
+        return false;
+    }
+
+    log_i("NTP: RTC set to %02d:%02d:%02d (UTC%+d)", t.tm_hour, t.tm_min, t.tm_sec,
+          MP_TZ_OFFSET_HOURS);
+    Serial.printf("MPCON|ntp %02d:%02d:%02d\n", t.tm_hour, t.tm_min, t.tm_sec);
+    return true;
+}
+
 // Pulls the script list and every script's content from the API.
 //
 // The procedure itself is mp_sync_scripts(), shared verbatim with the M5Paper
@@ -629,6 +690,12 @@ static void syncScripts(bool announce)
     if (announce) {
         showNotice(MP_MSG_SYNCING, MP_MSG_CONNECTING, "", "");
     }
+
+    // The clock rides along with the deliberate sync gesture. Both of these
+    // parts drift by minutes a month, nothing else on this device ever
+    // corrects them, and the network is already being brought up -- so the one
+    // moment the user has asked to go online is the cheapest place to do it.
+    syncTimeFromNTP();
 
     logHeap("before sync");
     const ScriptSyncResult r = mp_sync_scripts(*g_networkManager, *g_scriptManager,
@@ -840,6 +907,31 @@ void setup()
     }
     g_networkManager = new MPNetworkManager(nullptr);   // no SystemManager on this device
     logHeap("managers up");
+
+    // The clock. Probed after the managers because a first-boot watch needs the
+    // network to set it, and before the first render because that render is
+    // what reads it.
+    if (WatchyRTC::begin()) {
+        int h = 0, m = 0, sec = 0;
+        const bool ok = WatchyRTC::now(h, m, sec);
+        log_i("RTC: %s, %s, %02d:%02d:%02d", WatchyRTC::chipName(),
+              WatchyRTC::valid() ? "time trusted" : "NOT SET", h, m, sec);
+        Serial.printf("MPCON|rtc %s %s %02d:%02d:%02d\n", WatchyRTC::chipName(),
+                      WatchyRTC::valid() ? "ok" : "unset", ok ? h : 0, ok ? m : 0,
+                      ok ? sec : 0);
+
+        // Only when the chip says its time is untrustworthy -- a fresh watch or
+        // one whose battery was pulled. Boot must not otherwise wait on the
+        // network, and the sync gesture keeps drift in check afterwards.
+        if (!WatchyRTC::valid()) {
+            log_i("RTC not set; going to NTP");
+            syncTimeFromNTP();
+        }
+    } else {
+        // Not fatal: scripts still render, they just see midnight.
+        log_w("RTC: no chip answered on I2C; $HOUR/$MINUTE/$SECOND will be 0");
+        Serial.println("MPCON|rtc none");
+    }
 
     const bool haveLocal = loadScriptIndex();
 
