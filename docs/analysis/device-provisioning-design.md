@@ -210,3 +210,39 @@ device that cannot find any known network must not retry every wake.
   open". Worth revisiting if the custom BLE service proves fiddly.
 - **Storing credentials in the script list on S3.** Would put the WiFi password
   behind a bearer token that is itself in a public repo.
+
+## The panel as built: rules the editor UI has to keep
+
+The panel lives in a `controls-group`, and in the default Memphis theme that
+group paints its text directly onto a background pattern. That single fact
+decides most of the styling:
+
+- **Nothing that carries text may be partly transparent.** Dimming with
+  `opacity` is what everything unavailable used to do, and over a patterned
+  background the pattern reads straight through the glyphs. Disabled buttons are
+  now solid (and `button.secondary:disabled` has to be spelled out, or the
+  `.secondary` colour out-specifies the disabled one and only the opacity
+  survives). The log paints its own background. An unticked section dims to
+  0.7, not 0.45 — enough signal, still legible.
+- **The `<details>` summary needs its own solid chip**, for the same reason:
+  bold black on black squiggles is unreadable. Keep it `display: list-item`
+  (`inline-block` drops the disclosure triangle), and keep it short — it is a
+  dropdown label, not a description. The description belongs in the body.
+- **Every theme must style `input[type="password"]`.** The themes styled
+  `text`/`number`/`select` only, so the WiFi password field fell back to the
+  browser default next to a themed SSID field in the same row.
+
+Two naming/behaviour decisions worth not re-litigating:
+
+- **The device picker is always filtered by the service UUID.** There was an
+  "show all Bluetooth devices" checkbox that switched `requestDevice` to
+  `acceptAllDevices`. It was removed: it listed every radio in range, which is
+  confusing when the one thing you want is the device you just pressed a button
+  on. The firmware advertises the service UUID (`adv->addServiceUUID`), so a
+  device missing from the picker is not advertising — which is what the
+  "no device chosen" message now says, instead of pointing at a checkbox.
+- **`forget` is not "forget the ID".** It runs `prefs.clear()` on the whole
+  `mpprov` namespace: user ID, every SSID and PSK, the count, and `w.last`. The
+  button says "Erase WiFi + ID" so the label matches, and it still confirms
+  first. Rotating a leaked ID on its own is the *other* path — tick "Write the
+  user ID" and untick the networks.
