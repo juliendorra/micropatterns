@@ -429,9 +429,27 @@ still matched and nobody noticed -- the probes were not verbatim and would have
 diverged from the real script at any other sweep size. Restored; sweep results
 unchanged.
 
-Its own first run reported drift that was not there, too: `s/[[:space:]]\+/ /g`
-is a BSD-sed trap, where `\+` is a literal plus rather than a repetition
-operator, so the normaliser was eating every `+` in the arithmetic.
+**Correction.** An earlier version of this section, and the commit message of
+e1007ea, said the checker's first run "reported drift that was not there"
+because of a BSD-sed trap -- `s/[[:space:]]\+/ /g`, where `\+` is a literal plus
+rather than a repetition operator, so the normaliser ate every `+` in the
+arithmetic. The sed bug was real; that conclusion about it was **wrong**. Both
+sides of the comparison run through the same normaliser, so both were mangled
+identically and still compared equal -- verified directly with two identical
+files. The first run's reported drift was entirely genuine: the two missing
+clamp guards.
+
+The bug's actual risk ran the other way, and was worse. A real difference
+consisting only of `+` signs would have been normalised away and reported as a
+**match** -- a false negative in a tool whose whole job is to notice.
+
+`check_city_block.sh --selftest` now proves both directions before the gate
+trusts the checker: that a deliberately altered source block IS reported as
+drift, and that the normaliser still preserves arithmetic. Both run as part of
+`make audit-sweep`. The first of those is a permanent version of a check the
+other session performed by hand -- they edited `city.mp`, confirmed the gate
+fired, and reverted -- on the principle that a gate nobody has seen fail is not
+yet a gate. It seemed worth keeping rather than repeating.
 
 `cycle` deliberately does **not** fail on a low distinct-frame count. A script that
 legitimately picks one of four positions has four distinct frames however often

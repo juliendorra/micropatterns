@@ -33,5 +33,7 @@ for entry in "${CASES[@]}"; do
 done
 
 echo
+# Prove the drift checker can still fail before trusting it to pass.
+"$HERE/check_city_block.sh" --selftest || rc=1
 "$HERE/check_city_block.sh" || rc=1
 exit $rc

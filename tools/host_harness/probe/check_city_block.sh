@@ -29,14 +29,53 @@ END='VAR \$scaling = \$min_scaling \+ \$scale_pick'
 
 extract() {   # file -> its block, comments and blank lines stripped
     # NOTE: no "\+" in these expressions. BSD sed's basic regex does not treat
-    # it as a repetition operator, so 's/[[:space:]]\+/ /g' silently matched a
-    # space followed by a LITERAL plus and ate every "+" in the arithmetic --
-    # which made this script report drift that was not there, on its first run.
+    # it as a repetition operator, so 's/[[:space:]]\+/ /g' matched a space
+    # followed by a LITERAL plus and ate every "+" in the arithmetic.
+    #
+    # That bug was in the first version of this script. It did NOT cause a false
+    # positive -- both sides go through this same function, so both were mangled
+    # identically and still compared equal; verified. The danger was the
+    # opposite and worse: a real difference consisting only of "+" signs would
+    # have been normalised away and reported as a match. The --selftest below
+    # exists because of it.
     sed -n "/$START/,/$END/p" "$1" \
         | sed -e 's/#.*//' -e 's/[[:space:]][[:space:]]*/ /g' \
               -e 's/^ //' -e 's/ $//' \
         | grep -v '^$'
 }
+
+# A gate nobody has seen fail is not yet a gate. --selftest proves both
+# directions: that a deliberately altered block IS reported as drift, and that
+# the normaliser is not quietly eating characters (which would hide a real
+# difference rather than invent one).
+if [ "${1:-}" = "--selftest" ]; then
+    rc=0
+    tmp="$(mktemp -d)"
+    trap 'rm -rf "$tmp"' EXIT
+
+    # 1. negative control: change the source, expect drift.
+    sed 's/IF \$max_scaling > 12 THEN/IF $max_scaling > 11 THEN/' "$SRC" > "$tmp/city.mp"
+    if diff -q <(extract "$tmp/city.mp") \
+                <(extract "$HERE/corpus/sweep_city_32749.mp") >/dev/null 2>&1; then
+        echo "  SELFTEST FAIL  an altered block was NOT reported as drift"
+        rc=1
+    else
+        echo "  ok   selftest: an altered block is reported as drift"
+    fi
+
+    # 2. the normaliser must preserve arithmetic. A mangling normaliser hides
+    #    real differences; it looks like nothing is wrong, which is why this is
+    #    checked rather than assumed.
+    printf 'VAR $a = $b + 1\n' > "$tmp/plus.mp"
+    if extract "$tmp/plus.mp" 2>/dev/null | grep -q '+' \
+       || sed -e 's/#.*//' -e 's/[[:space:]][[:space:]]*/ /g' "$tmp/plus.mp" | grep -q '+'; then
+        echo "  ok   selftest: normaliser preserves '+'"
+    else
+        echo "  SELFTEST FAIL  normaliser is eating '+' -- real differences will be hidden"
+        rc=1
+    fi
+    exit $rc
+fi
 
 if [ ! -f "$SRC" ]; then
     echo "check_city_block: source not found: $SRC" >&2
