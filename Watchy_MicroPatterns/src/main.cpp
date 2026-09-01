@@ -183,8 +183,6 @@ static bool anyButtonDown();
 static void syncScripts(bool announce);
 static bool syncTimeFromNTP();
 
-static int  g_counter = 0;
-
 // --- Panel update policy --------------------------------------------------
 //
 // GxEPD2_154_D67 reports full_refresh_time = 2600ms and
@@ -313,7 +311,11 @@ static bool anyButtonDown()
 }
 
 // Renders g_scripts[index] and pushes it to the panel.
-static bool renderScript(int index)
+//
+// `state` carries this script's own $COUNTER in, and the time actually used
+// back out, so the caller can persist both -- the same in/out arrangement the
+// M5Paper's RenderController has.
+static bool renderScript(int index, ScriptExecState& state)
 {
     if (index < 0 || index >= (int)g_scripts.size()) return false;
     const ScriptEntry& scr = g_scripts[index];
@@ -351,7 +353,7 @@ static bool renderScript(int index)
     MicroPatternsRuntime runtime(W, H, parser.getAssets());
     runtime.setCommands(&parser.getCommands());
     runtime.setDeclaredVariables(&parser.getDeclaredVariables());
-    runtime.setCounter(g_counter);
+    runtime.setCounter(state.counter);
     // Real wall-clock time, so $HOUR/$MINUTE/$SECOND move as they do in the
     // editor and on the M5Paper. This used to pass 0,0,0 unconditionally, which
     // froze every clock-driven script at midnight -- the runtime and the
@@ -361,6 +363,7 @@ static bool renderScript(int index)
     int rtcH = 0, rtcM = 0, rtcS = 0;
     if (!WatchyRTC::now(rtcH, rtcM, rtcS)) rtcH = rtcM = rtcS = 0;
     runtime.setTime(rtcH, rtcM, rtcS);
+    state.hour = rtcH; state.minute = rtcM; state.second = rtcS;
     runtime.generateDisplayList();
     unsigned long tGen = millis() - t0;
 
@@ -419,16 +422,38 @@ static void showScript(int index, bool announce)
     }
     const int n = (int)g_scripts.size();
     g_currentScript = (index % n + n) % n;
-    g_counter++;
+    const String& humanId = g_scripts[g_currentScript].humanId;
+
+    // $COUNTER belongs to the SCRIPT, not to the device, and it is read back
+    // from SPIFFS rather than held in RAM. It used to be one global int
+    // incremented per render: every script shared one sequence, so leaving a
+    // script and coming back resumed wherever the others had got to, and a
+    // reboot sent everything back to zero. This is the M5Paper's arrangement,
+    // through the same ScriptManager and the same script_states.json format --
+    // a script moved between the two devices keeps counting.
+    ScriptExecState state;
+    if (g_scriptManager && g_scriptManager->loadScriptExecutionState(humanId, state)
+        && state.state_loaded) {
+        state.counter++;
+    } else {
+        state.counter = 0;   // first run of this script on this device
+    }
+
     if (announce) showScriptName(g_scripts[g_currentScript].name.c_str());
     // Survives a reboot, same as on the M5Paper.
-    if (g_scriptManager) g_scriptManager->saveCurrentScriptId(g_scripts[g_currentScript].humanId);
+    if (g_scriptManager) g_scriptManager->saveCurrentScriptId(humanId);
     g_lastRenderMs = millis();
-    if (!renderScript(g_currentScript)) {
+    if (!renderScript(g_currentScript, state)) {
         // renderScript() has already shown the specific reason where it knows
         // one, and says nothing at all when the user simply pressed on.
+        //
+        // The counter is NOT saved here, so an abandoned render does not
+        // consume a tick -- same principle as the de-ghost counter being wound
+        // back for a frame that was never shown.
         log_i("Render did not complete for index %d", g_currentScript);
+        return;
     }
+    if (g_scriptManager) g_scriptManager->saveScriptExecutionState(humanId, state);
 }
 
 // Steps the selection and shows the new title, WITHOUT rendering.
