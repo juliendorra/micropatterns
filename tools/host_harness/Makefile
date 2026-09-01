@@ -7,6 +7,7 @@
 #   make bake       REGENERATE goldens -- read README.md first
 #   make profile    build a -pg / frame-pointer flavour for profiling
 #   make audit-js   web-renderer vs C++ goldens (needs node)
+#   make cycle S=<script.mp>  does a script vary as $$COUNTER advances?
 #   make wasm       build the firmware renderer to WebAssembly (needs emsdk)
 #   make verify-wasm  byte-compare the WASM build against the goldens
 #   make clean
@@ -171,3 +172,11 @@ wasm:
 
 verify-wasm: wasm
 	node wasm/verify.mjs
+
+# --- variation, not equality ------------------------------------------------
+# Every other gate here compares single frames. None of them can see a script
+# that renders byte-perfect frames and still repeats itself every 32 draws.
+#   make cycle S=corpus/city.mp
+cycle:
+	@test -n "$(S)" || { echo "usage: make cycle S=<script.mp> [DRAWS=64]"; exit 2; }
+	./build/mpharness cycle $(S) --draws $(or $(DRAWS),64)

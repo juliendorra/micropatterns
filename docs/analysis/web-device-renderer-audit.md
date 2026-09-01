@@ -362,6 +362,58 @@ compiler targeting these devices wraps in practice, and that wrap is now the
 specified behaviour of the language, so it would be worth making it explicit
 (compute through `uint32_t` and cast back) rather than relying on it.
 
+## A bug class none of these gates can see
+
+Raised by another session, verified here, and worth recording because it sits on
+a different axis from everything above.
+
+Every gate in this document compares **single frames for equality** -- against a
+golden, against another render path, against the other language. A script can
+pass all of them and still be wrong in a way nobody notices: render a
+byte-perfect frame every time, and repeat itself every 32 draws.
+
+The usual cause is a pseudo-random sequence read through its low bits. For a
+linear congruential generator with a power-of-two modulus -- including the
+implicit 2^32 of `int` arithmetic -- bit k repeats with period 2^(k+1).
+Measured, for `seed = seed * 1103515245 + 12345` mod 32768:
+
+    bit 0: period 2      bit 4: period 32
+    bit 1: period 4      bit 5: period 64
+    bit 2: period 8      bit 6: period 128
+    bit 3: period 16     bit 7: period 256
+
+So `($seed / 8) % 4` reads bits 3 and 4 and cannot beat period 32, no matter how
+many draws are taken. Reducing modulo a **prime** (32749 rather than 32768)
+mixes the high bits back in.
+
+`mpharness cycle <script.mp> --draws N` renders N consecutive `$COUNTER` values
+and reports distinct frames and the repeat period, exiting non-zero if the
+script cycles within the window. Two scripts differing only in the modulus:
+
+    modulus 32768   distinct frames 4 of 64   repeats every 32 draws   exit 1
+    modulus 32749   distinct frames 4 of 64   no repeat within 64      exit 0
+
+It deliberately does **not** fail on a low distinct-frame count. A script that
+legitimately picks one of four positions has four distinct frames however often
+it is drawn; flagging that would make the tool cry wolf on correct scripts. The
+period is the signal, the count is context.
+
+Two traps found while building it, both worth knowing before writing such a
+script:
+
+- **C's `%` keeps the sign of the dividend.** The multiply overflows int32 into
+  negatives, so `$seed % 32768` is negative half the time and the sequence is
+  not an LCG at all -- it is an LCG plus a sign flip, which destroys the
+  periodicity. The probe scripts add the modulus and reduce again to force a
+  non-negative state. A first attempt at simulating this in Python got the
+  opposite answer because Python's `%` returns non-negative; the tool was right
+  and the model was wrong.
+- Two related claims from the same report -- unreachable choices and a heavy
+  concentration on a few of them -- did **not** reproduce with this LCG. Over
+  400 draws mod 32768 all ten levels appeared and the top two took 24% of
+  draws, against 27% for the prime. Whatever caused that in the original
+  scripts, it was not this mechanism on its own.
+
 ## Still open
 
 - Reconcile `LINE`/`RECT`/`CIRCLE`/`PIXEL` rasterization between the two

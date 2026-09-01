@@ -14,6 +14,7 @@
 #include <cstring>
 #include <dirent.h>
 #include <map>
+#include <set>
 #include <string>
 #include <sys/stat.h>
 #include <vector>
@@ -196,6 +197,7 @@ struct Opts {
     int width = kDefaultWidth, height = kDefaultHeight;
     int counter = 0, hour = 12, minute = 34, second = 56;
     int reps = 5;
+    int draws = 0;   // `cycle` mode: number of $COUNTER values to render
     bool quiet = false;
 };
 
@@ -220,6 +222,8 @@ int usage() {
       "  compare <a.json> <b.json>   Percentage deltas between two bench runs.\n"
       "  compare-paths <A> <B>       Byte-compare two render paths over the corpus.\n"
       "  list                    List corpus scripts, seeds and available render paths.\n"
+      "  cycle <script.mp>       Render N counters; report distinct frames and repeat period.\n"
+      "      --draws N              (default 64)\n"
       "\n"
       "Common options: --corpus DIR  --golden DIR  --quiet\n");
     return 2;
@@ -262,6 +266,7 @@ int main(int argc, char** argv) {
         else if (a == "--minute") o.minute = atoi(next().c_str());
         else if (a == "--second") o.second = atoi(next().c_str());
         else if (a == "--reps") o.reps = atoi(next().c_str());
+        else if (a == "--draws") o.draws = atoi(next().c_str());
         else if (a == "--quiet") o.quiet = true;
         else if (a == "-h" || a == "--help") return usage();
         else positional.push_back(a);
@@ -358,6 +363,75 @@ int main(int argc, char** argv) {
     }
 
     // ---------------- verify / bake -----------------------------------------
+    // Does a script actually VARY as $COUNTER advances?
+    //
+    // Every gate above compares single frames for equality -- against a golden,
+    // against another render path, against the other language's renderer. None
+    // of them can see a script that renders a byte-perfect frame every time and
+    // yet only ever shows four of its ten variations, or repeats itself every
+    // 32 draws. There are no wrong pixels in that failure; there is only a
+    // distribution, and it is invisible one frame at a time.
+    //
+    // The usual cause is a pseudo-random sequence read through its low bits.
+    // An LCG with a power-of-two modulus -- including the implicit 2^32 of int
+    // arithmetic -- has bit k repeating with period 2^(k+1). Verified: bits 0-7
+    // have periods 2, 4, 8, 16, 32, 64, 128, 256. So ($seed / 8) % 4 reads bits
+    // 3 and 4 and cannot do better than period 32, however many draws you take.
+    // Reducing modulo a PRIME (32749 rather than 32768) mixes the high bits
+    // back in and breaks the pattern.
+    if (mode == "cycle") {
+        if (positional.empty()) return usage();
+        std::string script;
+        if (!readTextFile(positional[0], script)) {
+            fprintf(stderr, "cannot read script: %s\n", positional[0].c_str());
+            return 1;
+        }
+        const int draws = o.draws > 0 ? o.draws : 64;
+
+        std::vector<uint64_t> hashes;
+        hashes.reserve(draws);
+        for (int c = 0; c < draws; ++c) {
+            RenderSeed seed{c, o.hour, o.minute, o.second};
+            RenderResult r;
+            path->run(script, o.width, o.height, seed, r);
+            if (!r.ok) { fprintf(stderr, "render failed at counter %d: %s\n", c, r.error.c_str()); return 1; }
+            // FNV-1a over the frame. Only equality matters here.
+            uint64_t h = 1469598103934665603ULL;
+            for (uint8_t px : r.image.pixels) { h ^= px; h *= 1099511628211ULL; }
+            hashes.push_back(h);
+        }
+
+        std::set<uint64_t> distinct(hashes.begin(), hashes.end());
+
+        // Smallest p such that frame[i] == frame[i+p] for every i we can check.
+        int periodFound = 0;
+        for (int p = 1; p <= draws / 2; ++p) {
+            bool ok = true;
+            for (int i = 0; i + p < draws && ok; ++i) if (hashes[i] != hashes[i + p]) ok = false;
+            if (ok) { periodFound = p; break; }
+        }
+
+        printf("VARIATION over %d counters (time fixed at %02d:%02d:%02d)\n\n",
+               draws, o.hour, o.minute, o.second);
+        printf("  distinct frames      %d of %d\n", (int)distinct.size(), draws);
+        if (periodFound) printf("  repeats every        %d draws\n", periodFound);
+        else             printf("  repeats every        no repeat within %d draws\n", draws);
+
+        if (periodFound && periodFound < draws) {
+            printf("\n  This script cycles. If that is not deliberate, suspect a\n"
+                   "  pseudo-random value read through its low bits -- a power-of-two\n"
+                   "  modulus gives bit k a period of only 2^(k+1). Reduce modulo a\n"
+                   "  prime instead (32749, not 32768).\n");
+            return 1;
+        }
+        // Deliberately NOT failing on a low distinct-frame count. A script that
+        // legitimately picks one of four positions has four distinct frames
+        // however many times it is drawn, and flagging that would make this
+        // tool cry wolf on correct scripts. The repeat PERIOD is the signal;
+        // the count is context.
+        return 0;
+    }
+
     if (mode == "verify" || mode == "bake") {
         std::vector<std::string> scripts = listCorpus(o.corpus);
         if (scripts.empty()) { fprintf(stderr, "no .mp scripts in %s\n", o.corpus.c_str()); return 1; }
