@@ -176,16 +176,52 @@ What it does not solve:
   redundant.
 - Error messages and editor diagnostics still come from the JS parser unless
   those are routed through WASM too. Two parsers is the deeper problem.
-- It matches the **host** build, not a heap-starved Watchy: the occupancy-map
-  degradation path is `ARDUINO_ARCH_ESP32`-only, so WASM never simulates the
-  Watchy dropping the map under memory pressure.
-- It is 960x540 4bpp. A faithful Watchy preview needs the 200x200 1bpp canvas
-  modelled as well -- the same gap the audit already has.
+Two caveats I stated when first proposing this were **wrong**, and checking them
+turned up a real bug:
+
+- *"It is 960x540 4bpp; a Watchy preview needs the 200x200 1bpp canvas
+  modelled."* No. `mp_render()` already takes width and height, and the
+  4bpp/1bpp distinction does not exist for this DSL: scripts only ever produce
+  `DRAWING_COLOR_WHITE` (0) and `DRAWING_COLOR_BLACK` (15), which is why
+  `watchy_canvas.h` says the M5Paper's nominal 4bpp model maps onto a
+  monochrome panel "with no loss whatsoever". Verified: WASM at 200x200 is
+  byte-identical to native C++ at 200x200 across the corpus.
+- *"It cannot simulate the Watchy dropping its occupancy map."* It can now --
+  and that turned out to matter. See below.
 
 Emscripten is not on `PATH` on this machine. `wasm/build.sh` falls back to the
 one vendored at `qemu-ipod_touch_1g/.wasm-toolchain/emsdk` (4.0.10); set `EMSDK`
 to override. Build output is gitignored -- it is reproducible, and shipping it
 to the editor is a separate decision.
+
+## The occupancy map is load-bearing for correctness, not speed
+
+Chasing the caveat above found a real bug on the Watchy.
+
+`DisplayListRenderer::render()` walked the display list **front-to-back**
+(reverse of painter's order) and relied on `emitPixel()` skipping any pixel
+already written this pass, so the first writer wins and the first writer is the
+front-most item. Remove the occupancy map and the skip disappears:
+later-iterated items -- the ones BEHIND -- overwrite the ones in front.
+
+The Watchy really does remove it. The map is 5KB there, the heap fragments to a
+~26KB largest free block mid-render, and `initPixelOccupationMap()` drops it and
+carries on -- under a comment claiming that costs *"speed, not correctness"*.
+
+Measured with a `displaylist-nomap` harness path that simulates exactly that:
+
+    0 identical, 15 differing      <- every image in the corpus
+
+It cost correctness. `render()` now checks whether the map is live and falls
+back to plain painter's order, back-to-front, where overwriting is the intended
+behaviour and no map is needed. Occlusion culling is disabled in that mode,
+since "is this already covered by something nearer?" is always no in painter's
+order. After the fix:
+
+    15 identical, 0 differing
+
+A memory-starved Watchy now draws the same picture, just slower. The misleading
+comment is corrected in place.
 
 ## Still open
 

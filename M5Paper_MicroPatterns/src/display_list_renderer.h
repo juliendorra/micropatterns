@@ -41,6 +41,13 @@ public:
     // two renders ever differ, the culling is wrong, and that is a silent
     // class of bug no golden image can catch on its own.
     void setOcclusionEnabled(bool on) { _occlusionEnabled = on; }
+
+    // Simulates the device failing to allocate the pixel occupancy map, which
+    // the Watchy really does when the heap is fragmented (see
+    // MicroPatternsDrawing::initPixelOccupationMap). Exists so the harness can
+    // check what that costs -- the comment there claims "speed, not
+    // correctness", and this is how that claim gets tested rather than trusted.
+    void setOccupancyMapEnabled(bool on) { _occupancyMapEnabled = on; }
     // Pixels the drawing layer skipped because the pixel-occupation map said
     // they were already covered. Already tracked by MicroPatternsDrawing and
     // already logged by render(); this getter just exposes it to callers
@@ -68,6 +75,7 @@ private:
     int _culledOffScreen;
     int _culledByOcclusion; // Items culled by occlusion buffer
     bool _occlusionEnabled = true;
+    bool _occupancyMapEnabled = true;
 
     std::function<bool()> _interrupt_check_cb;
 

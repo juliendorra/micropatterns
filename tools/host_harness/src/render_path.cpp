@@ -26,9 +26,10 @@ public:
     // produce byte-identical images. `compare-paths displaylist
     // displaylist-noocc` is what actually checks that; a golden image alone
     // cannot, because it only ever exercises one of the two.
-    explicit DisplayListPath(bool occlusion = true)
-        : _occlusion(occlusion),
-          _name(occlusion ? "displaylist" : "displaylist-noocc") {}
+    explicit DisplayListPath(bool occlusion = true, bool occupancyMap = true)
+        : _occlusion(occlusion), _occupancyMap(occupancyMap),
+          _name(!occupancyMap ? "displaylist-nomap"
+                              : (occlusion ? "displaylist" : "displaylist-noocc")) {}
 
     const char* name() const override { return _name; }
 
@@ -74,6 +75,7 @@ public:
         DisplayListRenderer renderer(displayMgr.getCanvas(), parser.getAssets(),
                                      displayMgr.getWidth(), displayMgr.getHeight());
         renderer.setOcclusionEnabled(_occlusion);
+        renderer.setOccupancyMapEnabled(_occupancyMap);
         t0 = std::chrono::steady_clock::now();
         renderer.render(runtime.getDisplayList());
         out.timings.rasterizeMs = msSince(t0);
@@ -110,6 +112,7 @@ public:
 
 private:
     bool _occlusion;
+    bool _occupancyMap;
     const char* _name;
 };
 
@@ -118,9 +121,11 @@ private:
 std::unique_ptr<RenderPath> makeRenderPath(const std::string& name) {
     if (name == "displaylist") return std::unique_ptr<RenderPath>(new DisplayListPath(true));
     if (name == "displaylist-noocc") return std::unique_ptr<RenderPath>(new DisplayListPath(false));
+    // What a Watchy renders when it cannot allocate the occupancy map.
+    if (name == "displaylist-nomap") return std::unique_ptr<RenderPath>(new DisplayListPath(true, false));
     return nullptr;
 }
 
 std::vector<std::string> availableRenderPaths() {
-    return {"displaylist", "displaylist-noocc"};
+    return {"displaylist", "displaylist-noocc", "displaylist-nomap"};
 }

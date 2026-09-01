@@ -226,7 +226,7 @@ void DisplayListRenderer::render(const std::vector<DisplayListItem>& displayList
     _culledOffScreen = 0;
     _culledByOcclusion = 0;
     
-    _drawing.enablePixelOccupationMap(true); // Enable for this render pass
+    _drawing.enablePixelOccupationMap(_occupancyMapEnabled); // Enable for this render pass
     _occlusionBuffer.reset(); // Reset occlusion buffer state
     _drawing.clearCanvas();   // Clear canvas to white (this will also call _drawing.resetPixelOccupationMap())
 
@@ -247,7 +247,31 @@ void DisplayListRenderer::render(const std::vector<DisplayListItem>& displayList
     // is 7% of the render. Closing that needs a per-scanline check in
     // micropatterns_drawing.cpp's drawPixel()/drawFilledPixel(); it cannot be done
     // from here, because each primitive computes its own screen bounds.
-    for (auto it = displayList.rbegin(); it != displayList.rend(); ++it) {
+    // ORDER DEPENDS ON THE OCCUPANCY MAP, and this is not an optimisation
+    // detail -- it is correctness.
+    //
+    // The fast path walks the list FRONT-TO-BACK (reverse of painter's order)
+    // and relies on emitPixel() skipping any pixel already written this pass,
+    // so the first writer wins and that first writer is the front-most item.
+    // Take the map away and the skip disappears: later-iterated items, which
+    // are the ones BEHIND, overwrite the ones in front. Every image in the
+    // corpus changes.
+    //
+    // That is not hypothetical. The Watchy genuinely fails to allocate this map
+    // when the heap is fragmented -- it is 5KB there and the largest free block
+    // can fall to ~26KB mid-render -- and initPixelOccupationMap() drops it and
+    // carries on, with a comment claiming that costs "speed, not correctness".
+    // It cost correctness. Measured: 15 of 15 corpus images differ.
+    //
+    // So without the map, fall back to plain painter's order, back-to-front,
+    // where overwriting is exactly what you want. Slower (every overlapped
+    // pixel is written more than once) and correct.
+    const bool frontToBack = (_drawing.occupancyBase() != nullptr);
+
+    const size_t n = displayList.size();
+    for (size_t k = 0; k < n; ++k) {
+        const DisplayListItem& itemRef = frontToBack ? displayList[n - 1 - k] : displayList[k];
+        auto it = &itemRef;
         if (_interrupt_check_cb && _interrupt_check_cb()) {
             log_i("DisplayListRenderer: Interrupt detected during rendering loop.");
             _drawing.enablePixelOccupationMap(false); // do not leave the pass flag set
@@ -268,7 +292,10 @@ void DisplayListRenderer::render(const std::vector<DisplayListItem>& displayList
             continue;
         }
 
-        if (_occlusionEnabled && item.isOpaque) { // Only check occlusion for opaque items
+        // Occlusion culling only makes sense front-to-back: it asks "is this
+        // already covered by something nearer?", which in painter's order is
+        // always no.
+        if (_occlusionEnabled && frontToBack && item.isOpaque) {
             // Use visual bounds for occlusion check
             if (_occlusionBuffer.isAreaOccluded(bounds.minX, bounds.minY, bounds.maxX, bounds.maxY)) {
                 _culledByOcclusion++;
@@ -279,7 +306,7 @@ void DisplayListRenderer::render(const std::vector<DisplayListItem>& displayList
         renderItem(item);
         _renderedItems++;
 
-        if (_occlusionEnabled && item.isOpaque) {
+        if (_occlusionEnabled && frontToBack && item.isOpaque) {
             // Mark from the pixels this item ACTUALLY painted, not from an
             // estimate of its shape. See OcclusionBuffer::updateFromPixelMap().
             _occlusionBuffer.updateFromPixelMap(bounds.minX, bounds.minY,

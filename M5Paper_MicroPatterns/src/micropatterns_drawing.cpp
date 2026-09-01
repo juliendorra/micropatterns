@@ -144,8 +144,13 @@ void MicroPatternsDrawing::initPixelOccupationMap() {
             // heap down to a ~26KB largest block. Switching to that script
             // aborted and rebooted every time.
             //
-            // The occupation map is only an overdraw optimisation, so dropping
-            // it costs speed, not correctness. Slower is better than a reboot.
+            // Dropping the map is safe ONLY because DisplayListRenderer checks
+            // for it and falls back to painter's order. It is not merely an
+            // overdraw optimisation: the fast path walks the display list
+            // front-to-back and depends on this map to make the first writer
+            // win. An earlier version of this comment claimed dropping it cost
+            // "speed, not correctness" -- measured, it changed all 15 corpus
+            // images. See the ordering comment in display_list_renderer.cpp.
             const size_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
             if (largest < need + 4096) {   // margin for allocator overhead
                 _pixelOccupationMap.clear();
