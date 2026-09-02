@@ -10,10 +10,18 @@
 // wasm/ across. The glue is mp_render.js -- see build.sh for why not .mjs. They are committed because this page is deployed as
 // static files over FTP with no build step.
 
+// .js, never .mjs: the static host serves .mjs with no Content-Type and the
+// browser refuses to execute it as a module. See tools/host_harness/wasm/build.sh.
+//
+// Only `reference` is committed and deployed today. The per-device constrained
+// builds (tools/host_harness/wasm/build_constrained.sh) are in progress; until
+// their files are copied into wasm/, asking for them falls back to `reference`
+// rather than breaking the editor -- which is exactly what happened in
+// production when `m5paper` was the default and its module did not exist.
 const MODULE_PATHS = {
     reference: './wasm/mp_render.js',
-    watchy: './wasm/mp_render_watchy.mjs',
-    m5paper: './wasm/mp_render_m5paper.mjs',
+    watchy: './wasm/mp_render_watchy.js',
+    m5paper: './wasm/mp_render_m5paper.js',
 };
 const modulePromises = new Map();
 
@@ -26,14 +34,24 @@ function loadModule(profile) {
     if (!modulePromises.has(profile)) {
         const promise = import(MODULE_PATHS[profile])
             .then((m) => m.default())
-            .catch((e) => { modulePromises.delete(profile); throw e; });
+            .catch((e) => {
+                modulePromises.delete(profile);
+                if (profile !== 'reference') {
+                    // A missing or broken variant must not take the editor down.
+                    console.warn(`Device profile '${profile}' unavailable (${e && e.message ? e.message : e}); using 'reference'.`);
+                    return loadModule('reference');
+                }
+                throw e;
+            });
         modulePromises.set(profile, promise);
     }
     return modulePromises.get(profile);
 }
 
 export class DeviceRenderer {
-    constructor(profile = 'm5paper') {
+    // Default is the committed, deployed build. Callers opt into a device
+    // profile explicitly once its module actually ships.
+    constructor(profile = 'reference') {
         this.profile = profile;
         this.deviceState = 0;
         this.modules = new Map();
@@ -53,7 +71,10 @@ export class DeviceRenderer {
         const profile = this.profile;
         if (!this.modules.has(profile)) {
             const M = await loadModule(profile);
-            const constrained = profile !== 'reference';
+            // Decide by what the module actually exports, not by the name asked
+            // for: a fallback to `reference` must not try to cwrap symbols that
+            // are not there.
+            const constrained = typeof M._mp_set_device_state === 'function';
             const wrapped = {
                 M,
                 constrained,
