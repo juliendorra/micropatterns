@@ -31,6 +31,12 @@ Read this section before quoting any number from this tool.
 here is *probably* faster on device, and the harness will tell you where the
 time went — but the ratio will not transfer. Confirm on hardware.
 
+The separate constrained WebAssembly builds are narrower **resource
+simulators**. They use version-matched Arduino String and ESP-IDF multi-heap
+implementations to reproduce allocation placement and OOM boundaries, but they
+still do not simulate CPU time, watchdogs, scheduling, or the panel. See
+`docs/analysis/wasm-device-resource-fidelity.md`.
+
 ---
 
 ## Why `verify` is the important mode
@@ -117,6 +123,32 @@ build_soak/mpsoak [--width W --height H --renders N] <script.mp> ...
 Make targets wrap the common ones: `make list`, `make verify`, `make bench`,
 `make bake`, plus the memory-safety gates `make sanitize`, `make verify-strict`
 and `make soak`.
+
+### Required CI and drift gates
+
+`make ci` is the pre-deploy aggregate. It deliberately checks more than pixel
+goldens:
+
+- native golden parity, sweep audits, ASan/UBSan, and strict null-String stress;
+- the shared renderer-source manifest across M5Paper, Watchy, the native
+  harness, and both WASM build families;
+- canonical WASM golden parity and positive/negative parser-language contracts;
+- constrained allocator behavior, reboot recovery, device lifecycle, radio
+  states, and the City 2 sweep;
+- byte-for-byte freshness of all six committed online-editor `.js`/`.wasm`
+  artifacts against clean builds.
+
+GitHub Actions runs this aggregate plus real PlatformIO builds for Watchy 2 and
+M5Paper on every push and pull request. The FTP editor deployment depends on
+both jobs, so it cannot publish a renderer that fails the gates. A scheduled
+weekly job separately runs the longer generated parser/runtime lifetime soak.
+
+Run the same checks locally with:
+
+```sh
+make ci
+make soak   # slower, scheduled/manual in CI
+```
 
 ### `render`
 
@@ -210,7 +242,7 @@ directories, so they never disturb `build/` or a benchmark:
 
 ```sh
 make sanitize        # golden gate under -fsanitize=address,undefined
-make verify-strict   # the same, plus -DMP_SHIM_NULL_CSTR=1 (device NULL c_str())
+make verify-strict   # the same, plus aggressive NULL-c_str() stress
 make soak            # lifetime + determinism soak, no goldens needed
 ```
 
@@ -323,18 +355,17 @@ range, and `begin()`/`end()` (ESP32's `WString.h` exposes these, and
   allocation.
 
 **A correctness difference, not just a benchmarking one — `c_str()` can be
-NULL on device.** ESP32's `String::c_str()` returns the raw `buffer` pointer,
-and `String::init()` sets that pointer to `nullptr`
-(`framework-arduinoespressif32/cores/esp32/WString.cpp`). So a default-constructed
-or empty `String` yields **`c_str() == nullptr`** on hardware, while the
-std::string-backed shim always yields `""`. Any firmware code that does
-`strcmp` / `strcasecmp` on a possibly-empty `String`, or indexes `c_str()[0]`,
-is therefore safe on the host and a null dereference on device — invisible to
-every golden.
+NULL on device.** ESP32's `String::c_str()` returns its raw buffer. The exact
+Arduino cores used by the constrained builds keep an ordinary empty String in
+SSO storage, but an invalid String (notably after allocation failure) can still
+have a null buffer. The std::string-backed native shim cannot naturally model
+that state.
 
-Build with **`-DMP_SHIM_NULL_CSTR=1`** to make the shim return `nullptr` for an
-empty string and reproduce that. `make verify-strict` does exactly this, under
-sanitizers.
+Build with **`-DMP_SHIM_NULL_CSTR=1`** to make the native shim return `nullptr`
+for every empty string. This is intentionally more aggressive than the exact
+device behavior: it is a null-safety stress test, not a WString compatibility
+claim. `make verify-strict` runs it under sanitizers. The constrained WASM path
+uses the version-matched WString source instead.
 
 ### Float
 
@@ -360,8 +391,7 @@ allocation is cheap.
 
 ## Firmware-source edits
 
-The whole point of this harness is not to perturb what it measures. **Exactly
-one** firmware file was modified, additively:
+The initial harness added only this observability hook to firmware:
 
 1. **`M5Paper_MicroPatterns/src/display_list_renderer.h`** — added an inline
    getter:
@@ -377,8 +407,10 @@ one** firmware file was modified, additively:
    report "pixels skipped by the occupancy map", which is one of the required
    counters.
 
-No `.cpp` in the firmware was touched. No refactoring, no cleanup, no
-reformatting.
+The later device-fidelity work also defined signed DSL arithmetic as explicit
+32-bit two's-complement wrapping in `micropatterns_runtime.cpp`. ESP32 already
+behaved that way in practice; making it defined C++ prevents host sanitizer and
+optimizer drift while preserving the established golden images.
 
 `display_manager.h` is used **verbatim**: it parses on the host once
 `M5EPD.h` and the freertos headers are shimmed. The method *bodies* live in

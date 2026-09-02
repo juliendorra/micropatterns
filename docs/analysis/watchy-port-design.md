@@ -950,10 +950,12 @@ shipped.** See the correction below the table.*
 >    a real, reproducible Watchy abort: parsing the largest script fragmented the heap down to a
 >    **~26 KB largest free block**, so the occupancy map's allocation called `abort()` mid-render and
 >    the watch rebooted. The fix shipped was to check `heap_caps_get_largest_free_block()` and degrade
->    to painter's order. That is a graceful failure, not a solved problem — the fragmentation comes from
->    the parse tree's thousands of small `String` and tree-node allocations, which is precisely what
->    follow-on optimisation 2 (flattened bytecode) removes. **Reweight it accordingly: it is no longer
->    a "defer until measured" item, because it has now been measured, by a crash.**
+>    to painter's order. That is a graceful failure, not a solved problem. Exact constrained-WASM
+>    reproduction later showed that Arduino String growth and the parse tree fragment the heap enough
+>    for a subsequent **display-list** vector growth to fail. VM bytecode does not inherently fix that:
+>    compiling the retained tree to bytecode can increase peak memory. A direct-to-compact-IR parser
+>    would reduce parser nodes; streaming or a compact render list addresses display-list growth.
+>    See `wasm-device-resource-fidelity.md`.
 
 **(b) Streaming renderer — recommended.** Delete the display list. Delete the occupancy map. Delete
 the occlusion buffer. Interpret the command tree and rasterize each primitive immediately into the
