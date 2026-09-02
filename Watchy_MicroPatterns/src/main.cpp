@@ -45,6 +45,7 @@
 #include "driver/uart.h"
 #include "nvs.h"
 #include "esp_partition.h"
+#include "esp_attr.h"
 
 #ifndef MP_NVS_SCREEN
 #define MP_NVS_SCREEN 0
@@ -105,6 +106,17 @@ struct ScriptEntry { String humanId; String name; String fileId; };
 static std::vector<ScriptEntry> g_scripts;
 
 static int  g_currentScript = 0;
+
+// A render can exhaust the fragmented heap and abort() before setup reaches
+// loop(). RTC slow memory survives that reboot without adding an NVS write on
+// every 77-second render. If this marker is still armed on the next boot, the
+// saved script did not finish and must not be attempted again immediately.
+static const uint32_t RENDER_GUARD_MAGIC = 0x4d505247; // "MPRG"
+RTC_NOINIT_ATTR static volatile uint32_t g_renderGuardMagic;
+RTC_NOINIT_ATTR static volatile uint32_t g_renderGuardScriptHash;
+RTC_NOINIT_ATTR static volatile uint32_t g_renderCrashCount;
+static bool g_renderRecoverySafeMode = false;
+static bool g_continueRenderCrashStreak = false;
 
 // Title browsing. A press shows the next script's name at once and arms a
 // timer; the render only starts once the presses stop. Same value and same
@@ -182,6 +194,32 @@ static void renderIfSettled();
 static bool anyButtonDown();
 static void syncScripts(bool announce);
 static bool syncTimeFromNTP();
+
+static uint32_t scriptIdHash(const String& id)
+{
+    uint32_t hash = 2166136261u; // FNV-1a
+    for (size_t i = 0; i < id.length(); ++i) {
+        hash ^= (uint8_t)id[i];
+        hash *= 16777619u;
+    }
+    return hash;
+}
+
+static void armRenderGuard(const String& id)
+{
+    // Magic is written last, so a reset between these stores cannot make a
+    // partially-written marker look valid.
+    if (!g_continueRenderCrashStreak) g_renderCrashCount = 0;
+    g_continueRenderCrashStreak = false;
+    g_renderGuardScriptHash = scriptIdHash(id);
+    g_renderGuardMagic = RENDER_GUARD_MAGIC;
+}
+
+static void disarmRenderGuard(bool completed)
+{
+    g_renderGuardMagic = 0;
+    if (completed) g_renderCrashCount = 0;
+}
 
 // --- Panel update policy --------------------------------------------------
 //
@@ -443,7 +481,9 @@ static void showScript(int index, bool announce)
     // Survives a reboot, same as on the M5Paper.
     if (g_scriptManager) g_scriptManager->saveCurrentScriptId(humanId);
     g_lastRenderMs = millis();
+    armRenderGuard(humanId);
     if (!renderScript(g_currentScript, state)) {
+        disarmRenderGuard(false);
         // renderScript() has already shown the specific reason where it knows
         // one, and says nothing at all when the user simply pressed on.
         //
@@ -453,6 +493,8 @@ static void showScript(int index, bool announce)
         log_i("Render did not complete for index %d", g_currentScript);
         return;
     }
+    disarmRenderGuard(true);
+    g_renderRecoverySafeMode = false;
     if (g_scriptManager) g_scriptManager->saveScriptExecutionState(humanId, state);
 }
 
@@ -985,7 +1027,10 @@ void setup()
 
     const bool haveLocal = loadScriptIndex();
 
-    // Restore whatever was showing before the last reboot.
+    // Resolve the saved selection before accepting recovery commands. If the
+    // RTC marker still names it, the previous boot died inside that script.
+    // Skip forward once; after three consecutive render crashes, stop all
+    // automatic rendering and leave the console/buttons alive for recovery.
     if (haveLocal) {
         String currentId;
         if (g_scriptManager->getCurrentScriptId(currentId) && currentId.length()) {
@@ -993,7 +1038,56 @@ void setup()
                 if (g_scripts[i].humanId == currentId) { g_currentScript = (int)i; break; }
             }
         }
-        showScript(g_currentScript, true);
+
+        const bool unfinished = g_renderGuardMagic == RENDER_GUARD_MAGIC &&
+            g_renderGuardScriptHash == scriptIdHash(g_scripts[g_currentScript].humanId);
+        if (unfinished) {
+            const String failedName = g_scripts[g_currentScript].name;
+            if (g_renderCrashCount < 3) g_renderCrashCount++;
+            disarmRenderGuard(false);
+            g_continueRenderCrashStreak = true;
+
+            if (g_renderCrashCount >= 3) {
+                g_renderRecoverySafeMode = true;
+                Serial.printf("MPCON|recovery safe-mode after %u render crashes; "
+                              "last='%s' -- send: run <index>\n",
+                              (unsigned)g_renderCrashCount, failedName.c_str());
+            } else {
+                g_currentScript = (g_currentScript + 1) % (int)g_scripts.size();
+                Serial.printf("MPCON|recovery skipped crashed script '%s'; trying '%s'\n",
+                              failedName.c_str(), g_scripts[g_currentScript].name.c_str());
+            }
+        } else if (g_renderGuardMagic == RENDER_GUARD_MAGIC) {
+            // The script list or saved selection changed while the marker was
+            // armed. It no longer identifies the boot target, so it is stale.
+            disarmRenderGuard(true);
+        }
+    } else if (g_renderGuardMagic == RENDER_GUARD_MAGIC) {
+        disarmRenderGuard(true);
+    }
+
+    // Recovery window: a saved script can abort before setup reaches loop(),
+    // which otherwise makes the serial console impossible to use to select a
+    // different one. Commands received here (notably `run <index>`) replace
+    // /current_script.id before the normal boot render below.
+    Serial.println("MPCON|recovery -- send: run <index>"); Serial.flush();
+    const unsigned long recoveryUntil = millis() + 5000;
+    while ((long)(millis() - recoveryUntil) < 0) {
+        pollSerial();
+        delay(10);
+    }
+
+    // A successful `run` in the window already rendered and persisted the new
+    // selection, so do not render it a second time. In safe mode, do not render
+    // anything automatically: the whole point is to keep loop() reachable.
+    if (haveLocal) {
+        if (g_renderRecoverySafeMode) {
+            g_lastRenderMs = millis();
+            showNotice("Recovery mode", "Repeated script crashes",
+                       "send: run <index>", "serial console is active");
+        } else if (g_lastRenderMs == 0) {
+            showScript(g_currentScript, true);
+        }
     } else {
         // Nothing on the device: a first sync is the only useful thing to do.
         // Deliberately NOT done when scripts already exist -- boot must be fast
@@ -1102,7 +1196,8 @@ void loop()
     // Periodic re-render, so time-dependent scripts keep advancing on their own.
     // Deliberately checked BEFORE the buttons: if a press arrives during the
     // render the button handler simply sees it on the next pass.
-    if (millis() - g_lastRenderMs >= AUTO_RERUN_INTERVAL_MS) {
+    if (!g_renderRecoverySafeMode &&
+        millis() - g_lastRenderMs >= AUTO_RERUN_INTERVAL_MS) {
         log_i("Auto re-render after %lus idle", AUTO_RERUN_INTERVAL_MS / 1000);
         showScript(g_currentScript, false);   // no title: same script
     }
