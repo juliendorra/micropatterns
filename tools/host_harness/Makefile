@@ -11,6 +11,7 @@
 #   make audit-sweep  the sweep gate, including the cases that must FAIL
 #   make wasm       build the firmware renderer to WebAssembly (needs emsdk)
 #   make verify-wasm  byte-compare the WASM build against the goldens
+#   make ci          complete required engine/emulator drift gate
 #   make clean
 
 CXX      ?= c++
@@ -101,13 +102,11 @@ profile: clean all
 #           expression evaluation becomes a hard failure with a stack trace,
 #           instead of a slightly wrong pixel or nothing at all.
 #
-# STRICT    also -DMP_SHIM_NULL_CSTR=1, which makes the shim's String::c_str()
-#           return NULL for an empty string. That is what the ESP32's WString
-#           actually does (String::init sets buffer to nullptr), and it is a
-#           fidelity gap that hides device-only null dereferences: any code that
-#           does strcmp/strcasecmp on a possibly-empty String, or indexes
-#           c_str()[0], is safe on a std::string-backed shim and crashes on
-#           hardware. -O1 keeps sanitizer stacks readable.
+# STRICT    also -DMP_SHIM_NULL_CSTR=1, an aggressive null-safety stress mode.
+#           Exact WString is used by constrained WASM; this std::string shim
+#           deliberately returns NULL for every empty string to expose callers
+#           that assume c_str() is always valid. -O1 keeps sanitizer stacks
+#           readable.
 # ---------------------------------------------------------------------------
 SAN_FLAGS := -std=c++17 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer \
              -Wall -Wno-unused-variable -Wno-sign-compare \
@@ -115,15 +114,17 @@ SAN_FLAGS := -std=c++17 -O1 -g -fsanitize=address,undefined -fno-omit-frame-poin
 
 .PHONY: sanitize verify-strict soak stress stress-clean
 
-# Golden gate, rebuilt under sanitizers + the device-accurate NULL c_str().
+# Golden gate, rebuilt under sanitizers + aggressive NULL-c_str() stress.
 verify-strict:
 	$(MAKE) BUILD=build_strict CXXFLAGS="$(SAN_FLAGS) -DMP_SHIM_NULL_CSTR=1" build_strict/mpharness
-	build_strict/mpharness verify --corpus corpus --golden golden
+	ASAN_OPTIONS=halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1 \
+		build_strict/mpharness verify --corpus corpus --golden golden
 
 # Golden gate under sanitizers only (no shim behaviour change).
 sanitize:
 	$(MAKE) BUILD=build_san CXXFLAGS="$(SAN_FLAGS)" build_san/mpharness
-	build_san/mpharness verify --corpus corpus --golden golden
+	ASAN_OPTIONS=halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1 \
+		build_san/mpharness verify --corpus corpus --golden golden
 
 $(BUILD)/mpsoak: $(patsubst $(SRC)/%.cpp,$(BUILD)/h_%.o,$(SOAK_SRCS)) $(CORE_OBJS)
 	$(CXX) $(CXXFLAGS) $^ -o $@
@@ -134,7 +135,8 @@ $(BUILD)/mpsoak: $(patsubst $(SRC)/%.cpp,$(BUILD)/h_%.o,$(SOAK_SRCS)) $(CORE_OBJ
 # No goldens needed, so scripts can be added freely -- including generated ones.
 soak: stress/generated
 	$(MAKE) BUILD=build_soak CXXFLAGS="$(SAN_FLAGS) -DMP_SHIM_NULL_CSTR=1" build_soak/mpsoak
-	build_soak/mpsoak --renders 24 stress/*.mp stress/generated/*.mp
+	ASAN_OPTIONS=halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1 \
+		build_soak/mpsoak --renders 24 stress/*.mp stress/generated/*.mp
 
 stress/generated:
 	python3 stress/generate.py --count 40 --out-dir stress/generated
@@ -154,12 +156,51 @@ clean:
 #
 # Needs an emsdk; wasm/build.sh explains where it looks. Output is gitignored --
 # it is reproducible, and deploying it is a separate decision.
-.PHONY: wasm verify-wasm
+.PHONY: wasm verify-wasm verify-language-wasm wasm-constrained \
+	verify-wasm-constrained verify-source-parity verify-emulator-wasm \
+	sync-wasm sync-wasm-constrained ci
 wasm:
 	./wasm/build.sh
 
 verify-wasm: wasm
 	node wasm/verify.mjs
+
+verify-language-wasm: wasm
+	node wasm/verify_language.mjs
+
+wasm-constrained:
+	./wasm/build_constrained.sh
+
+verify-wasm-constrained: wasm wasm-constrained
+	node wasm/verify_constrained.mjs
+
+sync-wasm-constrained:
+	./wasm/sync_constrained_to_emulator.sh
+
+sync-wasm:
+	./wasm/sync_to_emulator.sh
+
+verify-source-parity:
+	node ../ci/verify-renderer-source-parity.mjs
+
+# The online editor commits generated files because FTP deployment has no build
+# step. Compare bytes, not timestamps or git state, so this also catches absent
+# and untracked artifacts in a fresh checkout.
+verify-emulator-wasm: wasm wasm-constrained
+	@for file in mp_render.js mp_render.wasm \
+		mp_render_watchy.js mp_render_watchy.wasm \
+		mp_render_m5paper.js mp_render_m5paper.wasm; do \
+		cmp "wasm/out/$$file" "../../micropatterns_emulator/wasm/$$file" || { \
+			echo "STALE emulator WASM artifact: $$file" >&2; \
+			exit 1; \
+		}; \
+	done
+	@echo "PASS  online-editor WASM artifacts match fresh builds"
+
+# Required pre-deploy gate. The longer generated lifetime soak remains a
+# scheduled/manual CI job; these checks are deterministic and run on every push.
+ci: verify audit-sweep sanitize verify-strict verify-source-parity \
+	verify-wasm verify-language-wasm verify-wasm-constrained verify-emulator-wasm
 
 # --- variation, not equality ------------------------------------------------
 # Every other gate here compares single frames. None of them can see a script
@@ -180,5 +221,5 @@ sweep:
 # The sweep gate. Two cases must FAIL, so expectations are declared per case --
 # a negative test is only a test if something checks it still goes negative.
 # Also verifies the city.mp probes are still verbatim copies of their source.
-audit-sweep:
+audit-sweep: $(BIN)
 	./probe/audit_sweep.sh

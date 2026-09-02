@@ -117,9 +117,12 @@ EMSCRIPTEN_KEEPALIVE void mp_set_device_state(int state)
     mpDeviceSetRequestedState(static_cast<MpDeviceState>(state));
 }
 EMSCRIPTEN_KEEPALIVE const char* mp_device_profile() { return mpDeviceProfileName(); }
+EMSCRIPTEN_KEEPALIVE const char* mp_device_arduino() { return mpDeviceArduinoVersion(); }
 EMSCRIPTEN_KEEPALIVE const char* mp_device_idf() { return mpDeviceIdfVersion(); }
 EMSCRIPTEN_KEEPALIVE int mp_device_profile_calibrated()
     { return mpDeviceProfileCalibrated() ? 1 : 0; }
+EMSCRIPTEN_KEEPALIVE int mp_device_state_calibrated()
+    { return mpDeviceStateCalibrated() ? 1 : 0; }
 EMSCRIPTEN_KEEPALIVE unsigned int mp_mem_allocation_calls()
     { return mpDeviceTelemetry().allocationCalls; }
 EMSCRIPTEN_KEEPALIVE unsigned int mp_mem_realloc_calls()

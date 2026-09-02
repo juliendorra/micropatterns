@@ -1,6 +1,8 @@
 #include "micropatterns_runtime.h"
 #include "esp32-hal-log.h"
 #include <Arduino.h>
+#include <limits.h>
+#include <stdint.h>
 #include <string.h>
 #include <strings.h> // strcasecmp
 #include "mp_wdt.h"
@@ -18,6 +20,29 @@ const TransformSnapshot kIdentityTransform;
 // instance wrote against a different slot table. Starts at 1: the default memo
 // epoch is 0, which must never match.
 static uint32_t s_runtimeEpochCounter = 0;
+
+// MicroPatterns arithmetic is explicitly signed 32-bit with two's-complement
+// wrap, matching both ESP32 targets. Performing overflowing operations on a
+// C++ `int` is undefined behavior and lets host/WASM optimizers drift from the
+// devices, so do the operation in uint32_t and preserve its resulting bits.
+static int wrapI32(uint32_t bits) {
+    int32_t value;
+    static_assert(sizeof(value) == sizeof(bits), "32-bit arithmetic required");
+    memcpy(&value, &bits, sizeof(value));
+    return value;
+}
+
+static int addI32(int left, int right) {
+    return wrapI32((uint32_t)left + (uint32_t)right);
+}
+
+static int subI32(int left, int right) {
+    return wrapI32((uint32_t)left - (uint32_t)right);
+}
+
+static int mulI32(int left, int right) {
+    return wrapI32((uint32_t)left * (uint32_t)right);
+}
 
 MicroPatternsRuntime::MicroPatternsRuntime(int canvasWidth, int canvasHeight, const std::map<String, MicroPatternsAsset>& assets)
     : _assets(assets), _interrupt_requested(false), _interrupt_check_cb(nullptr),
@@ -314,9 +339,20 @@ int MicroPatternsRuntime::evaluateExpressionRange(const std::vector<ParamValue>&
             int leftVal = pass1Result.back().value; pass1Result.pop_back();
             int rightVal = resolved[i + 1].value;
             int result = 0;
-            if (opStr[0] == '*') result = leftVal * rightVal;
-            else if (opStr[0] == '/') { if (rightVal == 0) { runtimeError("Division by zero.", lineNumber); return 0; } result = leftVal / rightVal; }
-            else { if (rightVal == 0) { runtimeError("Modulo by zero.", lineNumber); return 0; } result = leftVal % rightVal; }
+            if (opStr[0] == '*') {
+                result = mulI32(leftVal, rightVal);
+            } else if (opStr[0] == '/') {
+                if (rightVal == 0) { runtimeError("Division by zero.", lineNumber); return 0; }
+                // INT_MIN / -1 is the only overflowing signed division. Its
+                // 32-bit wrapped result is INT_MIN; define it rather than rely
+                // on compiler/CPU-specific overflow behavior.
+                result = (leftVal == INT_MIN && rightVal == -1)
+                    ? INT_MIN : leftVal / rightVal;
+            } else {
+                if (rightVal == 0) { runtimeError("Modulo by zero.", lineNumber); return 0; }
+                result = (leftVal == INT_MIN && rightVal == -1)
+                    ? 0 : leftVal % rightVal;
+            }
             pass1Result.push_back(EvalTok{result, nullptr});
             i++; // Skip right operand
         } else {
@@ -332,8 +368,8 @@ int MicroPatternsRuntime::evaluateExpressionRange(const std::vector<ParamValue>&
         }
         const char* op = pass1Result[i].op->stringValue.c_str();
         int rightVal = pass1Result[i + 1].value;
-        if (op[0] == '+' && op[1] == '\0') finalResult += rightVal;
-        else if (op[0] == '-' && op[1] == '\0') finalResult -= rightVal;
+        if (op[0] == '+' && op[1] == '\0') finalResult = addI32(finalResult, rightVal);
+        else if (op[0] == '-' && op[1] == '\0') finalResult = subI32(finalResult, rightVal);
         else { runtimeError("Unexpected operator in AS pass: " + pass1Result[i].op->stringValue, lineNumber); return 0; }
     }
     return finalResult;

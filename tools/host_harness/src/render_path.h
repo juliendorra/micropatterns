@@ -69,4 +69,10 @@ public:
 std::unique_ptr<RenderPath> makeRenderPath(const std::string& name);
 std::vector<std::string> availableRenderPaths();
 
+#if MP_DEVICE_CONSTRAINTS
+// Drops persistent device-owned render objects after a simulated fatal OOM.
+// The next render starts from that profile's reboot/task-start boundary.
+void resetDeviceRenderSessionAfterFailure();
+#endif
+
 #endif // HOST_HARNESS_RENDER_PATH_H
