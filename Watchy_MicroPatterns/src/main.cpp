@@ -254,9 +254,10 @@ static const int WATCHY_DEGHOST_INTERVAL = 24;
 //
 // 83 is coprime with 60. Successive renders therefore advance by 23 seconds
 // modulo a minute and visit every second exactly once before repeating, rather
-// than sampling a small fixed subset of seconds. The old 77-second cadence also
-// had full coverage (stride 17); 83 changes the scattered traversal while
-// retaining that property and is deliberately different from the M5Paper.
+// than sampling a small fixed subset of seconds. The old 77-second cadence had
+// the same full coverage, but 7 * 17 = -1 (mod 60), so it starts shadowing its
+// earlier samples one second away after only 7 wakes. With stride 23 that first
+// happens after 13 wakes (13 * 23 = -1 mod 60), improving short-run scatter.
 //
 // NOT power-optimised. The M5Paper spends this interval in light sleep; this
 // firmware stays awake in loop(). Battery life is a known open item for the

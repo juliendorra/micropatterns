@@ -720,6 +720,33 @@ mathematical property; it selects a different scattered traversal while
 preserving it. Primality is useful shorthand here, but coprimality with 60 is
 the property the schedule depends on.
 
+Full coverage does not mean equally good short-run dispersion. With the old
+17-second stride,
+
+```text
+7 * 17 = 119 = 2 * 60 - 1
+```
+
+so after only seven wakes the sequence lands one second before an offset it has
+already sampled. The opening sequence `0, 17, 34, 51, 8, 25, 42, 59, 16, ...`
+then resembles the previous batch shifted backwards by one second.
+
+For the new 23-second stride, the first adjacent return is later:
+
+```text
+13 * 23 = 299 = 5 * 60 - 1
+```
+
+No smaller positive multiplier of 23 is congruent to `+1` or `-1` modulo 60.
+It therefore takes 13 wakes before a sample lands next to an earlier one. The
+ratio `23/60` is also close to the golden-ratio conjugate squared
+(`1/phi^2`, approximately 0.382), which explains the more even-looking early
+distribution; 23 is a near-golden-ratio stride, not itself a "golden ratio".
+
+The complete second-offset cycles repeat after 60 wakes: 77 minutes for the old
+cadence and 83 minutes for the new cadence. The benefit is thus the distribution
+within that cycle, not eventual coverage.
+
 This matters for scripts that branch on `$SECOND`. A cadence sharing a factor
 with 60 would make some branches unreachable during automatic rendering. The
 83-second cadence also remains close to the previous power and update budget;
