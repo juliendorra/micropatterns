@@ -11,7 +11,7 @@
 // static files over FTP with no build step.
 
 const MODULE_PATHS = {
-    reference: './wasm/mp_render.mjs',
+    reference: './wasm/mp_render.js',
     watchy: './wasm/mp_render_watchy.mjs',
     m5paper: './wasm/mp_render_m5paper.mjs',
 };

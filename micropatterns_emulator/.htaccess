@@ -1,0 +1,7 @@
+# The editor loads the device firmware as WebAssembly. Apache does not know
+# .wasm by default and served it with no Content-Type; browsers then skip
+# WebAssembly.instantiateStreaming and fall back to a slower ArrayBuffer path.
+# The ES-module glue is named .js rather than .mjs for the same reason -- see
+# tools/host_harness/wasm/build.sh.
+AddType application/wasm .wasm
+AddType application/javascript .js
