@@ -22,9 +22,7 @@ public:
     // call getCanvas() once in the initializer list -- the member was stored and
     // then never read again, which coupled the renderer to M5Paper-only display
     // code for no benefit. Passing MPCanvas* makes it platform-agnostic.
-    DisplayListRenderer(MPCanvas* canvas,
-                        const std::map<String, MicroPatternsAsset>& assets,
-                        int canvasWidth, int canvasHeight);
+    DisplayListRenderer(MPCanvas* canvas, int canvasWidth, int canvasHeight);
 
     void render(const std::vector<DisplayListItem>& displayList);
 
@@ -33,6 +31,7 @@ public:
     int getRenderedItems() const { return _renderedItems; }
     int getCulledOffScreen() const { return _culledOffScreen; }
     int getCulledByOcclusion() const { return _culledByOcclusion; }
+    bool usedOccupancyMapLastRender() const { return _usedOccupancyMapLastRender; }
 
     // Occlusion culling on/off. On by default -- this exists so the host
     // harness can render the same script both ways and byte-compare the
@@ -59,11 +58,8 @@ public:
 
 private:
     MicroPatternsDrawing _drawing;
-    // NOTE: the assets map is still a constructor parameter (callers, including
-    // the Watchy firmware, pass it), but the renderer no longer stores it: DRAW
-    // items now carry a resolved MicroPatternsAsset* from display-list
-    // generation instead of an asset NAME that had to be looked up in this
-    // String-keyed map once per item during culling and again when drawing.
+    // DRAW items carry a resolved MicroPatternsAsset* (owned by the MpProgram)
+    // from display-list generation, so the renderer holds no asset table.
     OcclusionBuffer _occlusionBuffer;
     
     int _canvasWidth;
@@ -76,6 +72,7 @@ private:
     int _culledByOcclusion; // Items culled by occlusion buffer
     bool _occlusionEnabled = true;
     bool _occupancyMapEnabled = true;
+    bool _usedOccupancyMapLastRender = false;
 
     std::function<bool()> _interrupt_check_cb;
 

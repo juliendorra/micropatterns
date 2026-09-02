@@ -3,14 +3,14 @@
 
 #include <Arduino.h>
 #include <vector>
-#include <list> // Added for std::list
-#include <map> // Use map for parameters
 #include "matrix_utils.h" // For matrix_identity
 
-// Enum for command types
-enum CommandType {
-    CMD_UNKNOWN,
-    CMD_DEFINE_PATTERN, // Handled at parse time -> NOOP
+// Command types. The values double as MpInstr::type in the compiled program
+// (mp_program.h), so this enum is part of the stored-program format: append,
+// never renumber.
+enum CommandType : uint8_t {
+    CMD_UNKNOWN = 0,
+    CMD_DEFINE_PATTERN, // Handled at parse time -> no instruction
     CMD_VAR,
     CMD_LET,
     CMD_COLOR,
@@ -35,77 +35,22 @@ enum CommandType {
     CMD_NOOP        // For commands handled entirely at parse time
 };
 
-// Structure for parameter values (can be int, string, variable ref, or operator)
+// A parsed parameter or expression token. PARSER-INTERNAL: it lives only for
+// the duration of one source line, while the parser turns KEY=VALUE pairs and
+// expression text into MpOperands. It no longer appears in anything the
+// runtime touches -- that was the whole problem (see mp_program.h).
 struct ParamValue {
     enum ValueType { TYPE_INT, TYPE_STRING, TYPE_VARIABLE, TYPE_OPERATOR } type;
     int intValue;
     String stringValue; // Also used for variable names ("$COUNTER") and operators ("+")
 
-    // --- Runtime memo (not parse data) -------------------------------------
-    // For TYPE_VARIABLE tokens the runtime resolves the (uppercased) name to a
-    // small integer slot exactly once and remembers it here, so the second and
-    // every subsequent evaluation of the same token -- i.e. every iteration of
-    // the REPEAT loop it sits in -- costs an array index instead of a String
-    // copy + toUpperCase() + two red-black-tree lookups.
-    // `slotEpoch` tags which runtime instance filled the memo in; a fresh
-    // MicroPatternsRuntime takes a new epoch, so a stale memo can never be
-    // read. Epoch 0 is never issued, which makes the default value invalid.
-    mutable int32_t slotCache = -1;
-    mutable uint32_t slotEpoch = 0;
-
     ParamValue() : type(TYPE_INT), intValue(0) {}
     ParamValue(int v) : type(TYPE_INT), intValue(v) {}
-    // Constructor for strings, variables, operators
-    ParamValue(String s, ValueType t = TYPE_STRING) : type(t), stringValue(s) {}
+    ParamValue(String s, ValueType t = TYPE_STRING) : type(t), intValue(0), stringValue(s) {}
 };
 
-struct MicroPatternsAsset; // defined below
-
-// Structure for a parsed command
-struct MicroPatternsCommand {
-    CommandType type = CMD_UNKNOWN;
-    int lineNumber = 0;
-    std::map<String, ParamValue> params; // Use map for named parameters (Key = UPPERCASE NAME)
-
-    // --- Fields for specific commands ---
-
-    // For VAR command
-    String varName; // UPPERCASE, no '$'
-    std::vector<ParamValue> initialExpressionTokens; // Stores tokenized expression (numbers, $VARS, operators)
-
-    // For LET command
-    String letTargetVar; // UPPERCASE, no '$'
-    std::vector<ParamValue> letExpressionTokens; // Stores tokenized expression
-
-    // For REPEAT command
-    ParamValue count; // Stores the parsed COUNT value (int or variable)
-    std::list<MicroPatternsCommand> nestedCommands; // Stores commands inside the REPEAT block
-
-    // For IF command
-    std::vector<ParamValue> conditionTokens; // Stores tokenized condition expression
-    std::list<MicroPatternsCommand> thenCommands;
-    std::list<MicroPatternsCommand> elseCommands; // Populated only if ELSE is present
-
-    // Runtime memo for the VAR/LET assignment target, same scheme as
-    // ParamValue::slotCache above (avoids rebuilding "$" + varName, which is a
-    // heap allocation on Arduino String, on every execution).
-    mutable int32_t targetSlotCache = -1;
-    mutable uint32_t targetSlotEpoch = 0;
-
-    // Runtime memo for the NAME parameter of FILL / DRAW. The name is always a
-    // literal (never a variable), so the asset it resolves to is fixed for the
-    // life of the parse -- but uppercasing it and looking it up in the
-    // String-keyed asset map costs two heap allocations per execution on
-    // Arduino String, which inside a REPEAT body means per drawn item.
-    // assetKind: 0 = not resolved yet, 1 = SOLID, 2 = asset (assetCache), 3 = unknown name.
-    mutable const MicroPatternsAsset* assetCache = nullptr;
-    mutable uint32_t assetEpoch = 0;
-    mutable uint8_t assetKind = 0;
-
-    MicroPatternsCommand(CommandType t = CMD_UNKNOWN, int line = 0) : type(t), lineNumber(line) {}
-};
-
-// Structure for defined patterns/assets
+// A DEFINE PATTERN bitmap. Owned by MpProgram::assets; DisplayListItems point
+// at these, so a display list must not outlive the program it was built from.
 struct MicroPatternsAsset {
     String name; // Uppercase name (used as key)
     String originalName; // Original case name for display/errors
@@ -118,10 +63,10 @@ struct MicroPatternsAsset {
 struct MicroPatternsState {
     uint8_t color = 15; // 0=white, 15=black (M5EPD uses 4bpp)
     const MicroPatternsAsset* fillAsset = nullptr; // Pointer to current fill pattern, null for SOLID
-    
+
     // Absolute scale factor, applied BEFORE the matrix transformation.
     float scale = 1.0f;
-    
+
     // Affine transformation matrix representing cumulative TRANSLATE and ROTATE operations.
     // Applied AFTER 'scale'.
     // Format: [m0, m1, m2, m3, m4, m5] => | m0 m2 m4 |
@@ -129,13 +74,11 @@ struct MicroPatternsState {
     //                                     |  0  0  1 |
     // (x', y') = (m0*x + m2*y + m4, m1*x + m3*y + m5)
     float matrix[6];
-    
+
     // Inverse of 'matrix'. Used for transforming screen coordinates back.
     float inverseMatrix[6];
 
-    // Default constructor initializes state
     MicroPatternsState() : color(15), fillAsset(nullptr), scale(1.0f) {
-        // Initialize matrix and inverseMatrix to identity
         matrix_identity(matrix);
         matrix_identity(inverseMatrix);
     }
@@ -162,21 +105,10 @@ struct TransformSnapshot {
 // consumers never have to null-check `xf`.
 extern const TransformSnapshot kIdentityTransform;
 
-// Structure for an item in the display list.
-//
-// This used to be `std::map<String,int> intParams` + `std::map<String,String>
-// stringParams` + an inline copy of the transform state: ~128 bytes of struct
-// plus 2-5 heap-allocated tree nodes (each with an Arduino String key) PER
-// ITEM. A 20k-item script therefore paid ~60k allocations during generation and
-// a String-keyed map lookup per parameter per item again during rasterization's
-// per-item cull loop.
-//
-// It is now a trivially-copyable POD: parameters live in a fixed 4-slot array
-// whose meaning is fixed by `type` (see the accessors), the DRAW asset is
-// resolved to a pointer at generation time rather than carried as a name
-// String, and the transform is a pointer into the runtime's snapshot pool.
-// 40 bytes on a 32-bit target, zero heap allocations, and growing the
-// std::vector is now a memcpy instead of thousands of map deep-copies.
+// One item in the display list: a trivially-copyable POD. Parameters live in a
+// fixed 4-slot array whose meaning is fixed by `type` (see the accessors), the
+// DRAW asset is a resolved pointer, and the transform is a pointer into the
+// runtime's snapshot pool. 40 bytes on a 32-bit target, zero heap allocations.
 struct DisplayListItem {
     CommandType type = CMD_UNKNOWN;
     int32_t sourceLine = 0;

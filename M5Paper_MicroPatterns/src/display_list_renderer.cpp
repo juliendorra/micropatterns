@@ -2,17 +2,15 @@
 #include "esp32-hal-log.h"
 #include <algorithm> // For std::min, std::max
 #include <cmath>     // For sqrtf, floor, ceil, round
+#include "mp_diagnostics.h"
 
-DisplayListRenderer::DisplayListRenderer(MPCanvas* canvas,
-                                       const std::map<String, MicroPatternsAsset>& assets,
-                                       int canvasWidth, int canvasHeight)
+DisplayListRenderer::DisplayListRenderer(MPCanvas* canvas, int canvasWidth, int canvasHeight)
     : _drawing(canvas),
       _occlusionBuffer(canvasWidth, canvasHeight, 16), // Default block size 16
       _canvasWidth(canvasWidth),
       _canvasHeight(canvasHeight),
       _totalItems(0), _renderedItems(0), _culledOffScreen(0), _culledByOcclusion(0),
       _interrupt_check_cb(nullptr) {
-    (void)assets; // see the note on the removed _assets member in the header
     _drawing.setCanvas(canvas); // Ensure drawing module has the correct canvas
 }
 
@@ -221,6 +219,7 @@ void DisplayListRenderer::renderItem(const DisplayListItem& item) {
 }
 
 void DisplayListRenderer::render(const std::vector<DisplayListItem>& displayList) {
+    mp_diagnostic_source_line(0);
     _totalItems = displayList.size();
     _renderedItems = 0;
     _culledOffScreen = 0;
@@ -267,10 +266,12 @@ void DisplayListRenderer::render(const std::vector<DisplayListItem>& displayList
     // where overwriting is exactly what you want. Slower (every overlapped
     // pixel is written more than once) and correct.
     const bool frontToBack = (_drawing.occupancyBase() != nullptr);
+    _usedOccupancyMapLastRender = frontToBack;
 
     const size_t n = displayList.size();
     for (size_t k = 0; k < n; ++k) {
         const DisplayListItem& itemRef = frontToBack ? displayList[n - 1 - k] : displayList[k];
+        mp_diagnostic_source_line((int)itemRef.sourceLine);
         auto it = &itemRef;
         if (_interrupt_check_cb && _interrupt_check_cb()) {
             log_i("DisplayListRenderer: Interrupt detected during rendering loop.");
