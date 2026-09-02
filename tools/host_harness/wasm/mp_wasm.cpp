@@ -12,10 +12,16 @@
 
 #include <emscripten/emscripten.h>
 
+#include <cstdio>
+#include <new>
 #include <string>
 
 #include "micropatterns_parser.h"
 #include "render_path.h"
+
+#if MP_DEVICE_CONSTRAINTS
+#include "device_allocator.h"
+#endif
 
 namespace {
 // One result kept alive between calls so JS can read the pixels out of the
@@ -59,7 +65,31 @@ int mp_render(const char* src, int width, int height,
     seed.minute = minute;
     seed.second = second;
 
+#if MP_DEVICE_CONSTRAINTS
+    try {
+        path->run(std::string(src ? src : ""), width, height, seed, g_result);
+    } catch (const std::bad_alloc&) {
+        mpDeviceSetAllocationActive(false);
+        MpAllocationTelemetry t = mpDeviceTelemetry();
+        char message[256];
+        if (t.failure.valid) {
+            snprintf(message, sizeof(message),
+                     "device OOM: phase=%u source=%u capability=%u request=%zu "
+                     "internal_free=%zu largest=%zu psram_free=%zu psram_largest=%zu",
+                     (unsigned)t.failure.phase, (unsigned)t.failure.source,
+                     (unsigned)t.failure.capability, t.failure.requested,
+                     t.failure.internal.totalFree, t.failure.internal.largestFree,
+                     t.failure.psram.totalFree, t.failure.psram.largestFree);
+        } else {
+            snprintf(message, sizeof(message), "host WebAssembly allocation failed");
+        }
+        g_error = message;
+        resetDeviceRenderSessionAfterFailure();
+        return 0;
+    }
+#else
     path->run(std::string(src ? src : ""), width, height, seed, g_result);
+#endif
     if (!g_result.ok) g_error = g_result.error;
     return g_result.ok ? 1 : 0;
 }
@@ -79,6 +109,58 @@ EMSCRIPTEN_KEEPALIVE int mp_culled_occlusion()   { return g_result.counters.cull
 EMSCRIPTEN_KEEPALIVE double mp_ms_parse()        { return g_result.timings.parseMs; }
 EMSCRIPTEN_KEEPALIVE double mp_ms_displaylist()  { return g_result.timings.displayListMs; }
 EMSCRIPTEN_KEEPALIVE double mp_ms_rasterize()    { return g_result.timings.rasterizeMs; }
+
+#if MP_DEVICE_CONSTRAINTS
+EMSCRIPTEN_KEEPALIVE void mp_set_device_state(int state)
+{
+    if (state < 0 || state > 2) state = 0;
+    mpDeviceSetRequestedState(static_cast<MpDeviceState>(state));
+}
+EMSCRIPTEN_KEEPALIVE const char* mp_device_profile() { return mpDeviceProfileName(); }
+EMSCRIPTEN_KEEPALIVE const char* mp_device_idf() { return mpDeviceIdfVersion(); }
+EMSCRIPTEN_KEEPALIVE int mp_device_profile_calibrated()
+    { return mpDeviceProfileCalibrated() ? 1 : 0; }
+EMSCRIPTEN_KEEPALIVE unsigned int mp_mem_allocation_calls()
+    { return mpDeviceTelemetry().allocationCalls; }
+EMSCRIPTEN_KEEPALIVE unsigned int mp_mem_realloc_calls()
+    { return mpDeviceTelemetry().reallocCalls; }
+EMSCRIPTEN_KEEPALIVE unsigned int mp_mem_free_calls()
+    { return mpDeviceTelemetry().freeCalls; }
+EMSCRIPTEN_KEEPALIVE unsigned int mp_mem_initial_internal_free()
+    { return (unsigned int)mpDeviceTelemetry().initialInternal.totalFree; }
+EMSCRIPTEN_KEEPALIVE unsigned int mp_mem_initial_internal_largest()
+    { return (unsigned int)mpDeviceTelemetry().initialInternal.largestFree; }
+EMSCRIPTEN_KEEPALIVE unsigned int mp_mem_current_internal_free()
+    { return (unsigned int)mpDeviceTelemetry().currentInternal.totalFree; }
+EMSCRIPTEN_KEEPALIVE unsigned int mp_mem_current_internal_largest()
+    { return (unsigned int)mpDeviceTelemetry().currentInternal.largestFree; }
+EMSCRIPTEN_KEEPALIVE unsigned int mp_mem_peak_internal_used()
+    { return (unsigned int)mpDeviceTelemetry().peakInternalUsed; }
+EMSCRIPTEN_KEEPALIVE unsigned int mp_mem_initial_psram_free()
+    { return (unsigned int)mpDeviceTelemetry().initialPsram.totalFree; }
+EMSCRIPTEN_KEEPALIVE unsigned int mp_mem_current_psram_free()
+    { return (unsigned int)mpDeviceTelemetry().currentPsram.totalFree; }
+EMSCRIPTEN_KEEPALIVE unsigned int mp_mem_peak_psram_used()
+    { return (unsigned int)mpDeviceTelemetry().peakPsramUsed; }
+EMSCRIPTEN_KEEPALIVE int mp_mem_failure_valid()
+    { return mpDeviceTelemetry().failure.valid ? 1 : 0; }
+EMSCRIPTEN_KEEPALIVE unsigned int mp_mem_failure_request()
+    { return (unsigned int)mpDeviceTelemetry().failure.requested; }
+EMSCRIPTEN_KEEPALIVE int mp_mem_failure_phase()
+    { return (int)mpDeviceTelemetry().failure.phase; }
+EMSCRIPTEN_KEEPALIVE int mp_mem_failure_source()
+    { return (int)mpDeviceTelemetry().failure.source; }
+EMSCRIPTEN_KEEPALIVE int mp_mem_failure_capability()
+    { return (int)mpDeviceTelemetry().failure.capability; }
+EMSCRIPTEN_KEEPALIVE unsigned int mp_mem_failure_internal_free()
+    { return (unsigned int)mpDeviceTelemetry().failure.internal.totalFree; }
+EMSCRIPTEN_KEEPALIVE unsigned int mp_mem_failure_internal_largest()
+    { return (unsigned int)mpDeviceTelemetry().failure.internal.largestFree; }
+EMSCRIPTEN_KEEPALIVE unsigned int mp_mem_failure_psram_free()
+    { return (unsigned int)mpDeviceTelemetry().failure.psram.totalFree; }
+EMSCRIPTEN_KEEPALIVE unsigned int mp_mem_failure_psram_largest()
+    { return (unsigned int)mpDeviceTelemetry().failure.psram.largestFree; }
+#endif
 
 // --- parse-only, for editor diagnostics ------------------------------------
 //

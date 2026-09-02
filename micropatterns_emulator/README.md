@@ -37,7 +37,7 @@ For the full MicroPatterns language specification and project details, please se
 ## Emulator Implementation Notes
 
 *   Rendering is done by the **device firmware itself**, compiled to WebAssembly
-    (`wasm/mp_render.{mjs,wasm}`). The same six C++ source files the M5Paper and
+    (`wasm/mp_render.{js,wasm}`). The same six C++ source files the M5Paper and
     the Watchy run produce the pixels here, byte-for-byte (verified against the
     firmware's golden images by `make verify-wasm` in `tools/host_harness`).
     Parse errors and pattern previews also come from the firmware's parser.

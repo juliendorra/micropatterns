@@ -157,7 +157,7 @@ already hands back a flat `width*height` greyscale buffer, which is an
 `ImageData` blit away from a canvas.
 
     mp_render.wasm   87 KB
-    mp_render.mjs    13 KB   (Emscripten glue, ES module)
+    mp_render.js     13 KB   (Emscripten glue, ES module -- .js not .mjs, the static host serves .mjs untyped)
 
 Rasterization in the browser is not a compromise: `city`, the heaviest corpus
 script at 20,737 display-list items, rasterizes in **4.6ms**.

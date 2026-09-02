@@ -6,35 +6,57 @@
 // `make verify-wasm` in tools/host_harness, which checks it against the same
 // golden images the firmware is gated on.
 //
-// Rebuild the .wasm with `tools/host_harness/wasm/build.sh` and copy the two
-// files in wasm/ across. They are committed because this page is deployed as
+// Rebuild with `tools/host_harness/wasm/build.sh` and copy the two files in
+// wasm/ across. The glue is mp_render.js -- see build.sh for why not .mjs. They are committed because this page is deployed as
 // static files over FTP with no build step.
 
-let modulePromise = null;
+const MODULE_PATHS = {
+    reference: './wasm/mp_render.mjs',
+    watchy: './wasm/mp_render_watchy.mjs',
+    m5paper: './wasm/mp_render_m5paper.mjs',
+};
+const modulePromises = new Map();
 
 // Loaded on demand: most sessions never switch to this path, and the module is
 // ~100KB. Failure is reported to the caller rather than thrown at load time, so
 // a browser without WebAssembly degrades to "this path is unavailable" instead
 // of breaking the editor.
-function loadModule() {
-    if (!modulePromise) {
-        modulePromise = import('./wasm/mp_render.mjs')
+function loadModule(profile) {
+    if (!MODULE_PATHS[profile]) throw new Error(`Unknown device profile: ${profile}`);
+    if (!modulePromises.has(profile)) {
+        const promise = import(MODULE_PATHS[profile])
             .then((m) => m.default())
-            .catch((e) => { modulePromise = null; throw e; });
+            .catch((e) => { modulePromises.delete(profile); throw e; });
+        modulePromises.set(profile, promise);
     }
-    return modulePromise;
+    return modulePromises.get(profile);
 }
 
 export class DeviceRenderer {
-    constructor() {
-        this.mod = null;
+    constructor(profile = 'm5paper') {
+        this.profile = profile;
+        this.deviceState = 0;
+        this.modules = new Map();
+    }
+
+    setProfile(profile) {
+        if (!MODULE_PATHS[profile]) throw new Error(`Unknown device profile: ${profile}`);
+        this.profile = profile;
+    }
+
+    setDeviceState(state) {
+        const value = Number(state);
+        this.deviceState = value >= 0 && value <= 2 ? value : 0;
     }
 
     async ready() {
-        if (!this.mod) {
-            const M = await loadModule();
-            this.mod = {
+        const profile = this.profile;
+        if (!this.modules.has(profile)) {
+            const M = await loadModule(profile);
+            const constrained = profile !== 'reference';
+            const wrapped = {
                 M,
+                constrained,
                 render: M.cwrap('mp_render', 'number',
                     ['string', 'number', 'number', 'number', 'number', 'number', 'number']),
                 pixels: M.cwrap('mp_pixels', 'number', []),
@@ -58,8 +80,79 @@ export class DeviceRenderer {
                     msRasterize: M.cwrap('mp_ms_rasterize', 'number', []),
                 },
             };
+            if (constrained) {
+                const number = (name) => M.cwrap(name, 'number', []);
+                wrapped.setDeviceState = M.cwrap('mp_set_device_state', null, ['number']);
+                wrapped.profileName = M.cwrap('mp_device_profile', 'number', []);
+                wrapped.idfVersion = M.cwrap('mp_device_idf', 'number', []);
+                wrapped.memory = {
+                    calibrated: number('mp_device_profile_calibrated'),
+                    allocationCalls: number('mp_mem_allocation_calls'),
+                    reallocCalls: number('mp_mem_realloc_calls'),
+                    freeCalls: number('mp_mem_free_calls'),
+                    initialInternalFree: number('mp_mem_initial_internal_free'),
+                    initialInternalLargest: number('mp_mem_initial_internal_largest'),
+                    currentInternalFree: number('mp_mem_current_internal_free'),
+                    currentInternalLargest: number('mp_mem_current_internal_largest'),
+                    peakInternalUsed: number('mp_mem_peak_internal_used'),
+                    initialPsramFree: number('mp_mem_initial_psram_free'),
+                    currentPsramFree: number('mp_mem_current_psram_free'),
+                    peakPsramUsed: number('mp_mem_peak_psram_used'),
+                    failureValid: number('mp_mem_failure_valid'),
+                    failureRequest: number('mp_mem_failure_request'),
+                    failurePhase: number('mp_mem_failure_phase'),
+                    failureSource: number('mp_mem_failure_source'),
+                    failureCapability: number('mp_mem_failure_capability'),
+                    failureInternalFree: number('mp_mem_failure_internal_free'),
+                    failureInternalLargest: number('mp_mem_failure_internal_largest'),
+                    failurePsramFree: number('mp_mem_failure_psram_free'),
+                    failurePsramLargest: number('mp_mem_failure_psram_largest'),
+                };
+            }
+            this.modules.set(profile, wrapped);
         }
-        return this.mod;
+        return this.modules.get(profile);
+    }
+
+    memorySnapshot(m) {
+        if (!m.constrained) {
+            return { profile: 'reference', idfVersion: null, calibrated: false,
+                deviceState: this.deviceState, constrained: false, failure: null };
+        }
+        const x = m.memory;
+        const failed = !!x.failureValid();
+        return {
+            profile: m.M.UTF8ToString(m.profileName()),
+            idfVersion: m.M.UTF8ToString(m.idfVersion()),
+            calibrated: !!x.calibrated(),
+            constrained: true,
+            deviceState: this.deviceState,
+            allocationCalls: x.allocationCalls(),
+            reallocCalls: x.reallocCalls(),
+            freeCalls: x.freeCalls(),
+            internal: {
+                initialFree: x.initialInternalFree(),
+                initialLargest: x.initialInternalLargest(),
+                currentFree: x.currentInternalFree(),
+                currentLargest: x.currentInternalLargest(),
+                peakUsed: x.peakInternalUsed(),
+            },
+            psram: {
+                initialFree: x.initialPsramFree(),
+                currentFree: x.currentPsramFree(),
+                peakUsed: x.peakPsramUsed(),
+            },
+            failure: failed ? {
+                request: x.failureRequest(),
+                phase: x.failurePhase(),
+                source: x.failureSource(),
+                capability: x.failureCapability(),
+                internalFree: x.failureInternalFree(),
+                internalLargest: x.failureInternalLargest(),
+                psramFree: x.failurePsramFree(),
+                psramLargest: x.failurePsramLargest(),
+            } : null,
+        };
     }
 
     // Runs the FIRMWARE's parser and returns its diagnostics.
@@ -118,10 +211,12 @@ export class DeviceRenderer {
         const m = await this.ready();
         const w = ctx.canvas.width, h = ctx.canvas.height;
 
+        if (m.constrained) m.setDeviceState(this.deviceState);
         const ok = m.render(source, w, h,
             env.COUNTER | 0, env.HOUR | 0, env.MINUTE | 0, env.SECOND | 0);
+        const memory = this.memorySnapshot(m);
         if (!ok) {
-            return { ok: false, error: m.M.UTF8ToString(m.error()), stats: null };
+            return { ok: false, error: m.M.UTF8ToString(m.error()), stats: null, memory };
         }
 
         // 8-bit greyscale out of the wasm heap, straight into ImageData. The
@@ -141,6 +236,7 @@ export class DeviceRenderer {
         return {
             ok: true,
             error: null,
+            memory,
             stats: {
                 totalItems: s.items(), renderedItems: s.rendered(),
                 culledOffScreen: s.offscreen(), culledByOcclusion: s.occluded(),

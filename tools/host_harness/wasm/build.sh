@@ -27,6 +27,13 @@ fi
 OUT="${OUT:-$HERE/out}"
 mkdir -p "$OUT"
 
+# The glue is named .js, not .mjs, on purpose. It is an ES module either way
+# (-sEXPORT_ES6), but the static host the editor deploys to serves .mjs with NO
+# Content-Type and browsers refuse to execute a module script without a
+# JavaScript MIME type: "Failed to fetch dynamically imported module". .js is
+# served as application/javascript there. Found in production, not locally --
+# the dev server sets types by extension and knew .mjs.
+#
 # Exceptions and RTTI stay OFF: the firmware builds that way (Arduino disables
 # both), so leaving them on here would let code compile that cannot run on the
 # device -- exactly the divergence this whole exercise exists to remove.
@@ -47,6 +54,6 @@ mkdir -p "$OUT"
     -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=32MB \
     -sEXPORTED_RUNTIME_METHODS='["cwrap","HEAPU8","UTF8ToString"]' \
     -sEXPORTED_FUNCTIONS='["_mp_parse","_mp_parse_error_count","_mp_parse_error_at","_mp_asset_count","_mp_asset_name","_mp_asset_original_name","_mp_asset_width","_mp_asset_height","_mp_asset_data","_mp_render","_mp_pixels","_mp_width","_mp_height","_mp_error","_mp_display_list_items","_mp_rendered_items","_mp_culled_offscreen","_mp_culled_occlusion","_mp_ms_parse","_mp_ms_displaylist","_mp_ms_rasterize","_malloc","_free"]' \
-    -o "$OUT/mp_render.mjs"
+    -o "$OUT/mp_render.js"
 
-ls -lh "$OUT"/mp_render.wasm "$OUT"/mp_render.mjs | awk '{print "  " $9 "  " $5}'
+ls -lh "$OUT"/mp_render.wasm "$OUT"/mp_render.js | awk '{print "  " $9 "  " $5}'

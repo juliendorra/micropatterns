@@ -27,7 +27,7 @@ function readPGM(p) {
     return buf.subarray(i + 1);
 }
 
-const factory = (await import(join(HERE, 'out', 'mp_render.mjs'))).default;
+const factory = (await import(join(HERE, 'out', 'mp_render.js'))).default;
 const Module = await factory();
 
 const render = Module.cwrap('mp_render', 'number',
