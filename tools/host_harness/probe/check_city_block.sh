@@ -24,8 +24,11 @@ SRC="$HERE/../../../examples/scripts/city.mp"
 # The block runs from the seed construction to the chosen scaling. Both ends are
 # matched on content rather than line number so an edit ABOVE the block does not
 # by itself trip this.
-START='VAR \$seed = \$HOUR \* 60'
-END='VAR \$scaling = \$min_scaling \+ \$scale_pick'
+# Bracket expressions keep literal arithmetic operators portable in basic
+# regular expressions. GNU sed treats `\+` as a repetition operator while BSD
+# sed treats it as a literal plus, which previously made this gate macOS-only.
+START='VAR \$seed = \$HOUR [*] 60'
+END='VAR \$scaling = \$min_scaling [+] \$scale_pick'
 
 extract() {   # file -> its block, comments and blank lines stripped
     # NOTE: no "\+" in these expressions. BSD sed's basic regex does not treat

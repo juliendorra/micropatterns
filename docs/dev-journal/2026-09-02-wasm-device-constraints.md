@@ -339,3 +339,12 @@ Local validation after the change:
 
 The user-owned `examples/scripts/seascape*.mp` files are still excluded from
 version control.
+
+The first pushed Actions run then caught a Linux-only bug in the pre-existing
+City probe drift checker. Its end marker used `\+` in a basic `sed` expression:
+BSD sed interpreted that as a literal plus, while GNU sed interpreted it as a
+repetition operator and extracted through end-of-file. Replaced arithmetic
+operators in both boundary expressions with portable bracket literals (`[+]`
+and `[*]`). The gate now compares the intended block on both platforms; this is
+also a useful demonstration that executing the gates in CI adds coverage beyond
+running them on the development Mac.
