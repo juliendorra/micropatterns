@@ -37,6 +37,7 @@ CXXFLAGS += -MMD -MP
 CORE_SRCS := \
   $(FW_SRC)/micropatterns_parser.cpp \
   $(FW_SRC)/micropatterns_runtime.cpp \
+  $(FW_SRC)/mp_program.cpp \
   $(FW_SRC)/micropatterns_drawing.cpp \
   $(FW_SRC)/display_list_renderer.cpp \
   $(FW_SRC)/occlusion_buffer.cpp \
@@ -156,7 +157,7 @@ clean:
 #
 # Needs an emsdk; wasm/build.sh explains where it looks. Output is gitignored --
 # it is reproducible, and deploying it is a separate decision.
-.PHONY: wasm verify-wasm verify-language-wasm wasm-constrained \
+.PHONY: wasm verify-wasm verify-language-wasm verify-device-diagnostics wasm-constrained \
 	verify-wasm-constrained verify-source-parity verify-emulator-wasm \
 	sync-wasm sync-wasm-constrained ci
 wasm:
@@ -167,6 +168,9 @@ verify-wasm: wasm
 
 verify-language-wasm: wasm
 	node wasm/verify_language.mjs
+
+verify-device-diagnostics:
+	node wasm/verify_device_diagnostics.mjs
 
 wasm-constrained:
 	./wasm/build_constrained.sh
@@ -200,7 +204,8 @@ verify-emulator-wasm: wasm wasm-constrained
 # Required pre-deploy gate. The longer generated lifetime soak remains a
 # scheduled/manual CI job; these checks are deterministic and run on every push.
 ci: verify audit-sweep sanitize verify-strict verify-source-parity \
-	verify-wasm verify-language-wasm verify-wasm-constrained verify-emulator-wasm
+	verify-wasm verify-language-wasm verify-device-diagnostics \
+	verify-wasm-constrained verify-emulator-wasm
 
 # --- variation, not equality ------------------------------------------------
 # Every other gate here compares single frames. None of them can see a script

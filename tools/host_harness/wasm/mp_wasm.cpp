@@ -33,6 +33,15 @@ std::string g_error;
 MicroPatternsParser g_parser;
 std::vector<std::string> g_parseErrors;
 
+// The "file on flash": the program mp_compile() produced, and the source it
+// was compiled from. mp_render() loads from it when the source matches --
+// which is what a device does after a sync -- and compiles lazily otherwise,
+// which is what a device does when no stored program exists yet.
+std::vector<uint8_t> g_stored;
+std::string g_storedSource;
+RenderResult g_compileResult;
+std::string g_compileError;
+
 // Snapshot of the assets the last mp_parse() found, in a stable order, so the
 // editor's pattern previews and pattern editor can be fed from the firmware's
 // parser rather than from a second one. Copied out of the parser's map because
@@ -48,7 +57,73 @@ std::vector<AssetView> g_assets;
 
 extern "C" {
 
-// Renders `src` and returns 1 on success, 0 on failure (see mp_error()).
+// Stage 1 of the device's process: compile `src` the way a sync does -- with
+// the radios off -- and keep the result as the "file on flash". Returns 1 on
+// success. Memory telemetry (mp_mem_*) describes this compile until the next
+// mp_render() call.
+EMSCRIPTEN_KEEPALIVE
+int mp_compile(const char* src)
+{
+    g_compileResult = RenderResult();
+    g_compileError.clear();
+    g_stored.clear();
+    g_storedSource.clear();
+
+    auto path = makeRenderPath("compiled");
+    if (!path) { g_compileError = "no such render path"; return 0; }
+    const std::string text(src ? src : "");
+#if MP_DEVICE_CONSTRAINTS
+    // Sync stops BLE and tears WiFi down before compiling (script_sync.cpp),
+    // so the compile always sees the radios-off heap whatever the render
+    // state the editor is exploring.
+    const MpDeviceState renderState = mpDeviceRequestedState();
+    mpDeviceSetRequestedState(MpDeviceState::RadiosOff);
+    bool ok = false;
+    try {
+        ok = path->compile(text, g_stored, g_compileResult);
+    } catch (const std::bad_alloc&) {
+        mpDeviceSetAllocationActive(false);
+        MpAllocationTelemetry t = mpDeviceTelemetry();
+        char message[320];
+        if (t.failure.valid) {
+            snprintf(message, sizeof(message),
+                     "device OOM at sync (compile): line=%d phase=%u source=%u capability=%u request=%zu "
+                     "internal_free=%zu largest=%zu psram_free=%zu psram_largest=%zu",
+                     t.failure.sourceLine, (unsigned)t.failure.phase, (unsigned)t.failure.source,
+                     (unsigned)t.failure.capability, t.failure.requested,
+                     t.failure.internal.totalFree, t.failure.internal.largestFree,
+                     t.failure.psram.totalFree, t.failure.psram.largestFree);
+        } else {
+            snprintf(message, sizeof(message), "host WebAssembly allocation failed");
+        }
+        g_compileError = message;
+        resetDeviceRenderSessionAfterFailure();
+        mpDeviceSetRequestedState(renderState);
+        return 0;
+    }
+    mpDeviceSetRequestedState(renderState);
+#else
+    const bool ok = path->compile(text, g_stored, g_compileResult);
+#endif
+    if (!ok) { g_compileError = g_compileResult.error; g_stored.clear(); return 0; }
+    g_storedSource = text;
+    return 1;
+}
+
+EMSCRIPTEN_KEEPALIVE const char* mp_compile_error() { return g_compileError.c_str(); }
+EMSCRIPTEN_KEEPALIVE double mp_compile_ms() { return g_compileResult.timings.parseMs; }
+EMSCRIPTEN_KEEPALIVE unsigned int mp_compile_program_bytes()
+    { return (unsigned int)g_compileResult.counters.programBytes; }
+EMSCRIPTEN_KEEPALIVE unsigned int mp_compile_file_bytes()
+    { return (unsigned int)g_stored.size(); }
+// 1 when mp_render(src) will load the stored program rather than compile.
+EMSCRIPTEN_KEEPALIVE int mp_has_stored(const char* src)
+    { return (!g_stored.empty() && g_storedSource == (src ? src : "")) ? 1 : 0; }
+
+// Stage 2: render. Loads the stored program when it was compiled from exactly
+// this source (the device after a sync); otherwise compiles and loads in the
+// current device state (the device's lazy path). Returns 1 on success, 0 on
+// failure (see mp_error()).
 EMSCRIPTEN_KEEPALIVE
 int mp_render(const char* src, int width, int height,
               int counter, int hour, int minute, int second)
@@ -56,7 +131,11 @@ int mp_render(const char* src, int width, int height,
     g_result = RenderResult();
     g_error.clear();
 
-    auto path = makeRenderPath("displaylist");
+    // "compiled" = parse, serialize, deserialize, run: the sequence a device
+    // follows when it renders the program it stored at sync time. Byte-identical
+    // to the direct path (mpharness compare-paths), and the one the browser
+    // should exercise so the emulator cannot drift from the on-device process.
+    auto path = makeRenderPath("compiled");
     if (!path) { g_error = "no such render path"; return 0; }
 
     RenderSeed seed;
@@ -65,18 +144,22 @@ int mp_render(const char* src, int width, int height,
     seed.minute = minute;
     seed.second = second;
 
+    const std::string text(src ? src : "");
+    const bool stored = !g_stored.empty() && g_storedSource == text;
+
 #if MP_DEVICE_CONSTRAINTS
     try {
-        path->run(std::string(src ? src : ""), width, height, seed, g_result);
+        if (stored) path->runStored(g_stored, width, height, seed, g_result);
+        else        path->run(text, width, height, seed, g_result);
     } catch (const std::bad_alloc&) {
         mpDeviceSetAllocationActive(false);
         MpAllocationTelemetry t = mpDeviceTelemetry();
-        char message[256];
+        char message[320];
         if (t.failure.valid) {
             snprintf(message, sizeof(message),
-                     "device OOM: phase=%u source=%u capability=%u request=%zu "
+                     "device OOM: line=%d phase=%u source=%u capability=%u request=%zu "
                      "internal_free=%zu largest=%zu psram_free=%zu psram_largest=%zu",
-                     (unsigned)t.failure.phase, (unsigned)t.failure.source,
+                     t.failure.sourceLine, (unsigned)t.failure.phase, (unsigned)t.failure.source,
                      (unsigned)t.failure.capability, t.failure.requested,
                      t.failure.internal.totalFree, t.failure.internal.largestFree,
                      t.failure.psram.totalFree, t.failure.psram.largestFree);
@@ -88,7 +171,8 @@ int mp_render(const char* src, int width, int height,
         return 0;
     }
 #else
-    path->run(std::string(src ? src : ""), width, height, seed, g_result);
+    if (stored) path->runStored(g_stored, width, height, seed, g_result);
+    else        path->run(text, width, height, seed, g_result);
 #endif
     if (!g_result.ok) g_error = g_result.error;
     return g_result.ok ? 1 : 0;
@@ -103,12 +187,21 @@ EMSCRIPTEN_KEEPALIVE const char* mp_error() { return g_error.c_str(); }
 
 // Counters, so the browser can show the same numbers the device logs.
 EMSCRIPTEN_KEEPALIVE int mp_display_list_items() { return g_result.counters.displayListItems; }
+EMSCRIPTEN_KEEPALIVE unsigned int mp_display_list_bytes()
+    { return (unsigned int)g_result.counters.displayListBytes; }
 EMSCRIPTEN_KEEPALIVE int mp_rendered_items()     { return g_result.counters.renderedItems; }
+EMSCRIPTEN_KEEPALIVE unsigned int mp_program_bytes()
+    { return (unsigned int)g_result.counters.programBytes; }
+EMSCRIPTEN_KEEPALIVE unsigned int mp_program_file_bytes()
+    { return (unsigned int)g_result.counters.programFileBytes; }
 EMSCRIPTEN_KEEPALIVE int mp_culled_offscreen()   { return g_result.counters.culledOffScreen; }
 EMSCRIPTEN_KEEPALIVE int mp_culled_occlusion()   { return g_result.counters.culledByOcclusion; }
 EMSCRIPTEN_KEEPALIVE double mp_ms_parse()        { return g_result.timings.parseMs; }
+EMSCRIPTEN_KEEPALIVE double mp_ms_load()         { return g_result.timings.loadMs; }
 EMSCRIPTEN_KEEPALIVE double mp_ms_displaylist()  { return g_result.timings.displayListMs; }
 EMSCRIPTEN_KEEPALIVE double mp_ms_rasterize()    { return g_result.timings.rasterizeMs; }
+EMSCRIPTEN_KEEPALIVE int mp_occupancy_map_used()
+    { return g_result.counters.occupancyMapUsed ? 1 : 0; }
 
 #if MP_DEVICE_CONSTRAINTS
 EMSCRIPTEN_KEEPALIVE void mp_set_device_state(int state)
@@ -139,16 +232,22 @@ EMSCRIPTEN_KEEPALIVE unsigned int mp_mem_current_internal_largest()
     { return (unsigned int)mpDeviceTelemetry().currentInternal.largestFree; }
 EMSCRIPTEN_KEEPALIVE unsigned int mp_mem_peak_internal_used()
     { return (unsigned int)mpDeviceTelemetry().peakInternalUsed; }
+EMSCRIPTEN_KEEPALIVE int mp_mem_peak_internal_line()
+    { return mpDeviceTelemetry().peakInternalSourceLine; }
 EMSCRIPTEN_KEEPALIVE unsigned int mp_mem_initial_psram_free()
     { return (unsigned int)mpDeviceTelemetry().initialPsram.totalFree; }
 EMSCRIPTEN_KEEPALIVE unsigned int mp_mem_current_psram_free()
     { return (unsigned int)mpDeviceTelemetry().currentPsram.totalFree; }
 EMSCRIPTEN_KEEPALIVE unsigned int mp_mem_peak_psram_used()
     { return (unsigned int)mpDeviceTelemetry().peakPsramUsed; }
+EMSCRIPTEN_KEEPALIVE int mp_mem_peak_psram_line()
+    { return mpDeviceTelemetry().peakPsramSourceLine; }
 EMSCRIPTEN_KEEPALIVE int mp_mem_failure_valid()
     { return mpDeviceTelemetry().failure.valid ? 1 : 0; }
 EMSCRIPTEN_KEEPALIVE unsigned int mp_mem_failure_request()
     { return (unsigned int)mpDeviceTelemetry().failure.requested; }
+EMSCRIPTEN_KEEPALIVE int mp_mem_failure_line()
+    { return mpDeviceTelemetry().failure.sourceLine; }
 EMSCRIPTEN_KEEPALIVE int mp_mem_failure_phase()
     { return (int)mpDeviceTelemetry().failure.phase; }
 EMSCRIPTEN_KEEPALIVE int mp_mem_failure_source()
@@ -183,8 +282,7 @@ int mp_parse(const char* src)
         g_parseErrors.push_back(std::string(e.c_str()));
     }
     g_assets.clear();
-    for (const auto& kv : g_parser.getAssets()) {
-        const MicroPatternsAsset& a = kv.second;
+    for (const MicroPatternsAsset& a : g_parser.getAssets()) {
         AssetView v;
         v.name = a.name.c_str();
         v.originalName = a.originalName.c_str();

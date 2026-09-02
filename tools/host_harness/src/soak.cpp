@@ -80,16 +80,14 @@ bool renderOnce(MicroPatternsParser& parser, const std::string& text, const Seed
     // that a use-after-free of the snapshot pool or the asset map has the same
     // window here as it does on device.
     MicroPatternsRuntime* runtime =
-        new MicroPatternsRuntime(W, H, parser.getAssets());
-    runtime->setCommands(&parser.getCommands());
-    runtime->setDeclaredVariables(&parser.getDeclaredVariables());
+        new MicroPatternsRuntime(W, H, parser.getProgram());
     runtime->setCounter(seed.counter);
     runtime->setTime(seed.hour, seed.minute, seed.second);
     runtime->generateDisplayList();
     outItems = (int)runtime->getDisplayList().size();
 
     DisplayListRenderer* renderer =
-        new DisplayListRenderer(&canvas, parser.getAssets(), W, H);
+        new DisplayListRenderer(&canvas, W, H);
     renderer->render(runtime->getDisplayList());
 
     outPixels = canvas.hostBuffer();

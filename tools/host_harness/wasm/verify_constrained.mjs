@@ -36,6 +36,8 @@ async function load(name, constrained) {
     };
     if (constrained) {
         api.setState = M.cwrap('mp_set_device_state', null, ['number']);
+        api.compile = M.cwrap('mp_compile', 'number', ['string']);
+        api.compileFileBytes = number('mp_compile_file_bytes');
         api.profile = M.cwrap('mp_device_profile', 'string', []);
         api.arduino = M.cwrap('mp_device_arduino', 'string', []);
         api.idf = M.cwrap('mp_device_idf', 'string', []);
@@ -45,6 +47,7 @@ async function load(name, constrained) {
             'mp_mem_initial_internal_free', 'mp_mem_current_internal_free',
             'mp_mem_current_internal_largest', 'mp_mem_peak_internal_used',
             'mp_mem_failure_valid', 'mp_mem_failure_request',
+            'mp_mem_failure_line',
             'mp_mem_failure_phase', 'mp_mem_failure_source',
             'mp_mem_failure_internal_free', 'mp_mem_failure_internal_largest',
         ]) api.mem[symbol] = number(symbol);
@@ -105,26 +108,35 @@ const fixtureOom = render(watchy, displayListOom, 200, 200);
 assert.equal(fixtureOom.ok, false, 'Watchy display-list fixture should exceed the calibrated heap');
 assert.equal(fixtureOom.memory.mp_mem_failure_phase, 3);
 assert.equal(fixtureOom.memory.mp_mem_failure_source, 1);
+assert.equal(fixtureOom.memory.mp_mem_failure_line, 6);
 assert.ok(fixtureOom.memory.mp_mem_failure_internal_largest <
     fixtureOom.memory.mp_mem_failure_request);
 console.log('OOM   Watchy tracked display-list fixture');
 
 if (seascape2) {
-    const sea = render(watchy, seascape2, 200, 200);
-    assert.equal(sea.ok, false, 'Watchy Seascape 2 should exceed the calibrated heap');
-    assert.match(sea.error, /^device OOM:/);
-    assert.equal(sea.memory.mp_mem_failure_valid, 1);
-    assert.equal(sea.memory.mp_mem_failure_phase, 3,
-        'failure must occur in display-list generation');
-    assert.equal(sea.memory.mp_mem_failure_source, 1,
-        'failure must come from C++ new/STL');
-    assert.equal(sea.memory.mp_mem_failure_request, 10240);
-    assert.ok(sea.memory.mp_mem_failure_internal_largest <
-        sea.memory.mp_mem_failure_request);
-    console.log(
-        `OOM   Watchy Seascape 2                 request=${sea.memory.mp_mem_failure_request} ` +
-        `free=${sea.memory.mp_mem_failure_internal_free} ` +
-        `largest=${sea.memory.mp_mem_failure_internal_largest}`);
+    // Seascape II is the script that used to reboot the Watchy on a button
+    // press: its parse tree (~146 KB of list nodes and Strings) did not fit
+    // next to the BLE stack. It is now the biggest program in the corpus and
+    // must go through the device's two stages cleanly:
+    //   1. compile at sync, radios off  (mp_compile)
+    //   2. load + render at wake, in ANY radio state (mp_render), never parsing
+    const compileOk = watchy.compile(seascape2);
+    const compileMem = Object.fromEntries(Object.entries(watchy.mem).map(([k, fn]) => [k, fn()]));
+    assert.equal(compileOk, 1, 'Seascape 2 must compile within the radios-off Watchy heap');
+    assert.equal(compileMem.mp_mem_failure_valid, 0);
+    const compileBytes = watchy.compileFileBytes();
+    assert.ok(compileBytes > 0 && compileBytes < 40000, `stored program should be a few tens of KB, got ${compileBytes}`);
+    console.log(`OK    Watchy Seascape 2 compile        peak=${compileMem.mp_mem_peak_internal_used} stored=${compileBytes}B`);
+
+    const expected = render(reference, seascape2, 200, 200);
+    for (const [label, state] of [['radios off', 0], ['BLE active', 1]]) {
+        const sea = render(watchy, seascape2, 200, 200, SEED, state);
+        samePixels(sea, expected, `Watchy Seascape 2 (${label})`);
+        assert.equal(sea.memory.mp_mem_failure_valid, 0);
+        assert.ok(sea.memory.mp_mem_peak_internal_used < 80000,
+            `render from stored program should stay well under the heap, got ${sea.memory.mp_mem_peak_internal_used}`);
+        console.log(`      ${label.padEnd(12)} peak=${sea.memory.mp_mem_peak_internal_used}`);
+    }
 } else {
     console.log('SKIP  exact Seascape 2 fixture is not present');
 }

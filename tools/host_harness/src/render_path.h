@@ -16,6 +16,7 @@
 #ifndef HOST_HARNESS_RENDER_PATH_H
 #define HOST_HARNESS_RENDER_PATH_H
 
+#include <cstddef>
 #include <memory>
 #include <string>
 #include <vector>
@@ -30,19 +31,24 @@ struct RenderSeed {
 };
 
 struct PhaseTimings {
-    double parseMs = 0.0;        // MicroPatternsParser::parse
+    double parseMs = 0.0;        // MicroPatternsParser::parse (+ serialize/deserialize on the compiled path)
+    double loadMs = 0.0;         // deserialize from stored bytes (runStored / compiled path)
     double displayListMs = 0.0;  // MicroPatternsRuntime::generateDisplayList
     double rasterizeMs = 0.0;    // DisplayListRenderer::render
     double totalMs = 0.0;        // sum of the three, plus object setup
 };
 
 struct RenderCounters {
+    size_t programBytes = 0;      // compiled program resident in RAM
+    size_t programFileBytes = 0;  // its serialized form ("compiled" path only)
     int displayListItems = 0;
+    size_t displayListBytes = 0;
     int totalItems = 0;
     int renderedItems = 0;
     int culledOffScreen = 0;
     int culledByOcclusion = 0;
     unsigned int overdrawSkippedPixels = 0; // pixels skipped by the occupancy map
+    bool occupancyMapUsed = false;
     // Honest label: this is "pixels whose final value differs from white",
     // derived by scanning the canvas. It is NOT a count of rawPixel() calls --
     // the drawing layer does not track that. Use it as a coverage proxy only.
@@ -63,6 +69,19 @@ public:
     virtual const char* name() const = 0;
     virtual void run(const std::string& scriptText, int width, int height,
                      const RenderSeed& seed, RenderResult& out) = 0;
+
+    // The two halves of the device's process, exposed separately so a caller
+    // can do what the device does: compile once (at sync, radios off) and keep
+    // the bytes "on flash", then render any number of times by loading them.
+    //
+    // compile(): parse + serialize. `outBytes` receives the stored form.
+    // Fills out.timings.parseMs / counters.programBytes / programFileBytes.
+    virtual bool compile(const std::string& scriptText, std::vector<uint8_t>& outBytes,
+                         RenderResult& out) { (void)scriptText; (void)outBytes; (void)out; return false; }
+    // runStored(): load from bytes + generate + rasterize, no parsing at all.
+    virtual void runStored(const std::vector<uint8_t>& bytes, int width, int height,
+                           const RenderSeed& seed, RenderResult& out)
+        { (void)bytes; (void)width; (void)height; (void)seed; out.ok = false; out.error = "not supported"; }
 };
 
 // Returns nullptr for an unknown name. Currently: "displaylist".

@@ -357,6 +357,9 @@ int main(int argc, char** argv) {
             printf("  ------------------------------------\n");
             printf("  total           %10.3f ms\n\n", t);
             printf("COUNTERS\n");
+            printf("  program bytes (RAM)      %10zu\n", r.counters.programBytes);
+            if (r.counters.programFileBytes)
+                printf("  program bytes (stored)   %10zu\n", r.counters.programFileBytes);
             printf("  display list items       %10d\n", r.counters.displayListItems);
             printf("  rendered items           %10d\n", r.counters.renderedItems);
             printf("  culled off-screen        %10d\n", r.counters.culledOffScreen);
