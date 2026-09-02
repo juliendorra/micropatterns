@@ -1,15 +1,116 @@
 on:
   push:
+  pull_request:
   delete:
-name: 🚀 Deploy and cleanup emulator website
+  workflow_dispatch:
+  schedule:
+    - cron: "17 4 * * 1"
+
+name: Verify firmware and deploy editor
+
+permissions:
+  contents: read
+
+env:
+  EMSDK_VERSION: 4.0.10
+  PLATFORMIO_VERSION: 6.1.19
+
 jobs:
+  engine-verification:
+    name: Engine, language, and WASM drift gates
+    runs-on: ubuntu-latest
+    if: github.event_name != 'delete'
+    steps:
+      - name: Check out sources
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          package-manager-cache: false
+
+      - name: Cache pinned Emscripten SDK
+        id: emsdk-cache
+        uses: actions/cache@v5
+        with:
+          path: ${{ runner.temp }}/emsdk
+          key: ${{ runner.os }}-emsdk-${{ env.EMSDK_VERSION }}-v1
+
+      - name: Install pinned Emscripten SDK
+        if: steps.emsdk-cache.outputs.cache-hit != 'true'
+        run: |
+          git clone https://github.com/emscripten-core/emsdk.git "$RUNNER_TEMP/emsdk"
+          git -C "$RUNNER_TEMP/emsdk" checkout 2be309c35198053e5211e25686b136ad50b9b360
+          "$RUNNER_TEMP/emsdk/emsdk" install "$EMSDK_VERSION"
+          "$RUNNER_TEMP/emsdk/emsdk" activate "$EMSDK_VERSION"
+
+      - name: Run required engine and editor gates
+        env:
+          EMSDK: ${{ runner.temp }}/emsdk
+        run: make -C tools/host_harness ci
+
+  firmware-builds:
+    name: Firmware build (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    if: >-
+      github.event_name == 'push' ||
+      github.event_name == 'pull_request' ||
+      github.event_name == 'workflow_dispatch'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Watchy 2
+            project: Watchy_MicroPatterns
+            environment: watchy2
+            config: Watchy_MicroPatterns/platformio.ini
+          - name: M5Paper
+            project: M5Paper_MicroPatterns
+            environment: m5stack-fire
+            config: M5Paper_MicroPatterns/platformio.ini
+    steps:
+      - name: Check out sources
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Cache PlatformIO packages
+        uses: actions/cache@v5
+        with:
+          path: ~/.platformio
+          key: ${{ runner.os }}-pio-${{ env.PLATFORMIO_VERSION }}-${{ hashFiles(matrix.config) }}
+          restore-keys: ${{ runner.os }}-pio-${{ env.PLATFORMIO_VERSION }}-
+
+      - name: Install pinned PlatformIO Core
+        run: python -m pip install "platformio==$PLATFORMIO_VERSION"
+
+      - name: Compile firmware
+        run: pio run --project-dir "${{ matrix.project }}" --environment "${{ matrix.environment }}"
+
+  memory-safety-soak:
+    name: Scheduled parser/runtime lifetime soak
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Check out sources
+        uses: actions/checkout@v6
+      - name: Run generated ASan/UBSan soak
+        run: make -C tools/host_harness soak
+
   web-deploy:
     name: 🎉 Deploy
     runs-on: ubuntu-latest
+    needs:
+      - engine-verification
+      - firmware-builds
     if: github.event_name == 'push'
     steps:
       - name: 🚚 Get latest code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: 🔧 Set deployment path
         id: deploy-path
