@@ -770,3 +770,29 @@ gesture keeps routine rendering in the radio-off memory profile.
 The long-press path remains safe: its NTP and script-sync functions stop BLE
 before bringing up Wi-Fi/TLS, so the two large radio working sets are not kept
 resident together.
+
+---
+
+## 2026-09-02 -- The web emulator now runs the firmware, and only the firmware
+
+The audit in `docs/analysis/web-device-renderer-audit.md` closed the gap between
+the JavaScript renderers and the device from 33,907 pixels to 1,228 -- and then
+the firmware renderer was compiled to WebAssembly and the gap became zero by
+construction: 18/18 golden images identical.
+
+At that point the three JavaScript renderers (interpreter, compiler, display
+list) had one remaining job, being a second implementation to audit against,
+and that job was done. So they are removed. The editor renders with the
+firmware, lints with the firmware's parser, and feeds its pattern previews and
+pixel editor from the firmware's parsed assets, all exported through the WASM
+module.
+
+Checked in a browser before committing: rendering, diagnostics with line
+numbers, the unquoted-`NAME` script the old parser rejected, pattern cloning,
+and pixel editing writing back into the script text. All gates green with the
+harness's JavaScript audit removed: verify 18/18, WASM 18/18, culling
+neutrality, no-map fallback, `audit-sweep`.
+
+What this buys beyond fidelity: there is now exactly one parser and one renderer
+for the language. Every divergence in the audit came from there being two.
+

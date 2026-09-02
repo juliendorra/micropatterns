@@ -7,26 +7,28 @@ be found by a human looking at two screens and noticing.
 
 ## How to check it (the answer to "what is the best way")
 
+> **Epilogue, 2026-09-02.** The JavaScript renderers this audit measured no
+> longer exist. See the last section. The method below is kept as written
+> because it is how the findings were obtained, and because it is the method to
+> reach for if a second implementation ever appears again.
+
 Run the **web** renderer headlessly over the **same corpus, same seeds, same
 canvas size** as the C++ harness, and byte-compare against the **same golden
 images**.
 
-    cd tools/host_harness
-    make audit-js              # web renderer vs C++ goldens
-    make audit-js-occlusion    # does the web renderer's culling change its own output?
-    ./build/mpharness compare-paths displaylist displaylist-noocc   # same, in C++
+    make audit-js              # web renderer vs C++ goldens        (REMOVED)
+    make audit-js-occlusion    # does the web culling change output? (REMOVED)
+    ./build/mpharness compare-paths displaylist displaylist-noocc   # still here
 
-`js/render.mjs` does the web half. The emulator's modules are plain ES modules
-that touch a very small slice of Canvas2D -- `fillStyle`, `fillRect`,
+`js/render.mjs` did the web half. The emulator's modules were plain ES modules
+that touched a very small slice of Canvas2D -- `fillStyle`, `fillRect`,
 `beginPath`/`rect`/`fill`, `get`/`put`/`createImageData` -- so a ~60-line shim
-runs them under Node with **no native canvas dependency**, which keeps this
-runnable anywhere. Node has no `DOMMatrix` either; there is a small 2D affine
-shim for it.
+ran them under Node with **no native canvas dependency**. Node has no
+`DOMMatrix` either; a small 2D affine shim stood in for it.
 
-The shim deliberately **throws** on any canvas feature the emulator does not
-currently use, so a future emulator change that reaches for a real canvas
-feature fails loudly here instead of silently rendering something different
-from the browser.
+The shim deliberately **threw** on any canvas feature the emulator did not use,
+so a future emulator change that reached for a real canvas feature would fail
+loudly instead of silently rendering something different from the browser.
 
 ## What the audit found
 
@@ -522,3 +524,56 @@ script:
   middle of the transform stack. Worth ruling in or out.
 - Make the firmware's parser strict about quoted asset names, or the web lax.
 - The audit runs at 960x540 only. The Watchy renders 200x200 and is not covered.
+
+## The JavaScript renderers are gone
+
+Once the firmware renderer ran in the browser byte-identically, the question
+was what the three JavaScript renderers -- interpreter, compiler, display list
+-- were still *for*. Each reason to keep one was checked rather than assumed:
+
+- **Fidelity.** None. The WASM build is 18/18 identical to the device goldens;
+  the best JavaScript path was still 1,228 pixels off after every rounding fix
+  in this document, with `PIXEL` needing an algorithm port to close.
+- **Speed.** None. `city`, the heaviest corpus script, rasterizes in 4.6ms in
+  WASM.
+- **Browser support.** None that matters. The module loads lazily and fails to
+  a clear message.
+- **Debuggability.** JavaScript is steppable in devtools and WASM is not, but
+  the person debugging the *renderer* works in C++ on the host harness, where
+  every gate in this document lives. Editor users never step the renderer.
+- **The parser.** The editor's lint came from the JavaScript parser, which is
+  the parser that rejected `LINE` outright and demanded quotes the firmware did
+  not. The WASM build exports the firmware parser (`mp_parse`), with line
+  numbers, so diagnostics now come from the parser whose verdict counts.
+- **Pattern previews and the pixel editor** needed parsed asset data -- name,
+  original-case name, width, height, 0/1 pixels. That is exactly the firmware's
+  `MicroPatternsAsset`, now exported (`mp_asset_*`) and copied out of the wasm
+  heap into plain arrays so the editor can mutate them and write them back.
+  Assets defined before a parse error are still delivered, so a broken script
+  keeps its patterns editable, which is what the JavaScript path did too.
+- **A second implementation to audit against.** This was the real value, and
+  it was spent: the audit found unsound culling and a `RECT` off-by-one in the
+  device that the JavaScript side did not have. Going forward, two
+  implementations are the *source* of divergence, not a defence against it.
+  The firmware has the golden gate; the web now simply runs the firmware.
+
+Removed: `drawing.js`, `parser.js`, `runtime.js`, `compiler.js`,
+`compiled_runtime.js`, `display_list_generator.js`, `display_list_renderer.js`,
+`int32.js`, the execution-path switch and its sixteen optimisation checkboxes,
+the profiling wrapper, and the harness's `js/render.mjs` with its `audit-js`
+targets. All in git history; none load in the editor.
+
+Verified in a browser before removal was committed: the welcome script renders
+(259,201 ink px), firmware diagnostics reach the log with line numbers,
+`FILL NAME=chk` unquoted renders 20,000 px where the old parser threw, cloning
+a pattern inserts a second `DEFINE PATTERN`, and clicking a preview pixel
+flips the corresponding bit in the script's `DATA=` string.
+
+What the firmware-only editor does **not** do: nothing observable that it did
+before, except offer a choice of renderer. The int32 emulation in `int32.js`
+is gone because it has nothing left to emulate -- the arithmetic is the
+firmware's own.
+
+"Still open" above is left as it stood; the first bullet is resolved by
+construction and the rest describe the audit's residue, which is history now.
+

@@ -1,28 +1,21 @@
-import { MicroPatternsCompiler } from './compiler.js';
-import { MicroPatternsCompiledRunner } from './compiled_runtime.js';
-import { MicroPatternsParser } from './parser.js';
-import { MicroPatternsRuntime } from './runtime.js';
-import { DisplayListGenerator } from './display_list_generator.js';
-import { DisplayListRenderer } from './display_list_renderer.js';
 import { DeviceRenderer } from './device_renderer.js';
 import { initProvisioning } from './provisioning.js';
 
 document.addEventListener('DOMContentLoaded', async () => {
 
-    let executionPath = 'displayList'; // 'interpreter', 'compiler', 'displayList', or 'device'
-    // The firmware's renderer compiled to WASM. Constructed eagerly, loaded lazily
-    // -- the module is only fetched the first time this path is actually used.
+    // The ONLY renderer. It is the device firmware's own C++ renderer and
+    // parser compiled to WebAssembly, byte-identical to what the M5Paper and
+    // the Watchy draw (tools/host_harness: `make verify-wasm`).
+    //
+    // There used to be three JavaScript renderers here as well -- an
+    // interpreter, a compiler and a display-list path -- and a switch between
+    // them. They were removed once the WASM build existed: they were a second
+    // implementation of the language, and an audit found them disagreeing with
+    // the device on rotated lines, circles, rect extents and integer overflow.
+    // The history is in docs/analysis/web-device-renderer-audit.md.
     const deviceRenderer = new DeviceRenderer();
-    // let USE_COMPILER = true; // This will be replaced by executionPath logic
-    let currentRuntimeInstance = null; // Store runtime instance for profiling access
-    let currentCompilerInstance = null; // For compiler instance access
-    let currentCompiledRunnerInstance = null; // For compiled runner instance access
-    let currentDisplayListGenerator = null; // For display list generator instance
-    let currentDisplayListRenderer = null; // For display list renderer instance
+    let showRenderStats = false;
 
-    let profilingEnabled = false; // Initialize profiling flag
-    let profilingData = {}; // Storage for profiling metrics
-    
     let isCounterLocked = false; // State for counter lock
     
     // SVG Icons are now directly in HTML. CSS will handle visibility.
@@ -57,30 +50,6 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // --- End Configuration ---
 
-    // Configuration for UI checkboxes related to optimizations
-    const checkboxesConfig = [
-        // Path-specific
-        { id: 'enableOcclusionCulling', configKey: 'enableOcclusionCulling', label: 'Occlusion Culling', paths: ['displayList'], rowId: 'occlusionCullingOptionRow' },
-        { id: 'enableOverdrawOptimization', configKey: 'enableOverdrawOptimization', label: 'Overdraw Optimization (Pixel Occupancy)', paths: ['compiler'] },
-        { id: 'enableTransformCaching', configKey: 'enableTransformCaching', label: 'Transform Caching', paths: ['compiler'] },
-        { id: 'enablePatternTileCaching', configKey: 'enablePatternTileCaching', label: 'Pattern Caching', paths: ['interpreter', 'compiler'] },
-        { id: 'enablePixelBatching', configKey: 'enablePixelBatching', label: 'Pixel Batching', paths: ['compiler'] },
-        // Compiler specific
-        { id: 'enableLoopUnrolling', configKey: 'enableLoopUnrolling', label: 'Loop Unrolling', paths: ['compiler'] },
-        { id: 'enableInvariantHoisting', configKey: 'enableInvariantHoisting', label: 'Invariant Hoisting', paths: ['compiler'] },
-        { id: 'enableFastPathSelection', configKey: 'enableFastPathSelection', label: 'Fast Path Selection', paths: ['compiler'] },
-        { id: 'enableSecondPassOptimization', configKey: 'enableSecondPassOptimization', label: 'Second-Pass Optimization', paths: ['compiler'] },
-        { id: 'enableDrawCallBatching', configKey: 'enableDrawCallBatching', label: 'Draw Call Batching', paths: ['compiler'] }, // Dependent on Second-Pass
-        { id: 'enableDeadCodeElimination', configKey: 'enableDeadCodeElimination', label: 'Dead Code Elimination', paths: ['compiler'] }, // Dependent on Second-Pass
-        { id: 'enableConstantFolding', configKey: 'enableConstantFolding', label: 'Constant Folding', paths: ['compiler'] }, // Dependent on Second-Pass
-        { id: 'enableTransformSequencing', configKey: 'enableTransformSequencing', label: 'Transform Sequencing', paths: ['compiler'] }, // Dependent on Second-Pass
-        { id: 'enableDrawOrderOptimization', configKey: 'enableDrawOrderOptimization', label: 'Draw Order Optimization', paths: ['compiler'] }, // Dependent on Second-Pass
-        { id: 'enableMemoryOptimization', configKey: 'enableMemoryOptimization', label: 'Memory Optimization', paths: ['compiler'] }, // Dependent on Second-Pass
-        // Logging (always visible)
-        { id: 'logOptimizationStats', configKey: 'logOptimizationStats', label: 'Log Optimization Stats', paths: ['logging'] },
-        { id: 'logProfilingReport', configKey: 'logProfilingReport', label: 'Log Profiling Report', paths: ['logging'] }
-    ];
-
     // --- Drag Drawing State ---
     let isDrawing = false;
     const scriptNameInput = document.getElementById('scriptName'); // Added: Get reference to script name input
@@ -91,14 +60,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     const userIdInput = document.getElementById('userId'); // Added User ID input
     const scriptListSelect = document.getElementById('scriptList'); // Added: Get reference to script list select
     const loadScriptButton = document.getElementById('loadScriptButton'); // Added: Get reference to load script button
-
-    // Global configuration object
-    const globalConfig = {
-        enableProfiling: true, // Enable profiling by default
-        enableTransformCaching: false,
-        enableRepeatOptimization: false,
-        enablePixelBatching: false
-    };
 
     // --- NanoID Import & Setup ---
     // Import nanoid
@@ -141,35 +102,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         API_BASE_URL = 'https://micropatterns-api.juliendorra.deno.net';
     }
     
-    // Compiler optimization configuration
-    const optimizationConfig = {
-        // Common
-        enableTransformCaching: true,      // UI is checked by default
-        enablePatternTileCaching: true,    // UI is checked by default
-        enablePixelBatching: true,         // UI is checked by default
-        logOptimizationStats: false,       // UI is unchecked by default
-        logProfilingReport: false,         // UI is unchecked by default
-
-        // Interpreter/Compiler specific
-        enableOverdrawOptimization: false, // (Pixel Occupancy) UI is unchecked by default
-
-        // Compiler specific
-        enableLoopUnrolling: true,         // UI is checked by default
-        loopUnrollThreshold: 8,            // No UI, compiler default is used
-        enableInvariantHoisting: true,     // UI is checked by default
-        enableFastPathSelection: true,     // UI is checked by default (newly added)
-        enableSecondPassOptimization: true,// UI is checked by default
-        enableDrawCallBatching: true,      // UI is checked by default (second pass sub-option)
-        enableDeadCodeElimination: true,   // UI is checked by default (second pass sub-option)
-        enableConstantFolding: true,       // UI is checked by default (second pass sub-option)
-        enableTransformSequencing: true,   // UI is checked by default (second pass sub-option)
-        enableDrawOrderOptimization: true, // UI is checked by default (second pass sub-option)
-        enableMemoryOptimization: true,    // UI is checked by default (second pass sub-option)
-
-        // Display List specific
-        enableOcclusionCulling: true,     // (Display List) UI is checked by default, and this config confirms it
-        occlusionBlockSize: 16             // Default block size for occlusion buffer
-    };
     // --- End Configuration ---
 
     // --- Drag Drawing State ---
@@ -356,105 +288,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
     // --- End Theme Switcher Logic ---
     
-    // --- Optimization Settings UI Logic ---
-
-    function updateOptimizationVisibility() {
-        checkboxesConfig.forEach(cbConfig => {
-            const checkbox = document.getElementById(cbConfig.id);
-            if (checkbox) {
-                const row = cbConfig.rowId ? document.getElementById(cbConfig.rowId) : checkbox.closest('.setting-row');
-                if (row) {
-                    const isRelevant = cbConfig.paths.includes(executionPath) || cbConfig.paths.includes('logging');
-                    row.style.display = isRelevant ? '' : 'none';
-                    
-                    // No need to disable checkboxes that aren't visible
-                    checkbox.disabled = false;
-                } else {
-                    console.warn(`Could not find row for checkbox ID '${cbConfig.id}'.`);
-                }
-            }
-        });
-        // After visibility is set, update dependent options like second-pass
-        updateSecondPassDependentOptionsUI();
+    // --- Renderer settings ---
+    function setupRendererUI() {
+        const statsBox = document.getElementById('logRenderStats');
+        if (statsBox) {
+            statsBox.checked = showRenderStats;
+            statsBox.addEventListener('change', (e) => { showRenderStats = e.target.checked; });
+        }
     }
-
-    function setupOptimizationUI() {
-        const executionPathRadios = document.querySelectorAll('input[name="executionPath"]');
-
-        executionPathRadios.forEach(radio => {
-            if (radio.value === executionPath) {
-                radio.checked = true;
-            }
-            radio.addEventListener('change', function(e) {
-                if (e.target.checked) {
-                    executionPath = e.target.value;
-                    console.log(`Execution path changed to: ${executionPath}`);
-                    updateOptimizationVisibility(); // Update visibility of all options
-                }
-            });
-        });
-        
-        checkboxesConfig.forEach(cbConfig => {
-            const checkbox = document.getElementById(cbConfig.id);
-            if (checkbox) {
-                checkbox.checked = optimizationConfig[cbConfig.configKey]; // Set initial state
-                checkbox.addEventListener('change', function(e) {
-                    optimizationConfig[cbConfig.configKey] = e.target.checked;
-                    console.log(`${cbConfig.label} changed to: ${e.target.checked}`);
-                    // If this is the master second-pass checkbox, update its dependents
-                    if (cbConfig.id === 'enableSecondPassOptimization') {
-                        updateSecondPassDependentOptionsUI();
-                    }
-                });
-            } else {
-                console.warn(`Checkbox with ID '${cbConfig.id}' not found in HTML.`);
-            }
-        });
-
-        // Initial visibility and dependent options setup
-        updateOptimizationVisibility();
-        // updateSecondPassDependentOptionsUI(); // Called by updateOptimizationVisibility
-    }
-    // --- End Optimization Settings UI Logic ---
-
-    // --- Update UI for Second-Pass Dependent Options ---
-    function updateSecondPassDependentOptionsUI() {
-        const secondPassCheckbox = document.getElementById('enableSecondPassOptimization');
-        if (!secondPassCheckbox) return;
-
-        // Check if the master "Second Pass Optimization" row is visible
-        const secondPassRow = secondPassCheckbox.closest('.setting-row');
-        const isSecondPassVisible = secondPassRow && secondPassRow.style.display !== 'none';
-
-        const isSecondPassEnabledAndVisible = isSecondPassVisible && secondPassCheckbox.checked;
-
-        const dependentOptionIds = [
-            'enableDrawCallBatching',
-            'enableDeadCodeElimination',
-            'enableConstantFolding',
-            'enableTransformSequencing',
-            'enableDrawOrderOptimization',
-            'enableMemoryOptimization'
-        ];
-
-        dependentOptionIds.forEach(id => {
-            const checkbox = document.getElementById(id);
-            if (checkbox) {
-                // Dependent options are disabled if master is not enabled OR if master is not visible
-                checkbox.disabled = !isSecondPassEnabledAndVisible;
-            }
-        });
-    }
-
-    // Initial setup for dependent options and listener for the master checkbox
-    // Note: The listener for 'enableSecondPassOptimization' is now set up within setupOptimizationUI's loop.
-    // We still need to ensure updateSecondPassDependentOptionsUI is called initially.
-
-    // Call initial UI updates after all listeners are attached
-    // updateOptimizationVisibility(); // This will be called by setupOptimizationUI
-    // updateSecondPassDependentOptionsUI(); // This will be called by updateOptimizationVisibility
-    // --- End Update UI for Second-Pass Dependent Options ---
-
+    // --- End Renderer settings ---
 
     // --- Autocompletion Logic ---
 
@@ -665,238 +507,55 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     function runScript() {
-        errorLog.textContent = ''; // Clear previous errors
+        errorLog.textContent = '';
         clearDisplay();
-
-        // `executionPath` is now a global variable updated by UI radio buttons
-        console.log(`runScript: executionPath = ${executionPath}`);
 
         const scriptText = codeMirrorEditor.getValue();
         const environment = getEnvironmentVariables();
-        if (executionPath === 'device') {
-            // The firmware's own renderer and parser, compiled to WASM. Nothing
-            // above this point applies: it does its own parsing, so the JS
-            // parser's verdict is not used, and the optimisation checkboxes
-            // describe the JS renderer's internals, not this one's.
-            console.log("Taking Device (WASM) Path");
 
-            // Asset previews come from the JS parser, best-effort. Deliberately
-            // NOT allowed to abort this path: the whole point of running the
-            // firmware's parser is to see what the DEVICE makes of a script,
-            // including a script the editor's own parser rejects. Letting the
-            // JS verdict gate it would hide exactly the disagreements this
-            // path exists to expose.
+        (async () => {
+            let hasErrors = false;
             try {
-                const preview = new MicroPatternsParser().parse(scriptText);
-                renderAssetPreviews(preview.assets);
-            } catch (e) {
-                console.warn("Device path: asset preview parse failed, continuing.", e);
-            }
+                // One parse, by the firmware's parser. Its diagnostics are the
+                // ones the device would produce.
+                const lint = await deviceRenderer.lint(scriptText);
+                lint.forEach((e) => displayError(
+                    e.line !== null ? `Line ${e.line}: ${e.message}` : e.message, "Parse"));
+                if (lint.length) hasErrors = true;
 
-            (async () => {
-                try {
-                    const lint = await deviceRenderer.lint(scriptText);
-                    lint.forEach((e) => displayError(
-                        e.line !== null ? `Line ${e.line}: ${e.message}` : e.message,
-                        "Device parser"));
+                // Previews from that same parse. Assets defined before any
+                // error are still there, so a broken script keeps its patterns
+                // visible and editable.
+                renderAssetPreviews({ assets: await deviceRenderer.assets() });
 
-                    const result = await deviceRenderer.render(scriptText, ctx, environment);
-                    if (!result.ok) {
-                        // lint() already reported parse errors; only add
-                        // anything the render itself objected to.
-                        if (lint.length === 0) displayError(result.error || 'render failed', "Device");
-                        return;
-                    }
-                    if (optimizationConfig.logOptimizationStats) {
-                        const s = result.stats;
-                        displayError(
-                            `items ${s.totalItems}, rendered ${s.renderedItems}, ` +
-                            `off-screen ${s.culledOffScreen}, occluded ${s.culledByOcclusion}, ` +
-                            `parse ${s.msParse.toFixed(1)}ms, list ${s.msDisplayList.toFixed(1)}ms, ` +
-                            `raster ${s.msRasterize.toFixed(1)}ms`, "Device stats");
-                    }
-                } catch (err) {
+                if (hasErrors) return;
+
+                const result = await deviceRenderer.render(scriptText, ctx, environment);
+                if (!result.ok) {
+                    displayError(result.error || 'render failed', "Render");
+                    hasErrors = true;
+                    return;
+                }
+                if (showRenderStats) {
+                    const st = result.stats;
                     displayError(
-                        `WebAssembly renderer unavailable: ${err && err.message ? err.message : err}`,
-                        "Device");
+                        `items ${st.totalItems}, rendered ${st.renderedItems}, ` +
+                        `off-screen ${st.culledOffScreen}, occluded ${st.culledByOcclusion}, ` +
+                        `parse ${st.msParse.toFixed(1)}ms, list ${st.msDisplayList.toFixed(1)}ms, ` +
+                        `raster ${st.msRasterize.toFixed(1)}ms`, "Stats");
                 }
-            })();
-            displayProfilingResults();
-            return;
-        }
-
-        const parser = new MicroPatternsParser();
-        let parseResult;
-        let hasErrors = false;
-
-        profilingEnabled = optimizationConfig.logProfilingReport === true; // Use UI checkbox for this
-        profilingData = {};
-
-        // --- Parsing Phase ---
-        try {
-            parseResult = parser.parse(scriptText);
-            if (parseResult.errors.length > 0) {
-                parseResult.errors.forEach(err => displayError(err.message, "Parse"));
+            } catch (err) {
                 hasErrors = true;
-                renderAssetPreviews(parseResult.assets); // Still render previews
-                return;
-            }
-            renderAssetPreviews(parseResult.assets);
-        } catch (e) {
-            displayError(`Unexpected Parser Crash: ${e.message}`, "Fatal Parse");
-            console.error(e);
-            hasErrors = true;
-            return;
-        }
-
-        // Reset instances for the current run
-        currentRuntimeInstance = null;
-        currentCompilerInstance = null;
-        currentCompiledRunnerInstance = null;
-        currentDisplayListGenerator = null;
-        currentDisplayListRenderer = null;
-
-        // --- Runtime Phase ---
-        if (executionPath === 'compiler') {
-            console.log("Taking Compiler Path");
-            // Compiler Path logic (mostly unchanged, ensure optimizationConfig is passed correctly)
-            if (optimizationConfig.enableSecondPassOptimization) {
-                // Logic to adjust sub-options based on their checkboxes (already in your existing code)
-            }
-            console.log("Compiler using optimization settings:", JSON.stringify(optimizationConfig, null, 2));
-            currentCompilerInstance = new MicroPatternsCompiler(optimizationConfig);
-            let compiledOutput;
-            if (profilingEnabled) wrapForProfiling(currentCompilerInstance, 'compile', profilingData);
-            try {
-                compiledOutput = currentCompilerInstance.compile(parseResult.commands, parseResult.assets.assets, environment);
-                if (compiledOutput.errors && compiledOutput.errors.length > 0) {
-                    compiledOutput.errors.forEach(err => displayError(err.message || err, "Compiler"));
-                    hasErrors = true;
-                }
-            } catch (e) {
-                displayError(`Compiler Crash: ${e.message}`, "Fatal Compiler");
-                console.error(e); hasErrors = true; return;
-            }
-            if (hasErrors && !compiledOutput.execute) { displayProfilingResults(); return; }
-
-            currentCompiledRunnerInstance = new MicroPatternsCompiledRunner(ctx, (msg) => { displayError(msg, "CompiledRuntime"); hasErrors = true; }, errorLog);
-            if (profilingEnabled) wrapForProfiling(currentCompiledRunnerInstance, 'execute', profilingData);
-            try {
-                currentCompiledRunnerInstance.execute(compiledOutput, parseResult.assets.assets, environment);
-            } catch (e) {
-                console.error("Unhandled Compiled Execution Exception:", e);
-                displayError(`Unexpected Compiled Execution Crash: ${e.message}`, "Fatal CompiledRuntime");
-                hasErrors = true;
-            }
-
-        } else if (executionPath === 'displayList') {
-            console.log("Taking Display List Path");
-            // --- Display List Path ---
-            currentDisplayListGenerator = new DisplayListGenerator(parseResult.assets.assets, environment);
-            // The parser produces `parseResult.variables` (a Set of declared var names).
-            // The generator needs initial values for these (default to 0).
-            const initialUserVariablesForGenerator = {};
-            parseResult.variables.forEach(varNameUpper => {
-                initialUserVariablesForGenerator[`$${varNameUpper}`] = 0;
-            });
-
-            if (profilingEnabled) wrapForProfiling(currentDisplayListGenerator, 'generate', profilingData);
-            
-            const generatorOutput = currentDisplayListGenerator.generate(parseResult.commands, initialUserVariablesForGenerator);
-
-            if (generatorOutput.errors.length > 0) {
-                generatorOutput.errors.forEach(err => displayError(err, "DisplayListGenerator"));
-                hasErrors = true;
-            }
-
-            if (hasErrors) { displayProfilingResults(); return; }
-
-            // Pass relevant parts of optimizationConfig to the renderer
-            // For Display List path, some optimizations are always enabled regardless of UI settings
-            const rendererOptimizationConfig = {
-                enableOcclusionCulling: optimizationConfig.enableOcclusionCulling,
-                occlusionBlockSize: optimizationConfig.occlusionBlockSize,
-                enablePixelBatching: true, // Always enabled for Display List
-                enablePatternTileCaching: true, // Always enabled for Display List
-                enableTransformCaching: true, // Always enabled for Display List
-            };
-            currentDisplayListRenderer = new DisplayListRenderer(ctx, parseResult.assets.assets, rendererOptimizationConfig);
-            
-            if (profilingEnabled) wrapForProfiling(currentDisplayListRenderer, 'render', profilingData);
-
-            try {
-                currentDisplayListRenderer.render(generatorOutput.displayList);
-                
-                // Log Display List stats only if LOG OPTIMIZATION STATS is enabled
-                if (optimizationConfig.logOptimizationStats) {
-                    const dlStats = currentDisplayListRenderer.getStats();
-                    let statsReport = "\n--- Display List Stats ---\n";
-                    statsReport += `Total Items: ${dlStats.totalItems}\n`;
-                    statsReport += `Rendered Items: ${dlStats.renderedItems}\n`;
-                    statsReport += `Culled (Off-Screen): ${dlStats.culledOffScreen}\n`;
-                    statsReport += `Culled (Occlusion): ${dlStats.culledByOcclusion}\n`;
-                    if (optimizationConfig.enableOcclusionCulling) {
-                        statsReport += `Occlusion Buffer: ${dlStats.occlusionBufferStats.gridWidth}x${dlStats.occlusionBufferStats.gridHeight} blocks (size ${dlStats.occlusionBufferStats.blockSize}px)\n`;
-                    }
-                    console.log(statsReport);
-                    if (errorLog) errorLog.textContent += statsReport;
-                }
-
-            } catch (e) {
-                console.error("Unhandled Display List Renderer Exception:", e);
-                displayError(`Unexpected Display List Renderer Crash: ${e.message}`, "Fatal DisplayListRenderer");
-                hasErrors = true;
-            }
-
-        } else { // Interpreter Path (default)
-            console.log("Taking Interpreter Path");
-            // --- Interpreter Path ---
-            currentRuntimeInstance = new MicroPatternsRuntime(ctx, parseResult.assets, environment, (msg) => { displayError(msg, "Runtime"); hasErrors = true; });
-            if (profilingEnabled) {
-                // Profiling setup for interpreter (as before)
-                const runtimeMethodsToProfile = ['executeCommand', 'evaluateExpression', 'evaluateCondition', '_resolveValue'];
-                runtimeMethodsToProfile.forEach(method => wrapForProfiling(currentRuntimeInstance, method, profilingData));
-                if (currentRuntimeInstance.drawing) {
-                    const drawingMethodsToProfile = [
-                        'drawLine', 'drawRect', 'fillRect', 'drawPixel', 'fillCircle', 'drawCircle',
-                        'drawFilledPixel', 'drawAsset', 'transformPoint', 'screenToLogicalBase',
-                        '_getFillAssetPixelColor', 'setPixel', '_rawLine'
-                    ];
-                    drawingMethodsToProfile.forEach(method => wrapForProfiling(currentRuntimeInstance.drawing, method, profilingData));
+                displayError(
+                    `WebAssembly renderer unavailable: ${err && err.message ? err.message : err}`,
+                    "Renderer");
+            } finally {
+                // Auto-increment the counter after a clean run, unless locked.
+                if (!hasErrors && !isCounterLocked) {
+                    env.COUNTER.value = parseInt(env.COUNTER.value, 10) + 1;
                 }
             }
-            // Pass relevant optimization flags to runtime if it uses them
-            // For example, if runtime.drawing uses enablePixelBatching from optimizationConfig
-            if (currentRuntimeInstance.drawing && currentRuntimeInstance.drawing.setOptimizationConfig) {
-                 currentRuntimeInstance.drawing.setOptimizationConfig({
-                    enablePixelBatching: optimizationConfig.enablePixelBatching,
-                    enableOverdrawOptimization: optimizationConfig.enableOverdrawOptimization,
-                    enableTransformCaching: optimizationConfig.enableTransformCaching,
-                    enablePatternTileCaching: optimizationConfig.enablePatternTileCaching,
-                 });
-            }
-
-            try {
-                currentRuntimeInstance.execute(parseResult.commands);
-            } catch (e) {
-                if (!e.isRuntimeError) {
-                    displayError(`Unexpected Interpreter Crash: ${e.message}`, "Fatal Interpreter");
-                    console.error("Unhandled Interpreter Exception:", e);
-                    hasErrors = true;
-                }
-            }
-        }
-        // --- End Runtime Phase ---
-
-        // Display profiling results if enabled
-        if (profilingEnabled) {
-            displayProfilingResults();
-        }
-
-        // Auto-increment counter if no errors occurred and counter is not locked
-        if (!hasErrors && !isCounterLocked) {
-            env.COUNTER.value = parseInt(env.COUNTER.value, 10) + 1;
-        }
+        })();
     }
 
     runButton.addEventListener('click', runScript);
@@ -1859,81 +1518,6 @@ FILL_RECT X=0 Y=0 WIDTH=$WIDTH HEIGHT=$HEIGHT
     // --- End Script Management Logic ---
 
     // --- Profiling System ---
-    function displayProfilingResults() {
-        // Check if profiling is enabled AND if the report logging is enabled via UI
-        if (!profilingEnabled || !optimizationConfig.logProfilingReport) return;
-
-        let report = "--- Profiling Report ---\n";
-        const sortedData = Object.entries(profilingData).sort(([, a], [, b]) => b.totalTime - a.totalTime);
-
-        for (const [methodName, stats] of sortedData) {
-            const avgTime = stats.totalTime / stats.calls;
-            report += `${methodName}: ${stats.calls} calls, ${stats.totalTime.toFixed(2)}ms total, ${avgTime.toFixed(3)}ms avg, ${stats.minTime.toFixed(3)}ms min, ${stats.maxTime.toFixed(3)}ms max\n`;
-            
-            if (methodName === 'execute' && currentCompiledRunnerInstance && currentCompiledRunnerInstance.executionStats) {
-                const execStats = currentCompiledRunnerInstance.executionStats;
-                report += "\n  --- Compiler Execution Breakdown ---\n"; // Clarify it's for compiler
-                report += `  Display Reset: ${execStats.resetTime.toFixed(2)}ms (${(execStats.resetTime / execStats.totalTime * 100).toFixed(1)}%)\n`;
-                report += `  Script Execution: ${execStats.compiledFunctionTime.toFixed(2)}ms (${(execStats.compiledFunctionTime / execStats.totalTime * 100).toFixed(1)}%)\n`;
-                report += `  Drawing Operations: ${execStats.drawingOperationsTime.toFixed(2)}ms (${(execStats.drawingOperationsTime / execStats.totalTime * 100).toFixed(1)}%)\n`;
-                report += `  Optimization Operations: ${execStats.optimizationTime.toFixed(2)}ms (${(execStats.optimizationTime / execStats.totalTime * 100).toFixed(1)}%)\n`;
-                report += `  Final Batch Flush: ${execStats.flushBatchTime.toFixed(2)}ms (${(execStats.flushBatchTime / execStats.totalTime * 100).toFixed(1)}%)\n`;
-                
-                report += "\n  --- Drawing Operation Counts ---\n";
-                report += `  Total Drawing Operations: ${execStats.drawingOperationCounts.total}\n`;
-                report += `  Pixels: ${execStats.drawingOperationCounts.pixel}\n`;
-                report += `  Lines: ${execStats.drawingOperationCounts.line}\n`;
-                report += `  Rectangles: ${execStats.drawingOperationCounts.rect}\n`;
-                report += `  Filled Rectangles: ${execStats.drawingOperationCounts.fillRect}\n`;
-                report += `  Circles: ${execStats.drawingOperationCounts.circle}\n`;
-                report += `  Filled Circles: ${execStats.drawingOperationCounts.fillCircle}\n`;
-                report += `  Pattern Draws: ${execStats.drawingOperationCounts.draw}\n`;
-                report += `  Filled Pixels: ${execStats.drawingOperationCounts.fillPixel}\n`;
-                report += `  Transformations: ${execStats.drawingOperationCounts.transform}\n`;
-            } else if (methodName === 'render' && currentDisplayListRenderer) {
-                // Add stats from DisplayListRenderer if available
-                const dlStats = currentDisplayListRenderer.getStats();
-                report += "  --- Display List Rendering Stats ---\n";
-                report += `  Total Items: ${dlStats.totalItems}\n`;
-                report += `  Rendered Items: ${dlStats.renderedItems}\n`;
-                report += `  Culled (Off-Screen): ${dlStats.culledOffScreen}\n`;
-                report += `  Culled (Occlusion): ${dlStats.culledByOcclusion}\n`;
-                 if (optimizationConfig.enableOcclusionCulling) {
-                    report += `  Occlusion Buffer: ${dlStats.occlusionBufferStats.gridWidth}x${dlStats.occlusionBufferStats.gridHeight} blocks (size ${dlStats.occlusionBufferStats.blockSize}px)\n`;
-                }
-            }
-        }
-
-        console.log(report);
-        errorLog.textContent += "\n" + report;
-    }
-
-    // Ensure wrapForProfiling is defined before it's potentially called in runScript
-    function wrapForProfiling(instance, methodName, dataStore) {
-        if (!instance || typeof instance[methodName] !== 'function') return;
-
-        const originalMethod = instance[methodName];
-        instance[methodName] = function (...args) {
-            if (!profilingEnabled) {
-                return originalMethod.apply(this, args);
-            }
-
-            const start = performance.now();
-            const result = originalMethod.apply(this, args);
-            const duration = performance.now() - start;
-
-            if (!dataStore[methodName]) {
-                dataStore[methodName] = { calls: 0, totalTime: 0, maxTime: 0, minTime: duration };
-            }
-            dataStore[methodName].calls++;
-            dataStore[methodName].totalTime += duration;
-            dataStore[methodName].maxTime = Math.max(dataStore[methodName].maxTime, duration);
-            dataStore[methodName].minTime = Math.min(dataStore[methodName].minTime, duration);
-
-            return result;
-        };
-    }
-    // --- End Profiling System ---
 
     // --- Device Provisioning (Web Bluetooth) ---
     // Shares the editor's User ID: prefilled from it, and a rotated ID written back.
@@ -1954,7 +1538,7 @@ FILL_RECT X=0 Y=0 WIDTH=$WIDTH HEIGHT=$HEIGHT
     // Run once on load
     initializeUserId(); // Initialize User ID first
     initializeProvisioningPanel(); // Provisioning panel reads the User ID above
-    setupOptimizationUI(); // Set up optimization UI controls
+    setupRendererUI(); // Set up optimization UI controls
     runScript();
     fetchScriptList(); // Fetch scripts when the page loads (will use currentUserId)
 });

@@ -26,6 +26,18 @@ std::string g_error;
 // Kept alive between calls so JS can read the strings out of the heap.
 MicroPatternsParser g_parser;
 std::vector<std::string> g_parseErrors;
+
+// Snapshot of the assets the last mp_parse() found, in a stable order, so the
+// editor's pattern previews and pattern editor can be fed from the firmware's
+// parser rather than from a second one. Copied out of the parser's map because
+// the map is keyed by uppercase name and the editor wants an index.
+struct AssetView {
+    std::string name;          // uppercase, the parser's key
+    std::string originalName;  // as written in the script
+    int width = 0, height = 0;
+    std::vector<unsigned char> data;   // width*height of 0/1
+};
+std::vector<AssetView> g_assets;
 }
 
 extern "C" {
@@ -85,8 +97,32 @@ int mp_parse(const char* src)
     for (const String& e : g_parser.getErrors()) {
         g_parseErrors.push_back(std::string(e.c_str()));
     }
+    g_assets.clear();
+    for (const auto& kv : g_parser.getAssets()) {
+        const MicroPatternsAsset& a = kv.second;
+        AssetView v;
+        v.name = a.name.c_str();
+        v.originalName = a.originalName.c_str();
+        v.width = a.width;
+        v.height = a.height;
+        v.data = a.data;
+        g_assets.push_back(std::move(v));
+    }
     return ok ? 1 : 0;
 }
+
+// --- assets from the last mp_parse() ----------------------------------------
+EMSCRIPTEN_KEEPALIVE int mp_asset_count() { return (int)g_assets.size(); }
+EMSCRIPTEN_KEEPALIVE const char* mp_asset_name(int i)
+{ return (i >= 0 && i < (int)g_assets.size()) ? g_assets[(size_t)i].name.c_str() : ""; }
+EMSCRIPTEN_KEEPALIVE const char* mp_asset_original_name(int i)
+{ return (i >= 0 && i < (int)g_assets.size()) ? g_assets[(size_t)i].originalName.c_str() : ""; }
+EMSCRIPTEN_KEEPALIVE int mp_asset_width(int i)
+{ return (i >= 0 && i < (int)g_assets.size()) ? g_assets[(size_t)i].width : 0; }
+EMSCRIPTEN_KEEPALIVE int mp_asset_height(int i)
+{ return (i >= 0 && i < (int)g_assets.size()) ? g_assets[(size_t)i].height : 0; }
+EMSCRIPTEN_KEEPALIVE const unsigned char* mp_asset_data(int i)
+{ return (i >= 0 && i < (int)g_assets.size()) ? g_assets[(size_t)i].data.data() : nullptr; }
 
 EMSCRIPTEN_KEEPALIVE int mp_parse_error_count() { return (int)g_parseErrors.size(); }
 EMSCRIPTEN_KEEPALIVE const char* mp_parse_error_at(int i)

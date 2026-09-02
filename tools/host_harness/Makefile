@@ -6,7 +6,6 @@
 #   make bench      benchmark the corpus
 #   make bake       REGENERATE goldens -- read README.md first
 #   make profile    build a -pg / frame-pointer flavour for profiling
-#   make audit-js   web-renderer vs C++ goldens (needs node)
 #   make cycle S=<script.mp>  does a script vary as $$COUNTER advances?
 #   make sweep S=<script.mp>  which values can it reach across the clock?
 #   make audit-sweep  the sweep gate, including the cases that must FAIL
@@ -147,19 +146,6 @@ stress-clean:
 
 clean:
 	rm -rf $(BUILD) build_san build_strict build_soak stress/generated
-
-# --- web/device equivalence -------------------------------------------------
-# Runs the EMULATOR's renderer headlessly (Node, no native canvas -- see
-# js/render.mjs) over this same corpus and seeds, and byte-compares to the same
-# goldens `verify` uses. This is the only check that the two implementations of
-# the renderer actually agree.
-.PHONY: audit-js audit-js-occlusion
-audit-js:
-	node js/render.mjs --compare-golden
-
-# Does the WEB renderer's own occlusion culling change its output? It must not.
-audit-js-occlusion:
-	node js/render.mjs --compare-occlusion
 
 # --- WebAssembly build of the firmware renderer -----------------------------
 # The same six core .cpp files this Makefile compiles for native, compiled by

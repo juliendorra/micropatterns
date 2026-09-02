@@ -46,7 +46,7 @@ mkdir -p "$OUT"
     -sMODULARIZE=1 -sEXPORT_ES6=1 -sENVIRONMENT=web,node \
     -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=32MB \
     -sEXPORTED_RUNTIME_METHODS='["cwrap","HEAPU8","UTF8ToString"]' \
-    -sEXPORTED_FUNCTIONS='["_mp_parse","_mp_parse_error_count","_mp_parse_error_at","_mp_render","_mp_pixels","_mp_width","_mp_height","_mp_error","_mp_display_list_items","_mp_rendered_items","_mp_culled_offscreen","_mp_culled_occlusion","_mp_ms_parse","_mp_ms_displaylist","_mp_ms_rasterize","_malloc","_free"]' \
+    -sEXPORTED_FUNCTIONS='["_mp_parse","_mp_parse_error_count","_mp_parse_error_at","_mp_asset_count","_mp_asset_name","_mp_asset_original_name","_mp_asset_width","_mp_asset_height","_mp_asset_data","_mp_render","_mp_pixels","_mp_width","_mp_height","_mp_error","_mp_display_list_items","_mp_rendered_items","_mp_culled_offscreen","_mp_culled_occlusion","_mp_ms_parse","_mp_ms_displaylist","_mp_ms_rasterize","_malloc","_free"]' \
     -o "$OUT/mp_render.mjs"
 
 ls -lh "$OUT"/mp_render.wasm "$OUT"/mp_render.mjs | awk '{print "  " $9 "  " $5}'

@@ -42,6 +42,12 @@ export class DeviceRenderer {
                 parse: M.cwrap('mp_parse', 'number', ['string']),
                 errCount: M.cwrap('mp_parse_error_count', 'number', []),
                 errAt: M.cwrap('mp_parse_error_at', 'number', ['number']),
+                assetCount: M.cwrap('mp_asset_count', 'number', []),
+                assetName: M.cwrap('mp_asset_name', 'number', ['number']),
+                assetOriginalName: M.cwrap('mp_asset_original_name', 'number', ['number']),
+                assetWidth: M.cwrap('mp_asset_width', 'number', ['number']),
+                assetHeight: M.cwrap('mp_asset_height', 'number', ['number']),
+                assetData: M.cwrap('mp_asset_data', 'number', ['number']),
                 stats: {
                     items: M.cwrap('mp_display_list_items', 'number', []),
                     rendered: M.cwrap('mp_rendered_items', 'number', []),
@@ -75,6 +81,34 @@ export class DeviceRenderer {
             out.push(match
                 ? { line: parseInt(match[1], 10), message: match[2], raw }
                 : { line: null, message: raw, raw });
+        }
+        return out;
+    }
+
+    // The patterns the last lint() found, keyed by uppercase name, in the shape
+    // the editor's preview panel and pixel editor already consume:
+    //   { name, originalName, width, height, data: number[] of 0/1 }
+    //
+    // Plain arrays, not views into the wasm heap: the pixel editor mutates
+    // asset.data in place and writes it back into the script text, and a heap
+    // view could be invalidated by the next call that grows memory.
+    //
+    // Call lint() first -- this reads whatever the firmware parser last saw.
+    // Assets defined before a parse error are still present, so a broken
+    // script keeps its patterns editable.
+    async assets() {
+        const m = await this.ready();
+        const out = {};
+        const n = m.assetCount();
+        for (let i = 0; i < n; i++) {
+            const w = m.assetWidth(i), h = m.assetHeight(i), ptr = m.assetData(i);
+            const name = m.M.UTF8ToString(m.assetName(i));
+            out[name] = {
+                name,
+                originalName: m.M.UTF8ToString(m.assetOriginalName(i)),
+                width: w, height: h,
+                data: Array.from(m.M.HEAPU8.subarray(ptr, ptr + w * h)),
+            };
         }
         return out;
     }

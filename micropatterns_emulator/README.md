@@ -36,7 +36,17 @@ For the full MicroPatterns language specification and project details, please se
 
 ## Emulator Implementation Notes
 
-*   The emulator uses the HTML Canvas 2D API for rendering.
+*   Rendering is done by the **device firmware itself**, compiled to WebAssembly
+    (`wasm/mp_render.{mjs,wasm}`). The same six C++ source files the M5Paper and
+    the Watchy run produce the pixels here, byte-for-byte (verified against the
+    firmware's golden images by `make verify-wasm` in `tools/host_harness`).
+    Parse errors and pattern previews also come from the firmware's parser.
+*   To rebuild the WebAssembly after a renderer change: run
+    `tools/host_harness/wasm/build.sh` and copy the two files from
+    `tools/host_harness/wasm/out/` into `wasm/`. They are committed because this
+    page deploys as static files with no build step.
+*   There used to be three JavaScript renderers here. They were removed once the
+    WASM build existed; see `docs/analysis/web-device-renderer-audit.md`.
 *   It simulates integer math where specified by the DSL (e.g., rotation, division in `LET`, coordinate calculations).
 *   **Case-Insensitive:** Following the DSL spec, keywords, parameter names, variable names, pattern names, and environment variable names are treated case-insensitively by the parser and runtime. They are typically converted to uppercase internally for consistent handling.
 *   Rotation uses pre-calculated sine/cosine tables scaled for integer operations, mimicking a potential target environment.

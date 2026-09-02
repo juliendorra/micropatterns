@@ -39,6 +39,12 @@
             font-weight: bold;
         }
 
+        #rendererSettings .renderer-note {
+            font-size: 0.8em;
+            line-height: 1.4;
+            margin: 6px 0 8px;
+        }
+
         #provisioningPanel .prov-hint {
             font-size: 0.8em;
             line-height: 1.4;
@@ -218,68 +224,12 @@ ENDREPEAT
         </textarea>
         <button id="runButton"><span>Run Script</span></button>
 
-        <div id="optimizationSettings" class="settings-section">
-            <h3>Execution Path & Optimizations</h3>
+        <div id="rendererSettings" class="settings-section">
+            <h3>Renderer</h3>
+            <p class="renderer-note">Rendered by the device firmware itself, compiled to WebAssembly.
+               What you see here is byte-for-byte what the M5Paper and the Watchy draw.</p>
             <div class="setting-row">
-                <label style="font-weight: bold;">Execution Path:</label>
-                <div id="executionPathOptions" style="display: inline-block; margin-left: 10px;">
-                    <label><input type="radio" name="executionPath" value="interpreter"> Interpreter</label>
-                    <label><input type="radio" name="executionPath" value="compiler"> Compiler (JS)</label>
-                    <label><input type="radio" name="executionPath" value="displayList" checked> Display List</label>
-                    <label title="The firmware's own C++ renderer and parser, compiled to WebAssembly. Byte-identical to what the device draws."><input type="radio" name="executionPath" value="device"> Device (WASM)</label>
-                </div>
-            </div>
-            <hr class="separator">
-            <div class="setting-row" id="occlusionCullingOptionRow"> <!-- Initially visible -->
-                <label><input type="checkbox" id="enableOcclusionCulling" checked> Occlusion Culling</label>
-            </div>
-            <div class="setting-row">
-                <label><input type="checkbox" id="enableOverdrawOptimization"> Overdraw Pixel Occupancy</label>
-            </div>
-            <div class="setting-row">
-                <label><input type="checkbox" id="enableTransformCaching" checked> Transform Caching</label>
-            </div>
-            <div class="setting-row">
-                <label><input type="checkbox" id="enablePatternTileCaching" checked> Pattern Caching</label>
-            </div>
-            <div class="setting-row">
-                <label><input type="checkbox" id="enablePixelBatching" checked> Pixel Batching</label>
-            </div>
-            <div class="setting-row">
-                <label><input type="checkbox" id="enableLoopUnrolling" checked> Loop Unrolling</label>
-            </div>
-            <div class="setting-row">
-                <label><input type="checkbox" id="enableInvariantHoisting" checked> Invariant Hoisting</label>
-            </div>
-            <div class="setting-row">
-                <label><input type="checkbox" id="enableFastPathSelection" checked> Fast Path Selection</label>
-            </div>
-            <div class="setting-row">
-                <label><input type="checkbox" id="enableSecondPassOptimization" checked> Second-Pass Optimization</label>
-            </div>
-            <div class="setting-row">
-                <label><input type="checkbox" id="enableDrawCallBatching" checked> Draw Call Batching</label>
-            </div>
-            <div class="setting-row">
-                <label><input type="checkbox" id="enableDeadCodeElimination" checked> Dead Code Elimination</label>
-            </div>
-            <div class="setting-row">
-                <label><input type="checkbox" id="enableConstantFolding" checked> Constant Folding</label>
-            </div>
-            <div class="setting-row">
-                <label><input type="checkbox" id="enableTransformSequencing" checked> Transform Sequencing</label>
-            </div>
-            <div class="setting-row">
-                <label><input type="checkbox" id="enableDrawOrderOptimization" checked> Draw Order Optimization</label>
-            </div>
-            <div class="setting-row">
-                <label><input type="checkbox" id="enableMemoryOptimization" checked> Memory Optimization</label>
-            </div>
-            <div class="setting-row">
-                <label><input type="checkbox" id="logOptimizationStats"> Log Optimization Stats</label>
-            </div>
-            <div class="setting-row">
-                <label><input type="checkbox" id="logProfilingReport"> Log Profiling Report</label>
+                <label><input type="checkbox" id="logRenderStats"> Log render stats</label>
             </div>
         </div>
         <div id="errorLog"></div>
@@ -473,11 +423,6 @@ ENDREPEAT
     <!-- MicroPatterns Mode for CodeMirror -->
     <script src="micropatterns-mode.js"></script>
 
-    <script type="module" src="drawing.js"></script>
-    <script type="module" src="parser.js"></script>
-    <script type="module" src="runtime.js"></script>
-    <script type="module" src="display_list_generator.js"></script>
-    <script type="module" src="display_list_renderer.js"></script>
     <script type="module" src="simulator.js"></script>
     <script src="scroll-handler.js"></script> <!-- Add the new scroll handler -->
 </body>
