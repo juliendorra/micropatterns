@@ -2,9 +2,9 @@
 //
 // This is not a third implementation of MicroPatterns -- it is the firmware's
 // own C++ renderer and parser, compiled to WebAssembly from the same six source
-// files the M5Paper and the Watchy run. Byte-identical to the device: see
-// `make verify-wasm` in tools/host_harness, which checks it against the same
-// golden images the firmware is gated on.
+// files the M5Paper and the Watchy run. Successful pixel output is checked
+// byte-for-byte against the canonical firmware WASM build; device resource
+// fidelity and its documented calibration limits are a separate layer.
 //
 // Rebuild with `tools/host_harness/wasm/build.sh` and copy the two files in
 // wasm/ across. The glue is mp_render.js -- see build.sh for why not .mjs. They are committed because this page is deployed as
@@ -13,11 +13,9 @@
 // .js, never .mjs: the static host serves .mjs with no Content-Type and the
 // browser refuses to execute it as a module. See tools/host_harness/wasm/build.sh.
 //
-// Only `reference` is committed and deployed today. The per-device constrained
-// builds (tools/host_harness/wasm/build_constrained.sh) are in progress; until
-// their files are copied into wasm/, asking for them falls back to `reference`
-// rather than breaking the editor -- which is exactly what happened in
-// production when `m5paper` was the default and its module did not exist.
+// The two per-device constrained builds come from build_constrained.sh. If a
+// static deployment omits either artifact, asking for it falls back to the
+// canonical reference module instead of breaking the editor.
 const MODULE_PATHS = {
     reference: './wasm/mp_render.js',
     watchy: './wasm/mp_render_watchy.js',
@@ -105,9 +103,11 @@ export class DeviceRenderer {
                 const number = (name) => M.cwrap(name, 'number', []);
                 wrapped.setDeviceState = M.cwrap('mp_set_device_state', null, ['number']);
                 wrapped.profileName = M.cwrap('mp_device_profile', 'number', []);
+                wrapped.arduinoVersion = M.cwrap('mp_device_arduino', 'number', []);
                 wrapped.idfVersion = M.cwrap('mp_device_idf', 'number', []);
                 wrapped.memory = {
                     calibrated: number('mp_device_profile_calibrated'),
+                    stateCalibrated: number('mp_device_state_calibrated'),
                     allocationCalls: number('mp_mem_allocation_calls'),
                     reallocCalls: number('mp_mem_realloc_calls'),
                     freeCalls: number('mp_mem_free_calls'),
@@ -137,15 +137,18 @@ export class DeviceRenderer {
 
     memorySnapshot(m) {
         if (!m.constrained) {
-            return { profile: 'reference', idfVersion: null, calibrated: false,
+            return { profile: 'reference', arduinoVersion: null, idfVersion: null,
+                calibrated: false, stateCalibrated: false,
                 deviceState: this.deviceState, constrained: false, failure: null };
         }
         const x = m.memory;
         const failed = !!x.failureValid();
         return {
             profile: m.M.UTF8ToString(m.profileName()),
+            arduinoVersion: m.M.UTF8ToString(m.arduinoVersion()),
             idfVersion: m.M.UTF8ToString(m.idfVersion()),
             calibrated: !!x.calibrated(),
+            stateCalibrated: !!x.stateCalibrated(),
             constrained: true,
             deviceState: this.deviceState,
             allocationCalls: x.allocationCalls(),

@@ -110,6 +110,11 @@ build_profile() {
         -sEXPORTED_FUNCTIONS='["_mp_parse","_mp_parse_error_count","_mp_parse_error_at","_mp_asset_count","_mp_asset_name","_mp_asset_original_name","_mp_asset_width","_mp_asset_height","_mp_asset_data","_mp_render","_mp_pixels","_mp_width","_mp_height","_mp_error","_mp_display_list_items","_mp_rendered_items","_mp_culled_offscreen","_mp_culled_occlusion","_mp_ms_parse","_mp_ms_displaylist","_mp_ms_rasterize","_mp_set_device_state","_mp_device_profile","_mp_device_arduino","_mp_device_idf","_mp_device_profile_calibrated","_mp_device_state_calibrated","_mp_mem_allocation_calls","_mp_mem_realloc_calls","_mp_mem_free_calls","_mp_mem_initial_internal_free","_mp_mem_initial_internal_largest","_mp_mem_current_internal_free","_mp_mem_current_internal_largest","_mp_mem_peak_internal_used","_mp_mem_initial_psram_free","_mp_mem_current_psram_free","_mp_mem_peak_psram_used","_mp_mem_failure_valid","_mp_mem_failure_request","_mp_mem_failure_phase","_mp_mem_failure_source","_mp_mem_failure_capability","_mp_mem_failure_internal_free","_mp_mem_failure_internal_largest","_mp_mem_failure_psram_free","_mp_mem_failure_psram_largest","_malloc","_free"]' \
         -o "$OUT/$output.js"
 
+    # Emscripten emits a whitespace-only line in its ES-module wrapper. Keep
+    # committed static artifacts friendly to repository whitespace checks.
+    sed 's/[[:blank:]]*$//' "$OUT/$output.js" > "$OUT/$output.js.tmp"
+    mv "$OUT/$output.js.tmp" "$OUT/$output.js"
+
     ls -lh "$OUT/$output.wasm" "$OUT/$output.js" | awk '{print "  " $9 "  " $5}'
 }
 

@@ -13,7 +13,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     // implementation of the language, and an audit found them disagreeing with
     // the device on rotated lines, circles, rect extents and integer overflow.
     // The history is in docs/analysis/web-device-renderer-audit.md.
-    const deviceRenderer = new DeviceRenderer();
+    const deviceRenderer = new DeviceRenderer('m5paper');
     let showRenderStats = false;
 
     let isCounterLocked = false; // State for counter lock
@@ -34,6 +34,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     const realTimeMinuteSpan = document.getElementById('realTimeMinuteSpan');
     const realTimeSecondSpan = document.getElementById('realTimeSecondSpan');
     const lineWrapToggle = document.getElementById('lineWrapToggle'); // Get the checkbox
+    const deviceProfileSelect = document.getElementById('deviceProfileSelect');
+    const deviceStateSelect = document.getElementById('deviceStateSelect');
+    const deviceMemoryReport = document.getElementById('deviceMemoryReport');
 
     // Display Size UI
     const displaySizeSelect = document.getElementById('displaySizeSelect');
@@ -289,11 +292,102 @@ document.addEventListener('DOMContentLoaded', async () => {
     // --- End Theme Switcher Logic ---
     
     // --- Renderer settings ---
+    const ALLOCATION_PHASES = ['idle', 'source load', 'parse', 'display-list',
+        'rasterize', 'browser output'];
+    const ALLOCATION_SOURCES = ['explicit allocation', 'C++ new/STL',
+        'Arduino String', 'radio reservation'];
+    const MEMORY_CAPABILITIES = ['default 8-bit heap', 'internal RAM', 'PSRAM'];
+    const DEVICE_STATES = ['radios off', 'BLE active', 'Wi-Fi/TLS active'];
+
+    function bytes(value) {
+        return `${Number(value || 0).toLocaleString()} B`;
+    }
+
+    function updateDeviceMemoryReport(memory) {
+        if (!deviceMemoryReport) return;
+        deviceMemoryReport.classList.toggle('device-memory-failure',
+            !!(memory && memory.failure));
+        if (!memory) {
+            deviceMemoryReport.textContent = 'Device memory has not been measured yet.';
+            return;
+        }
+        if (!memory.constrained) {
+            deviceMemoryReport.textContent =
+                'Unconstrained reference renderer\n' +
+                'Pixel oracle only — device allocation limits are disabled.';
+            return;
+        }
+
+        const lines = [
+            `${memory.profile} · Arduino ${memory.arduinoVersion} · ESP-IDF ${memory.idfVersion}`,
+            `State: ${DEVICE_STATES[memory.deviceState] || 'unknown'}`,
+            `Budget: ${memory.stateCalibrated ? 'calibrated' : 'PROVISIONAL'}`,
+            `Internal: initial ${bytes(memory.internal.initialFree)} ` +
+                `(largest ${bytes(memory.internal.initialLargest)}), ` +
+                `current ${bytes(memory.internal.currentFree)} ` +
+                `(largest ${bytes(memory.internal.currentLargest)}), ` +
+                `peak used ${bytes(memory.internal.peakUsed)}`,
+        ];
+        if (memory.psram.initialFree || memory.psram.peakUsed) {
+            lines.push(
+                `PSRAM: initial ${bytes(memory.psram.initialFree)}, ` +
+                `current ${bytes(memory.psram.currentFree)}, ` +
+                `peak used ${bytes(memory.psram.peakUsed)}`);
+        }
+        lines.push(
+            `Calls: ${memory.allocationCalls} alloc · ${memory.reallocCalls} realloc · ` +
+            `${memory.freeCalls} free`);
+
+        if (memory.failure) {
+            const f = memory.failure;
+            lines.push(
+                '',
+                'DEVICE WOULD REBOOT',
+                `Failed in ${ALLOCATION_PHASES[f.phase] || `phase ${f.phase}`} via ` +
+                    `${ALLOCATION_SOURCES[f.source] || `source ${f.source}`}`,
+                `Requested ${bytes(f.request)} from ` +
+                    `${MEMORY_CAPABILITIES[f.capability] || `capability ${f.capability}`}`,
+                `At failure: internal free ${bytes(f.internalFree)}, ` +
+                    `largest block ${bytes(f.internalLargest)}`);
+            if (f.psramFree || f.psramLargest) {
+                lines.push(
+                    `At failure: PSRAM free ${bytes(f.psramFree)}, ` +
+                    `largest block ${bytes(f.psramLargest)}`);
+            }
+        }
+        deviceMemoryReport.textContent = lines.join('\n');
+    }
+
     function setupRendererUI() {
         const statsBox = document.getElementById('logRenderStats');
         if (statsBox) {
             statsBox.checked = showRenderStats;
             statsBox.addEventListener('change', (e) => { showRenderStats = e.target.checked; });
+        }
+        if (deviceProfileSelect) {
+            deviceProfileSelect.value = deviceRenderer.profile;
+            deviceProfileSelect.addEventListener('change', (event) => {
+                const profile = event.target.value;
+                deviceRenderer.setProfile(profile);
+                if (profile === 'm5paper') {
+                    displaySizeSelect.value = '540x960';
+                    m5PaperZoomFactor = 0.5;
+                    updateCanvasDimensions(540, 960);
+                } else if (profile === 'watchy') {
+                    displaySizeSelect.value = '200x200';
+                    updateCanvasDimensions(200, 200);
+                }
+                updateDeviceMemoryReport(null);
+                runScript();
+            });
+        }
+        if (deviceStateSelect) {
+            deviceStateSelect.value = String(deviceRenderer.deviceState);
+            deviceStateSelect.addEventListener('change', (event) => {
+                deviceRenderer.setDeviceState(parseInt(event.target.value, 10));
+                updateDeviceMemoryReport(null);
+                runScript();
+            });
         }
     }
     // --- End Renderer settings ---
@@ -462,6 +556,14 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (newWidth === 540 && newHeight === 960) {
                 m5PaperZoomFactor = 0.5; // Reset to 50% zoom when selecting M5Paper
             }
+            const nativeProfile = newWidth === 540 && newHeight === 960
+                ? 'm5paper'
+                : (newWidth === 200 && newHeight === 200 ? 'watchy' : null);
+            if (nativeProfile && deviceProfileSelect) {
+                deviceProfileSelect.value = nativeProfile;
+                deviceRenderer.setProfile(nativeProfile);
+                updateDeviceMemoryReport(null);
+            }
             updateCanvasDimensions(newWidth, newHeight);
             runScript(); // Re-run script with new dimensions
         });
@@ -509,6 +611,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     function runScript() {
         errorLog.textContent = '';
         clearDisplay();
+        if (deviceMemoryReport) {
+            deviceMemoryReport.classList.remove('device-memory-failure');
+            deviceMemoryReport.textContent = 'Running firmware renderer…';
+        }
 
         const scriptText = codeMirrorEditor.getValue();
         const environment = getEnvironmentVariables();
@@ -528,9 +634,13 @@ document.addEventListener('DOMContentLoaded', async () => {
                 // visible and editable.
                 renderAssetPreviews({ assets: await deviceRenderer.assets() });
 
-                if (hasErrors) return;
+                if (hasErrors) {
+                    updateDeviceMemoryReport(null);
+                    return;
+                }
 
                 const result = await deviceRenderer.render(scriptText, ctx, environment);
+                updateDeviceMemoryReport(result.memory);
                 if (!result.ok) {
                     displayError(result.error || 'render failed', "Render");
                     hasErrors = true;

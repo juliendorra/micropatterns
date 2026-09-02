@@ -45,6 +45,35 @@
             margin: 6px 0 8px;
         }
 
+        #rendererSettings .setting-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin: 7px 0;
+        }
+
+        #deviceMemoryReport {
+            box-sizing: border-box;
+            width: 100%;
+            margin: 9px 0 0;
+            padding: 9px;
+            overflow-x: auto;
+            white-space: pre-wrap;
+            font-size: 0.76em;
+            line-height: 1.4;
+            background: var(--bg-color-alt, #fff);
+            color: var(--text-color, #111);
+            border: 1px solid currentColor;
+        }
+
+        #deviceMemoryReport.device-memory-failure {
+            border-width: 3px;
+            color: var(--error-color-fg, #721c24);
+            background: var(--error-color-bg, #f8d7da);
+            font-weight: bold;
+        }
+
         #provisioningPanel .prov-hint {
             font-size: 0.8em;
             line-height: 1.4;
@@ -227,10 +256,28 @@ ENDREPEAT
         <div id="rendererSettings" class="settings-section">
             <h3>Renderer</h3>
             <p class="renderer-note">Rendered by the device firmware itself, compiled to WebAssembly.
-               What you see here is byte-for-byte what the M5Paper and the Watchy draw.</p>
+               The constrained profiles also use each firmware's Arduino String and
+               ESP-IDF allocator.</p>
+            <div class="setting-row">
+                <label for="deviceProfileSelect">Device:</label>
+                <select id="deviceProfileSelect">
+                    <option value="m5paper">M5Paper (provisional memory map)</option>
+                    <option value="watchy">Watchy 2 (off/BLE calibrated)</option>
+                    <option value="reference">Unconstrained reference</option>
+                </select>
+            </div>
+            <div class="setting-row">
+                <label for="deviceStateSelect">Memory state:</label>
+                <select id="deviceStateSelect">
+                    <option value="0">Radios off</option>
+                    <option value="1">BLE active</option>
+                    <option value="2">Wi-Fi / TLS active</option>
+                </select>
+            </div>
             <div class="setting-row">
                 <label><input type="checkbox" id="logRenderStats"> Log render stats</label>
             </div>
+            <pre id="deviceMemoryReport" role="status" aria-live="polite">Device memory has not been measured yet.</pre>
         </div>
         <div id="errorLog"></div>
     </div>
@@ -241,7 +288,7 @@ ENDREPEAT
             <label for="displaySizeSelect">Display Size:</label>
             <select id="displaySizeSelect">
                 <option value="540x960">540x960 (M5Paper)</option>
-                <option value="200x200">200x200 (Default)</option>
+                <option value="200x200">200x200 (Watchy 2)</option>
             </select>
             <button id="zoomToggleButton" title="Toggle M5Paper Zoom (50%/100%)" class="secondary">Zoom</button>
 
