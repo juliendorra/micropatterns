@@ -706,3 +706,21 @@ diverge on hardware nobody can see.
 What this still does not cover, and what the battery pull remains the only test
 for: what the time registers actually read after a true power loss. They are
 undefined. `invalidate()` zeroes them, which is a guess at the pessimistic case.
+
+## 2026-09-02 -- Watchy samples every second of the minute
+
+The Watchy's automatic re-render interval changed from 77 to 83 seconds. Because
+`gcd(83, 60) = 1`, each wake advances by 23 seconds modulo one minute and visits
+all 60 second offsets before repeating. The order is deliberately scattered
+rather than sequential: `0, 23, 46, 9, 32, ...`.
+
+The previous value 77 was already coprime with 60 and therefore already had
+full coverage, with a stride of 17. The change to 83 does not create that
+mathematical property; it selects a different scattered traversal while
+preserving it. Primality is useful shorthand here, but coprimality with 60 is
+the property the schedule depends on.
+
+This matters for scripts that branch on `$SECOND`. A cadence sharing a factor
+with 60 would make some branches unreachable during automatic rendering. The
+83-second cadence also remains close to the previous power and update budget;
+only the Watchy changes, while the M5Paper retains its independent cadence.

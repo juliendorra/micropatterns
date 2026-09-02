@@ -109,7 +109,7 @@ static int  g_currentScript = 0;
 
 // A render can exhaust the fragmented heap and abort() before setup reaches
 // loop(). RTC slow memory survives that reboot without adding an NVS write on
-// every 77-second render. If this marker is still armed on the next boot, the
+// every 83-second render. If this marker is still armed on the next boot, the
 // saved script did not finish and must not be attempted again immediately.
 static const uint32_t RENDER_GUARD_MAGIC = 0x4d505247; // "MPRG"
 RTC_NOINIT_ATTR static volatile uint32_t g_renderGuardMagic;
@@ -248,14 +248,15 @@ static void disarmRenderGuard(bool completed)
 // it. Cost of it being too low: an unnecessary 2.6s flashing refresh.
 static const int WATCHY_DEGHOST_INTERVAL = 24;
 
-// Periodic automatic re-render, mirroring the M5Paper, which wakes from light
-// sleep every SystemManager::DEFAULT_SLEEP_DURATION_S (77s) and re-renders the
-// current script. Scripts are time- and counter-dependent -- $COUNTER advances
-// and $HOUR/$MINUTE/$SECOND move -- so a static panel is a script frozen in
-// time rather than a finished picture.
+// Periodic automatic re-render. Scripts are time- and counter-dependent --
+// $COUNTER advances and $HOUR/$MINUTE/$SECOND move -- so a static panel is a
+// script frozen in time rather than a finished picture.
 //
-// Matched to 77s deliberately: the same script should evolve at the same rate
-// on both devices.
+// 83 is coprime with 60. Successive renders therefore advance by 23 seconds
+// modulo a minute and visit every second exactly once before repeating, rather
+// than sampling a small fixed subset of seconds. The old 77-second cadence also
+// had full coverage (stride 17); 83 changes the scattered traversal while
+// retaining that property and is deliberately different from the M5Paper.
 //
 // NOT power-optimised. The M5Paper spends this interval in light sleep; this
 // firmware stays awake in loop(). Battery life is a known open item for the
@@ -266,7 +267,7 @@ static const int WATCHY_DEGHOST_INTERVAL = 24;
 static const unsigned long CONSOLE_AWAKE_MS = 60000;
 static unsigned long g_lastSerialMs = 0;
 
-static const unsigned long AUTO_RERUN_INTERVAL_MS = 77UL * 1000UL;
+static const unsigned long AUTO_RERUN_INTERVAL_MS = 83UL * 1000UL;
 
 // Hours east of UTC written into the RTC at NTP sync. The chip holds no
 // timezone of its own, so whatever offset is applied here is simply what
@@ -1103,7 +1104,8 @@ void setup()
 
 // Light sleep between renders.
 //
-// The loop was spinning at 20ms for the whole 77s between re-renders, which on
+// The loop was spinning at 20ms for the whole interval between re-renders,
+// which on
 // a watch is the difference between hours and days of battery: an ESP32 draws
 // roughly 40mA awake and under 1mA in light sleep. The M5Paper has done this
 // since the beginning (SystemManager::goToLightSleep); this is the same three
@@ -1112,7 +1114,7 @@ void setup()
 // Light sleep, not deep sleep, and that is a considered choice rather than a
 // stepping stone. Deep sleep costs a full boot on every wake -- SPIFFS mount,
 // script load, parse, GxEPD2 re-init -- which measured ~9s here. At the current
-// 77s cadence that trades 77s at ~0.8mA (about 62mA-seconds) for 9s at ~100mA
+// 83s cadence that trades 83s at ~0.8mA (about 66mA-seconds) for 9s at ~100mA
 // (about 900), so deep sleep would use more power, not less. It only wins once
 // the interval is minutes rather than seconds, which is a product decision
 // about how often a time-dependent script should advance.
@@ -1237,7 +1239,7 @@ void loop()
 
             // A press means someone is holding the watch, so make it
             // discoverable. Extends rather than stacks: the window always ends
-            // 20s after the LAST press. The automatic 77s re-render does not
+            // 20s after the LAST press. The automatic 83s re-render does not
             // come through here, so the radio never comes up unasked.
             MPProvisioning::openWindow();
             continue;
