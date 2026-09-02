@@ -8,11 +8,13 @@
 #include <map>            // Added for std::map
 #include "esp_task_wdt.h" // Added for esp_task_wdt_reset
 #include <sys/stat.h>     // Added for struct stat and stat()
+#include "micropatterns_parser.h"
 
 const char *ScriptManager::LIST_JSON_PATH = "/scripts/list.json";
 const char *ScriptManager::CONTENT_DIR_PATH = "/scripts/content";
 const char *ScriptManager::CURRENT_SCRIPT_ID_PATH = "/current_script.id";
 const char *ScriptManager::SCRIPT_STATES_PATH = "/scripts/script_states.json";
+const char *ScriptManager::COMPILED_DIR_PATH = "/scripts/compiled";
 
 // Default script content with clear visual indication it's the fallback script
 const char *ScriptManager::DEFAULT_SCRIPT_CONTENT = R"(
@@ -338,13 +340,39 @@ bool ScriptManager::initialize()
 
 bool ScriptManager::initializeSPIFFS()
 {
-    if (!SPIFFS.begin(true))
-    { // `true` = format SPIFFS if mount fails
-        log_e("SPIFFS Mount Failed even after formatting attempt!");
+    // begin(false): a mount failure is reported, not "repaired" by formatting.
+    // A corrupt filesystem after a power cut mid-write used to be wiped here to
+    // make the next boot succeed -- erasing every script to fix a file worth
+    // two integers. formatStorage() exists for the deliberate case.
+    if (!SPIFFS.begin(false))
+    {
+        log_e("SPIFFS mount failed. NOT formatting: the scripts here may be the only copy. Sync to reset storage.");
+        _storageOk = false;
         return false;
     }
     log_i("SPIFFS Mounted successfully.");
+    _storageOk = ensureDirectories_nolock();
+    return _storageOk;
+}
 
+bool ScriptManager::formatStorage()
+{
+    if (xSemaphoreTake(_spiffsMutex, portMAX_DELAY) != pdTRUE) return false;
+    log_w("Formatting script storage (explicit request).");
+    _listCacheValid = false;
+    _listCache.clear();
+    SPIFFS.end();
+    bool ok = SPIFFS.format();
+    if (ok) ok = SPIFFS.begin(false);
+    if (ok) ok = ensureDirectories_nolock();
+    _storageOk = ok;
+    xSemaphoreGive(_spiffsMutex);
+    log_i("Storage format %s", ok ? "done" : "FAILED");
+    return ok;
+}
+
+bool ScriptManager::ensureDirectories_nolock()
+{
     // Create directories if they don't exist
     if (!SPIFFS.exists("/scripts"))
     {
@@ -370,6 +398,11 @@ bool ScriptManager::initializeSPIFFS()
         log_i("Successfully created %s directory", CONTENT_DIR_PATH);
     } else {
         log_i("Directory %s already exists.", CONTENT_DIR_PATH);
+    }
+    if (!SPIFFS.exists(COMPILED_DIR_PATH) && !SPIFFS.mkdir(COMPILED_DIR_PATH))
+    {
+        log_e("Failed to create %s directory!", COMPILED_DIR_PATH);
+        return false;
     }
     return true;
 }
@@ -424,27 +457,19 @@ bool ScriptManager::saveScriptList_nolock(JsonDocument &listDoc)
         }
     }
 
-    File file = SPIFFS.open(LIST_JSON_PATH, FILE_WRITE);
-    if (!file) {
-        log_e("saveScriptList_nolock: Failed to open %s for writing. SPIFFS.open() returned null", LIST_JSON_PATH);
-        return false;
-    }
-
     bool success = false;
     log_d("saveScriptList_nolock: Beginning serialization of %u elements to %s", arraySize, LIST_JSON_PATH);
     mp_wdt_reset(); // Reset watchdog before serialization
 
-    size_t bytesWritten = serializeJson(listDoc, file);
-    log_i("saveScriptList_nolock: serializeJson wrote %u bytes.", bytesWritten);
-
-    if (bytesWritten > 0) {
+    String json;
+    serializeJson(listDoc, json);
+    if (json.length() > 0 && writeFileAtomic_nolock(String(LIST_JSON_PATH), (const uint8_t *)json.c_str(), json.length())) {
         log_i("saveScriptList_nolock: Saved list with %u entries (%u bytes) to %s",
-              arraySize, bytesWritten, LIST_JSON_PATH);
+              arraySize, json.length(), LIST_JSON_PATH);
         success = true;
     } else {
-        log_e("saveScriptList_nolock: Failed to write to %s (serializeJson returned 0)", LIST_JSON_PATH);
+        log_e("saveScriptList_nolock: Failed to write to %s", LIST_JSON_PATH);
     }
-    file.close();
     return success;
 }
 
@@ -730,26 +755,15 @@ bool ScriptManager::saveScriptContent_nolock(const String &fileId, const String 
         return false;
     }
 
-    if (SPIFFS.exists(path.c_str())) {
-        log_d("saveScriptContent_nolock: Deleting existing file before writing new content");
-        SPIFFS.remove(path.c_str());
-    }
-
-    log_d("saveScriptContent_nolock: Opening file for writing");
-    File file = SPIFFS.open(path.c_str(), FILE_WRITE);
-    if (!file) {
-        log_e("saveScriptContent_nolock: Failed to open %s for writing", path.c_str());
-        return false;
-    }
-
     mp_wdt_reset();
-    size_t bytesWritten = file.print(content);
+    const bool success = writeFileAtomic_nolock(path, (const uint8_t *)content.c_str(), content.length());
     mp_wdt_reset();
-    bool success = (bytesWritten == content.length());
-
-    if (success) log_i("saveScriptContent_nolock: Successfully wrote %u bytes to file", bytesWritten);
-    else log_e("saveScriptContent_nolock: Write incomplete. Wrote %u of %u bytes", bytesWritten, content.length());
-    file.close();
+    if (success) log_i("saveScriptContent_nolock: Successfully wrote %u bytes to file", content.length());
+    else log_e("saveScriptContent_nolock: Failed to write %s", path.c_str());
+    // Whatever was compiled from the previous content is stale now. The sync
+    // recompiles every script once the radio is down; a render that arrives
+    // first compiles lazily.
+    if (success && SPIFFS.exists(compiledPath(actualFileId).c_str())) SPIFFS.remove(compiledPath(actualFileId).c_str());
 
     if (success) { // Verification
         File verifyFile = SPIFFS.open(path.c_str(), FILE_READ);
@@ -942,23 +956,12 @@ bool ScriptManager::saveCurrentScriptId_nolock(const String &humanId)
         log_e("saveCurrentScriptId_nolock: humanId is empty.");
         return false;
     }
-    File file = SPIFFS.open(CURRENT_SCRIPT_ID_PATH, FILE_WRITE);
-    if (!file)
-    {
-        log_e("saveCurrentScriptId_nolock: Failed to open %s for writing", CURRENT_SCRIPT_ID_PATH);
-        return false;
-    }
-    bool success = false;
-    if (file.print(humanId))
-    {
+    const bool success = writeFileAtomic_nolock(String(CURRENT_SCRIPT_ID_PATH),
+                                                (const uint8_t *)humanId.c_str(), humanId.length());
+    if (success)
         log_i("saveCurrentScriptId_nolock: Current script humanId '%s' saved to %s.", humanId.c_str(), CURRENT_SCRIPT_ID_PATH);
-        success = true;
-    }
     else
-    {
         log_e("saveCurrentScriptId_nolock: Failed to write current script humanId '%s' to %s.", humanId.c_str(), CURRENT_SCRIPT_ID_PATH);
-    }
-    file.close();
     return success;
 }
 
@@ -1096,23 +1099,18 @@ bool ScriptManager::saveScriptExecutionState(const String &humanId, const Script
         scriptStateObj["minute"] = state.minute;
         scriptStateObj["second"] = state.second;
 
-        file = SPIFFS.open(SCRIPT_STATES_PATH, FILE_WRITE);
-        if (!file)
-        {
-            log_e("saveScriptExecutionState: Failed to open %s for writing.", SCRIPT_STATES_PATH);
-            xSemaphoreGive(_spiffsMutex);
-            return false;
-        }
-    
-        // Serialize the modified statesDoc to the file
-        size_t bytesWritten = serializeJson(statesDoc, file);
-        if (bytesWritten == 0) {
-            log_e("saveScriptExecutionState: Failed to write to %s (serializeJson returned 0).", SCRIPT_STATES_PATH);
-        } else {
-            log_d("saveScriptExecutionState: Wrote %u bytes to %s", bytesWritten, SCRIPT_STATES_PATH);
+        // This file is rewritten on EVERY render, so it is the write most
+        // likely to be in flight when the battery dies. Atomic, or it is the
+        // write that corrupts the filesystem holding the scripts.
+        String json;
+        serializeJson(statesDoc, json);
+        if (json.length() > 0 &&
+            writeFileAtomic_nolock(String(SCRIPT_STATES_PATH), (const uint8_t *)json.c_str(), json.length())) {
+            log_d("saveScriptExecutionState: Wrote %u bytes to %s", json.length(), SCRIPT_STATES_PATH);
             success = true;
+        } else {
+            log_e("saveScriptExecutionState: Failed to write %s.", SCRIPT_STATES_PATH);
         }
-        file.close(); // Close file after writing
 
         xSemaphoreGive(_spiffsMutex);
 
@@ -1595,4 +1593,308 @@ void ScriptManager::cleanupOrphanedContent(const JsonArrayConst &validScriptList
     {
         log_e("ScriptManager::cleanupOrphanedContent failed to take mutex.");
     }
+}
+
+// ===========================================================================
+// Atomic file writes
+// ===========================================================================
+bool ScriptManager::writeFileAtomic_nolock(const String &path, const uint8_t *data, size_t len)
+{
+    const String tmp = path + ".tmp";
+    // exists() before every remove(): the VFS layer logs an error for a
+    // missing path, and on the first write of a file there is nothing to remove.
+    if (SPIFFS.exists(tmp.c_str())) SPIFFS.remove(tmp.c_str());
+
+    // SPIFFS needs a couple of free blocks to garbage-collect; keep a margin.
+    const size_t freeSpace = SPIFFS.totalBytes() - SPIFFS.usedBytes();
+    if (len + 8192 > freeSpace)
+    {
+        log_e("writeFileAtomic: not enough space for %s (%u bytes, %u free)", path.c_str(), (unsigned)len, (unsigned)freeSpace);
+        return false;
+    }
+
+    File f = SPIFFS.open(tmp.c_str(), FILE_WRITE);
+    if (!f)
+    {
+        log_e("writeFileAtomic: cannot open %s", tmp.c_str());
+        return false;
+    }
+    size_t written = 0;
+    while (written < len)
+    {
+        const size_t chunk = (len - written > 1024) ? 1024 : (len - written);
+        const size_t n = f.write(data + written, chunk);
+        if (n != chunk) break;
+        written += n;
+        mp_wdt_reset();
+    }
+    f.close();
+    if (written != len)
+    {
+        log_e("writeFileAtomic: short write to %s (%u of %u)", tmp.c_str(), (unsigned)written, (unsigned)len);
+        SPIFFS.remove(tmp.c_str());
+        return false;
+    }
+    File v = SPIFFS.open(tmp.c_str(), FILE_READ);
+    const size_t onFlash = v ? v.size() : 0;
+    if (v) v.close();
+    if (onFlash != len)
+    {
+        log_e("writeFileAtomic: verify failed for %s (%u on flash, %u expected)", tmp.c_str(), (unsigned)onFlash, (unsigned)len);
+        SPIFFS.remove(tmp.c_str());
+        return false;
+    }
+    // The old file exists right up to here.
+    if (SPIFFS.exists(path.c_str())) SPIFFS.remove(path.c_str());
+    if (!SPIFFS.rename(tmp.c_str(), path.c_str()))
+    {
+        log_e("writeFileAtomic: rename %s -> %s failed", tmp.c_str(), path.c_str());
+        return false;
+    }
+    return true;
+}
+
+// ===========================================================================
+// Compiled program cache
+// ===========================================================================
+String ScriptManager::compiledPath(const String &fileId) const
+{
+    return String(COMPILED_DIR_PATH) + "/" + fileId + ".mpc";
+}
+
+bool ScriptManager::sourceFingerprint_nolock(const String &fileId, uint32_t &outLen, uint32_t &outCrc)
+{
+    const String path = String(CONTENT_DIR_PATH) + "/" + fileId;
+    // exists() first: on Arduino 2.0.4 (M5Paper) SPIFFS.open() of a missing
+    // path hands back a handle that reads as present and empty.
+    if (!SPIFFS.exists(path.c_str())) return false;
+    File f = SPIFFS.open(path.c_str(), FILE_READ);
+    if (!f) return false;
+    outLen = (uint32_t)f.size();
+    uint32_t crc = 0;
+    uint8_t buf[256];
+    while (true)
+    {
+        const size_t n = f.read(buf, sizeof(buf));
+        if (n == 0) break;
+        crc = mp_crc32(buf, n, crc);
+    }
+    f.close();
+    outCrc = crc;
+    return true;
+}
+
+bool ScriptManager::loadStoredProgram_nolock(const String &fileId, uint32_t srcLen, uint32_t srcCrc, MpProgram &out)
+{
+    const String path = compiledPath(fileId);
+    if (!SPIFFS.exists(path.c_str())) return false; // nothing stored yet: compile quietly
+    File f = SPIFFS.open(path.c_str(), FILE_READ);
+    if (!f) return false;
+    uint8_t header[MP_PROGRAM_HEADER_SIZE];
+    const size_t got = f.read(header, sizeof(header));
+    if (got != sizeof(header) || !mp_program_header_matches(header, got, srcLen, srcCrc))
+    {
+        f.close();
+        log_i("Program %s is stale or foreign; recompiling", path.c_str());
+        return false;
+    }
+    // Stream the body straight into the program's containers: the file's
+    // bytes never exist in RAM as a whole, so the load peak is the program
+    // itself, not the program plus a copy of it.
+    struct FileReader : MpByteReader {
+        File &file;
+        explicit FileReader(File &fl) : file(fl) {}
+        size_t read(uint8_t *dst, size_t n) override
+        {
+            size_t got = 0;
+            while (got < n)
+            {
+                const size_t r = file.read(dst + got, n - got);
+                if (r == 0) break;
+                got += r;
+            }
+            return got;
+        }
+    } reader(f);
+    String why;
+    const bool ok = mp_program_deserialize_stream(reader, f.size(), out, &why, header);
+    f.close();
+    if (!ok)
+    {
+        log_w("Program %s rejected: %s; recompiling", path.c_str(), why.c_str());
+        return false;
+    }
+    return true;
+}
+
+bool ScriptManager::compileSource(const String &source, MpProgram &out, String *error)
+{
+    MicroPatternsParser parser;
+    if (!parser.parse(source))
+    {
+        if (error)
+        {
+            *error = "Parse failed: ";
+            for (const String &e : parser.getErrors()) { *error += e; *error += "\n"; }
+        }
+        out.clear();
+        return false;
+    }
+    // Move, not copy: the parser is about to die and the program is the
+    // largest thing it owns.
+    out = std::move(parser.program());
+    return true;
+}
+
+bool ScriptManager::compileAndStoreProgram_nolock(const String &fileId, bool force, MpProgram *outProgram, String *error)
+{
+    uint32_t srcLen = 0, srcCrc = 0;
+    if (!sourceFingerprint_nolock(fileId, srcLen, srcCrc))
+    {
+        if (error) *error = "No source for " + fileId;
+        return false;
+    }
+    if (!force)
+    {
+        MpProgram scratch;
+        MpProgram &target = outProgram ? *outProgram : scratch;
+        if (loadStoredProgram_nolock(fileId, srcLen, srcCrc, target)) return true;
+    }
+
+    String source;
+    if (!loadScriptContent_nolock(fileId, source) || source.isEmpty())
+    {
+        if (error) *error = "Could not read source for " + fileId;
+        return false;
+    }
+    mp_wdt_reset();
+    MpProgram scratch;
+    MpProgram &program = outProgram ? *outProgram : scratch;
+    if (!compileSource(source, program, error)) return false;
+    mp_program_fingerprint(program, (const uint8_t *)source.c_str(), source.length());
+    source = String(); // the program is built; give the source back before serializing
+    mp_wdt_reset();
+
+    std::vector<uint8_t> bytes;
+    if (!mp_program_serialize(program, bytes))
+    {
+        if (error) *error = "Could not serialize program for " + fileId;
+        return false;
+    }
+    const bool stored = writeFileAtomic_nolock(compiledPath(fileId), bytes.data(), bytes.size());
+    log_i("Compiled %s: %u instructions, %u B in RAM, %u B on flash%s", fileId.c_str(),
+          (unsigned)program.code.size(), (unsigned)program.byteSize(), (unsigned)bytes.size(),
+          stored ? "" : " (STORE FAILED; will recompile next time)");
+    // A failed store is not a failed compile: the caller still gets a program.
+    return true;
+}
+
+bool ScriptManager::loadProgram(const String &fileId, MpProgram &out, String *error)
+{
+    if (!_storageOk)
+    {
+        if (error) *error = "Storage unavailable";
+        return false;
+    }
+    if (xSemaphoreTake(_spiffsMutex, portMAX_DELAY) != pdTRUE)
+    {
+        if (error) *error = "Storage busy";
+        return false;
+    }
+    const bool ok = compileAndStoreProgram_nolock(fileId, /*force=*/false, &out, error);
+    xSemaphoreGive(_spiffsMutex);
+    return ok;
+}
+
+bool ScriptManager::compileAndStoreProgram(const String &fileId, bool force, String *error)
+{
+    if (!_storageOk)
+    {
+        if (error) *error = "Storage unavailable";
+        return false;
+    }
+    if (xSemaphoreTake(_spiffsMutex, portMAX_DELAY) != pdTRUE) return false;
+    const bool ok = compileAndStoreProgram_nolock(fileId, force, nullptr, error);
+    xSemaphoreGive(_spiffsMutex);
+    return ok;
+}
+
+bool ScriptManager::programIsFresh(const String &fileId)
+{
+    if (!_storageOk) return false;
+    if (xSemaphoreTake(_spiffsMutex, pdMS_TO_TICKS(1000)) != pdTRUE) return false;
+    bool fresh = false;
+    uint32_t len = 0, crc = 0;
+    if (sourceFingerprint_nolock(fileId, len, crc) && SPIFFS.exists(compiledPath(fileId).c_str()))
+    {
+        File f = SPIFFS.open(compiledPath(fileId).c_str(), FILE_READ);
+        if (f)
+        {
+            uint8_t header[MP_PROGRAM_HEADER_SIZE];
+            const size_t got = f.read(header, sizeof(header));
+            fresh = (got == sizeof(header)) && mp_program_header_matches(header, got, len, crc);
+            f.close();
+        }
+    }
+    xSemaphoreGive(_spiffsMutex);
+    return fresh;
+}
+
+int ScriptManager::compileAllPrograms(bool force)
+{
+    if (!_storageOk) return 0;
+    JsonDocument listDoc;
+    if (!loadScriptList(listDoc) || !listDoc.is<JsonArray>()) return 0;
+    int compiled = 0;
+    for (JsonObject item : listDoc.as<JsonArray>())
+    {
+        mp_wdt_reset();
+        const char *fileId = item["fileId"].as<const char *>();
+        if (!fileId || !*fileId) continue;
+        if (!force && programIsFresh(String(fileId))) continue;
+        String why;
+        if (compileAndStoreProgram(String(fileId), force, &why)) compiled++;
+        else log_w("compileAllPrograms: %s: %s", fileId, why.c_str());
+    }
+    if (compiled) log_i("compileAllPrograms: %d program(s) compiled", compiled);
+    return compiled;
+}
+
+void ScriptManager::cleanupOrphanedPrograms(const JsonArrayConst &validScriptList)
+{
+    if (xSemaphoreTake(_spiffsMutex, pdMS_TO_TICKS(1000)) != pdTRUE) return;
+    std::set<String> valid;
+    for (JsonVariantConst item : validScriptList)
+    {
+        if (!item.is<JsonObjectConst>()) continue;
+        JsonObjectConst o = item.as<JsonObjectConst>();
+        if (!o["fileId"].isNull() && o["fileId"].is<const char *>()) valid.insert(o["fileId"].as<String>());
+    }
+    File root = SPIFFS.open(COMPILED_DIR_PATH);
+    if (root && root.isDirectory())
+    {
+        std::vector<String> doomed;
+        File entry = root.openNextFile();
+        while (entry)
+        {
+            mp_wdt_reset();
+            if (!entry.isDirectory())
+            {
+                String name = entry.name();
+                name = name.substring(name.lastIndexOf('/') + 1);
+                String id = name;
+                if (id.endsWith(".mpc")) id = id.substring(0, id.length() - 4);
+                if (name.endsWith(".tmp") || !valid.count(id)) doomed.push_back(String(COMPILED_DIR_PATH) + "/" + name);
+            }
+            entry.close();
+            entry = root.openNextFile();
+        }
+        root.close();
+        for (const String &p : doomed)
+        {
+            log_i("Removing orphaned program %s", p.c_str());
+            SPIFFS.remove(p.c_str());
+        }
+    }
+    xSemaphoreGive(_spiffsMutex);
 }

@@ -13,7 +13,7 @@
 #include <GxEPD2_BW.h>
 #include <SPI.h>
 
-#include "micropatterns_parser.h"
+#include "mp_program.h"
 #include "micropatterns_runtime.h"
 #include "display_list_renderer.h"
 #include "watchy_canvas.h"
@@ -360,26 +360,36 @@ static bool renderScript(int index, ScriptExecState& state)
     if (index < 0 || index >= (int)g_scripts.size()) return false;
     const ScriptEntry& scr = g_scripts[index];
     log_i("=== Rendering '%s' (%s) ===", scr.name.c_str(), scr.humanId.c_str());
-    logHeap("before parse");
+    logHeap("before load");
 
-    String source;
-    if (!g_scriptManager->loadScriptContent(scr.fileId, source) || source.isEmpty()) {
-        log_e("Could not load content for '%s' (fileId %s)",
-              scr.humanId.c_str(), scr.fileId.c_str());
-        showRenderError(scr.name.c_str(), MP_MSG_SCRIPT_MISSING);
-        return false;
+    // A render that has to COMPILE -- no stored program yet: first boot after
+    // a firmware update, or a script that arrived without the sync finishing
+    // -- must not do so with the BLE stack resident. That is precisely the
+    // combination that used to reboot this watch on a button press (compile
+    // needs ~50-80 KB in pieces; BLE takes ~90 KB). Close the window first; the
+    // next press reopens it.
+    if (MPProvisioning::windowOpen() && !g_scriptManager->programIsFresh(scr.fileId)) {
+        log_i("'%s' needs compiling; closing the BLE window first", scr.humanId.c_str());
+        MPProvisioning::closeWindow();
     }
 
-    MicroPatternsParser parser;
-    parser.reset();
-    if (!parser.parse(source)) {
-        log_e("Parse failed for '%s':", scr.humanId.c_str());
-        for (const String& e : parser.getErrors()) log_e("  %s", e.c_str());
-        showRenderError(scr.name.c_str(), MP_MSG_PARSE_FAILED);
+    // The compiled program, from /scripts/compiled/<fileId>.mpc (written at
+    // sync time, after WiFi went down) -- or a one-off compile of the source
+    // if that is missing or stale. Either way no tree of Strings is built
+    // here, which is what used to fragment this heap. See mp_program.h.
+    MpProgram program;
+    String why;
+    unsigned long tLoad = millis();
+    if (!g_scriptManager->loadProgram(scr.fileId, program, &why)) {
+        log_e("Could not load program for '%s' (fileId %s): %s",
+              scr.humanId.c_str(), scr.fileId.c_str(), why.c_str());
+        showRenderError(scr.name.c_str(), why.startsWith("Parse") ? MP_MSG_PARSE_FAILED : MP_MSG_SCRIPT_MISSING);
         return false;
     }
-    source = String();   // the parser owns the tokens now; ~5KB back to the heap
-    logHeap("after parse");
+    tLoad = millis() - tLoad;
+    log_i("Program: %u instructions, %u B in RAM, loaded in %lu ms",
+          (unsigned)program.code.size(), (unsigned)program.byteSize(), tLoad);
+    logHeap("after load");
 
     const int W = g_display.width();
     const int H = g_display.height();
@@ -390,9 +400,7 @@ static bool renderScript(int index, ScriptExecState& state)
     // will not, and that is a product decision still open -- see
     // docs/analysis/watchy-port-design.md sections 7.2 and 9.
     unsigned long t0 = millis();
-    MicroPatternsRuntime runtime(W, H, parser.getAssets());
-    runtime.setCommands(&parser.getCommands());
-    runtime.setDeclaredVariables(&parser.getDeclaredVariables());
+    MicroPatternsRuntime runtime(W, H, program);
     runtime.setCounter(state.counter);
     // Real wall-clock time, so $HOUR/$MINUTE/$SECOND move as they do in the
     // editor and on the M5Paper. This used to pass 0,0,0 unconditionally, which
@@ -419,7 +427,7 @@ static bool renderScript(int index, ScriptExecState& state)
     bool aborted = false;
     g_display.firstPage();
     do {
-        DisplayListRenderer renderer(&g_canvas, parser.getAssets(), W, H);
+        DisplayListRenderer renderer(&g_canvas, W, H);
         renderer.setInterruptCheckCallback(anyButtonDown);
         renderer.render(dl);
         if (anyButtonDown()) {
@@ -1097,6 +1105,17 @@ void setup()
         log_i("No local scripts; syncing from the server");
         syncScripts(true);
         showScript(0, true);
+    }
+
+    // Warm the program cache so no later render -- including one that
+    // arrives on a button press with BLE up -- has to compile. Cheap: a few
+    // hundred ms once per boot, and nothing at all when the programs are
+    // already fresh.
+    if (g_scriptManager) {
+        logHeap("before warm-up");
+        const int n = g_scriptManager->compileAllPrograms(false);
+        if (n) log_i("Boot: compiled %d program(s)", n);
+        logHeap("after warm-up");
     }
 
     g_stage = 5;                                  // first script rendered; loop() runs

@@ -34,7 +34,7 @@ bool RenderController::checkInterrupt() {
     return false;
 }
 
-RenderResultData RenderController::renderScript(const String& script_id, const String& script_content, const ScriptExecState& initial_state) {
+RenderResultData RenderController::renderScript(const String& script_id, const MpProgram& program, const ScriptExecState& initial_state) {
     log_i("RenderController: Starting render for script ID: %s", script_id.c_str());
     _interrupt_requested_for_runtime_or_renderer = false; // Reset latched interrupt flag
 
@@ -49,29 +49,15 @@ RenderResultData RenderController::renderScript(const String& script_id, const S
         log_e("RenderController: %s", result.error_message.c_str());
         return result;
     }
-    if (script_content.isEmpty()) {
-        result.error_message = "Render job had empty script content.";
+    if (program.code.empty() && program.assets.empty()) {
+        result.error_message = "Render job had an empty program.";
         log_e("RenderController: %s for script ID %s", result.error_message.c_str(), script_id.c_str());
         return result;
     }
 
-
-    // 1. Parse Script
-    _parser.reset();
-    if (!_parser.parse(script_content)) {
-        String errors_str;
-        for (const String& err : _parser.getErrors()) { errors_str += err + "\n"; }
-        result.error_message = "Parse failed: " + errors_str;
-        log_e("RenderController: Script parsing failed for ID %s. Errors:\n%s", script_id.c_str(), errors_str.c_str());
-        return result;
-    }
-    log_i("RenderController: Script '%s' parsed successfully.", script_id.c_str());
-
     // 2. Prepare and Run Runtime to generate Display List
     if (_runtime) delete _runtime;
-    _runtime = new MicroPatternsRuntime(_displayMgr.getWidth(), _displayMgr.getHeight(), _parser.getAssets());
-    _runtime->setCommands(&_parser.getCommands());
-    _runtime->setDeclaredVariables(&_parser.getDeclaredVariables());
+    _runtime = new MicroPatternsRuntime(_displayMgr.getWidth(), _displayMgr.getHeight(), program);
     _runtime->setInterruptCheckCallback([this]() { return this->checkInterrupt(); });
     _runtime->setCounter(initial_state.counter);
     _runtime->setTime(initial_state.hour, initial_state.minute, initial_state.second);
@@ -90,12 +76,13 @@ RenderResultData RenderController::renderScript(const String& script_id, const S
         result.final_state.state_loaded = true;
         return result;
     }
-    log_i("RenderController: Display list generation for '%s' took %lu ms. List size: %d",
-          script_id.c_str(), generationDuration, _runtime->getDisplayList().size());
+    log_i("RenderController: Display list generation for '%s' took %lu ms. List size: %d (program %u instr, %u B)",
+          script_id.c_str(), generationDuration, _runtime->getDisplayList().size(),
+          (unsigned)program.code.size(), (unsigned)program.byteSize());
 
     // 3. Prepare and Run DisplayListRenderer
     if (_renderer) delete _renderer;
-    _renderer = new DisplayListRenderer(_displayMgr.getCanvas(), _parser.getAssets(), _displayMgr.getWidth(), _displayMgr.getHeight());
+    _renderer = new DisplayListRenderer(_displayMgr.getCanvas(), _displayMgr.getWidth(), _displayMgr.getHeight());
     _renderer->setInterruptCheckCallback([this]() { return this->checkInterrupt(); });
     
     unsigned long renderStartTime = millis();

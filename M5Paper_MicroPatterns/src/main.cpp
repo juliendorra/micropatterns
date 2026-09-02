@@ -845,6 +845,13 @@ void RenderTask_Function(void *pvParameters) {
 
     RenderController renderCtrl(*g_displayManager); // Create RenderController instance for this task
 
+    // Warm the compiled-program cache once, so renders load programs instead
+    // of parsing. Nothing to do when every stored program is already fresh.
+    if (g_scriptManager) {
+        const int n = g_scriptManager->compileAllPrograms(false);
+        if (n) log_i("RenderTask: compiled %d program(s) at start", n);
+    }
+
     RenderJobQueueItem jobItem; // Use RenderJobQueueItem
     // WDT timeout for RenderTask is 60s. We'll use a 30s queue receive timeout.
     const TickType_t queueReceiveTimeout = pdMS_TO_TICKS(30000);
@@ -858,24 +865,27 @@ void RenderTask_Function(void *pvParameters) {
             jobDataForRenderCtrl.file_id = String(jobItem.file_id);
             jobDataForRenderCtrl.initial_state = jobItem.initial_state;
             
-            String script_content_for_parser; // Local string to hold content for parser
-
             log_i("RenderTask: Received job for human_id: %s, file_id: %s", jobDataForRenderCtrl.script_id.c_str(), jobDataForRenderCtrl.file_id.c_str());
 
-            // Load script content
+            // The compiled program: from the cache written at sync time, or a
+            // one-off compile of the source if that is missing or stale. The
+            // built-in default is compiled from its literal every time.
+            MpProgram program;
+            String programError;
+            bool haveProgram;
             if (jobDataForRenderCtrl.file_id == ScriptManager::DEFAULT_SCRIPT_ID) {
-                log_i("RenderTask: Using built-in default script content for '%s'", jobDataForRenderCtrl.script_id.c_str());
-                // Get default content directly from ScriptManager constant or method
-                // For simplicity, assuming ScriptManager::loadScriptContent handles DEFAULT_SCRIPT_ID correctly by returning built-in content.
-                // Or, we can assign it directly here:
-                script_content_for_parser = ScriptManager::DEFAULT_SCRIPT_CONTENT; // Access public static member
-            } else if (!g_scriptManager->loadScriptContent(jobDataForRenderCtrl.file_id, script_content_for_parser)) {
-                log_e("RenderTask: Failed to load script content for fileId: %s (humanId: %s)", jobDataForRenderCtrl.file_id.c_str(), jobDataForRenderCtrl.script_id.c_str());
+                log_i("RenderTask: Using built-in default script for '%s'", jobDataForRenderCtrl.script_id.c_str());
+                haveProgram = ScriptManager::compileSource(ScriptManager::DEFAULT_SCRIPT_CONTENT, program, &programError);
+            } else {
+                haveProgram = g_scriptManager->loadProgram(jobDataForRenderCtrl.file_id, program, &programError);
+            }
+            if (!haveProgram) {
+                log_e("RenderTask: No program for fileId: %s (humanId: %s): %s", jobDataForRenderCtrl.file_id.c_str(), jobDataForRenderCtrl.script_id.c_str(), programError.c_str());
                 RenderResultData errorResultData;
                 errorResultData.script_id = jobDataForRenderCtrl.script_id;
                 errorResultData.success = false;
                 errorResultData.interrupted = false;
-                errorResultData.error_message = "RenderTask: Failed to load script content.";
+                errorResultData.error_message = programError.isEmpty() ? String("RenderTask: Failed to load script program.") : programError;
                 // final_state will be default
                 
                 RenderResultQueueItem errorResultQueueItem;
@@ -885,7 +895,7 @@ void RenderTask_Function(void *pvParameters) {
                 }
                 continue; // Skip to next job
             }
-            log_i("RenderTask: Content loaded for script ID: %s", jobDataForRenderCtrl.script_id.c_str());
+            log_i("RenderTask: Program ready for script ID: %s (%u instructions)", jobDataForRenderCtrl.script_id.c_str(), (unsigned)program.code.size());
             
             RenderResultData resultData; // To store result from RenderController
 
@@ -924,7 +934,7 @@ void RenderTask_Function(void *pvParameters) {
                 // renderScript(const String& script_id, const String& script_content, const ScriptExecState& initial_state)
                 // (file_id is not directly needed by parser/runtime if content is provided)
                 
-                resultData = renderCtrl.renderScript(jobDataForRenderCtrl.script_id, script_content_for_parser, jobDataForRenderCtrl.initial_state);
+                resultData = renderCtrl.renderScript(jobDataForRenderCtrl.script_id, program, jobDataForRenderCtrl.initial_state);
                 
                 // Check if MainControlTask signaled an interrupt during the process
                 EventBits_t uxBits = xEventGroupGetBits(g_renderTaskEventFlags);

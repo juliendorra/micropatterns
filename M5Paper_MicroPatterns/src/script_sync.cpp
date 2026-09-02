@@ -37,6 +37,20 @@ ScriptSyncResult mp_sync_scripts(MPNetworkManager &net,
     // deliberate act with its own 20s window, so the radio yields to the sync.
     MPProvisioning::stopRadio();
 
+    // The one place storage may be formatted: a sync is the user asking for
+    // their scripts again, and it refills whatever it erases. Mounting never
+    // formats on its own (ScriptManager::initializeSPIFFS).
+    if (!scripts.storageAvailable())
+    {
+        log_w("Sync: storage unavailable; formatting before fetch");
+        if (!scripts.formatStorage())
+        {
+            result.status = FetchResultStatus::GENUINE_ERROR;
+            result.message = MP_MSG_SYNC_NO_SAVE;
+            return result;
+        }
+    }
+
     mp_wdt_reset();
     report(progress, progressCtx, "WiFi");
     if (!net.connectWiFi())
@@ -213,6 +227,8 @@ ScriptSyncResult mp_sync_scripts(MPNetworkManager &net,
             mp_wdt_reset();
             scripts.cleanupOrphanedStates(serverList);
             mp_wdt_reset();
+            scripts.cleanupOrphanedPrograms(serverList);
+            mp_wdt_reset();
         }
         else
         {
@@ -227,5 +243,26 @@ ScriptSyncResult mp_sync_scripts(MPNetworkManager &net,
 
     net.disconnectWiFi();
     mp_wdt_reset();
+
+    // Compile every listed script whose stored program is missing or stale --
+    // AFTER the radio is down, because the parse is the one memory-hungry
+    // step left and a sync has the least free heap of any moment on the
+    // Watchy (WiFi + TLS resident). Renders then load ~15 KB of bytes instead
+    // of parsing, and never see a parse-time allocation failure.
+    if (result.status != FetchResultStatus::INTERRUPTED_BY_USER)
+    {
+        report(progress, progressCtx, "Compile");
+        int compiled = 0, failed = 0;
+        for (JsonObject scriptInfo : serverList)
+        {
+            mp_wdt_reset();
+            const char *fileId = scriptInfo["fileId"].as<const char *>();
+            if (!fileId || strlen(fileId) == 0) continue;
+            String why;
+            if (scripts.compileAndStoreProgram(String(fileId), /*force=*/false, &why)) compiled++;
+            else { failed++; log_w("Sync: compile of %s failed: %s", fileId, why.c_str()); }
+        }
+        log_i("Sync: programs ready %d, failed %d", compiled, failed);
+    }
     return result;
 }
