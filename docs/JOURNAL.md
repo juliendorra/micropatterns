@@ -724,3 +724,22 @@ This matters for scripts that branch on `$SECOND`. A cadence sharing a factor
 with 60 would make some branches unreachable during automatic rendering. The
 83-second cadence also remains close to the previous power and update budget;
 only the Watchy changes, while the M5Paper retains its independent cadence.
+
+## 2026-09-02 -- BLE belongs to the Watchy's Back button
+
+BLE provisioning now opens only when the top-left physical Back button is
+pressed. Top-right and bottom-right navigate scripts, and bottom-left re-renders
+the current script, without starting BLE. A short top-left press opens the
+20-second provisioning window; holding the same button for five seconds still
+performs the explicit network sync and full panel refresh.
+
+This is a memory-safety boundary, not merely a UI preference. The BLE stack
+holds roughly 90 KB of internal DRAM while resident. Previously every navigation
+press opened BLE immediately before the selected script was parsed and rendered,
+making heap-heavy scripts such as City 2 substantially more likely to fail even
+though their generated display lists are small. Restricting BLE to one explicit
+gesture keeps routine rendering in the radio-off memory profile.
+
+The long-press path remains safe: its NTP and script-sync functions stop BLE
+before bringing up Wi-Fi/TLS, so the two large radio working sets are not kept
+resident together.

@@ -1210,7 +1210,7 @@ void loop()
     //   top-right    previous script   (M5Paper UP)
     //   bottom-right next script       (M5Paper DOWN)
     //   bottom-left  re-run current    (M5Paper PUSH / confirm)
-    //   top-left     hold 5s: sync scripts from the server, then full refresh
+    //   top-left     press: open BLE provisioning; hold 5s: sync, full refresh
     //
     // Actions are dispatched on CORNER, not on pin name, so the physical layout
     // lives in exactly one place (the btns[] table) and cannot drift out of sync
@@ -1237,11 +1237,11 @@ void loop()
             b.downAt  = millis();
             drawCornerIndicator(b.corner, true);
 
-            // A press means someone is holding the watch, so make it
-            // discoverable. Extends rather than stacks: the window always ends
-            // 20s after the LAST press. The automatic 83s re-render does not
-            // come through here, so the radio never comes up unasked.
-            MPProvisioning::openWindow();
+            // BLE is an explicit top-left/Back action. It costs roughly 90KB of
+            // internal DRAM while resident, so navigation and re-render buttons
+            // must not start it immediately before parsing a script. Repeated
+            // top-left presses extend the window to 20s after the last press.
+            if (b.corner == CORNER_TL) MPProvisioning::openWindow();
             continue;
         }
 
@@ -1279,7 +1279,7 @@ void loop()
                     showScript(g_currentScript, false);      // same script: no title
                     break;
                 case CORNER_TL:
-                    // Short press: no action -- this is the full-refresh button.
+                    // BLE was opened on press. Only a hold adds sync/refresh.
                     break;
             }
         }
