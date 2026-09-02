@@ -348,3 +348,11 @@ operators in both boundary expressions with portable bracket literals (`[+]`
 and `[*]`). The gate now compares the intended block on both platforms; this is
 also a useful demonstration that executing the gates in CI adds coverage beyond
 running them on the development Mac.
+
+The next run passed both real firmware builds and every semantic WASM check,
+then found that the committed `.wasm` byte comparison still encoded the local
+absolute checkout path. ESP-IDF allocator assertions use `__FILE__`, so the
+same Emscripten version embedded `/Users/...` on macOS and `/home/runner/...` on
+Linux. Added `-ffile-prefix-map=<repository>=.` to every canonical and
+constrained compilation stage. This keeps assertion provenance useful while
+making the generated modules reproducible across checkout locations and hosts.

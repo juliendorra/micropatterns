@@ -13,6 +13,7 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 HARNESS="$(dirname "$HERE")"
+ROOT="$(cd "$HARNESS/../.." && pwd)"
 FW_SRC="$HARNESS/../../M5Paper_MicroPatterns/src"
 
 EMSDK="${EMSDK:-$HOME/Documents/GitHub/qemu-ipod_touch_1g/.wasm-toolchain/emsdk}"
@@ -39,6 +40,7 @@ mkdir -p "$OUT"
 # device -- exactly the divergence this whole exercise exists to remove.
 "$EMCC" \
     -std=c++17 -Os -fno-exceptions -fno-rtti \
+    -ffile-prefix-map="$ROOT"=. \
     -I"$HARNESS/shim" -I"$HARNESS/src" -I"$FW_SRC" \
     -DHOST_LOG_LEVEL=0 \
     "$FW_SRC/micropatterns_parser.cpp" \

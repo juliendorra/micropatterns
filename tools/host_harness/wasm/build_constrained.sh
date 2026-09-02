@@ -6,6 +6,7 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 HARNESS="$(dirname "$HERE")"
+ROOT="$(cd "$HARNESS/../.." && pwd)"
 FW_SRC="$HARNESS/../../M5Paper_MicroPatterns/src"
 CONSTRAINTS="$HARNESS/device_constraints"
 COMPAT="$HARNESS/device_compat"
@@ -54,6 +55,7 @@ build_profile() {
     mkdir -p "$OUT" "$obj"
     local cflags=(
         -std=c11 -Os -Wno-format
+        -ffile-prefix-map="$ROOT"=.
         -DCONFIG_HEAP_POISONING_LIGHT=1
         -DCONFIG_HEAP_TLSF_USE_ROM_IMPL=0
         -I"$CONSTRAINTS/compat" -I"$src/include" -I"$src" -I"$tlsf_dir"
@@ -61,13 +63,14 @@ build_profile() {
     "$EMCC" "${cflags[@]}" -c "$src/$tlsf_source" -o "$obj/tlsf.o"
     "$EMCC" "${cflags[@]}" -c "$src/multi_heap.c" -o "$obj/multi_heap.o"
     "$EMCC" "${cflags[@]}" -c "$src/multi_heap_poisoning.c" -o "$obj/poison.o"
-    "$EMCC" -std=c11 -Os \
+    "$EMCC" -std=c11 -Os -ffile-prefix-map="$ROOT"=. \
         -I"$arduino" -I"$arduino_host" \
         -c "$arduino/stdlib_noniso.c" -o "$obj/stdlib_noniso.o"
-    "$EMCC" -std=c11 -Os \
+    "$EMCC" -std=c11 -Os -ffile-prefix-map="$ROOT"=. \
         -I"$arduino" -I"$arduino_host" \
         -c "$arduino_host/stdlib_itoa.c" -o "$obj/stdlib_itoa.o"
     "$EMXX" -std=c++17 -Os -fexceptions -fno-rtti \
+        -ffile-prefix-map="$ROOT"=. \
         -DMP_DEVICE_CONSTRAINTS=1 -D"$define"=1 $board_define \
         -I"$arduino" -I"$arduino_host" -I"$HARNESS/shim" -I"$CONSTRAINTS" \
         -include "$CONSTRAINTS/device_string_alloc_redirect.h" \
@@ -75,6 +78,7 @@ build_profile() {
         -c "$arduino/WString.cpp" -o "$obj/WString.o"
 
     "$EMXX" -std=c++17 -O2 -fexceptions -fno-rtti \
+        -ffile-prefix-map="$ROOT"=. \
         -DMP_DEVICE_CONSTRAINTS=1 -D"$define"=1 $board_define \
         -I"$arduino" -I"$arduino_host" -I"$CONSTRAINTS" -I"$src/include" \
         "$CONSTRAINTS/device_allocator.cpp" \
@@ -87,6 +91,7 @@ build_profile() {
 
     "$EMXX" \
         -std=c++17 -Os -fexceptions -fno-rtti \
+        -ffile-prefix-map="$ROOT"=. \
         -DMP_DEVICE_CONSTRAINTS=1 -DARDUINO_ARCH_ESP32=1 -D"$define"=1 $board_define \
         -I"$arduino" -I"$arduino_host" -I"$HARNESS/shim" -I"$HARNESS/src" -I"$FW_SRC" \
         -I"$CONSTRAINTS" -I"$src/include" \
