@@ -1121,6 +1121,32 @@ ENDREPEAT</code></pre>
   </div>
 </section>
 
+
+<section>
+  <p class="kicker">Implemented · 2026-09-03</p>
+  <h2>What happened when it was built</h2>
+  <div class="col">
+    <p>Steps 1 and 2 above shipped together as <code>mp_program.h</code>: the parser compiles each line straight into a flat program (48-byte instructions, an 8-byte operand pool in postfix, interned slots, indexed assets), the runtime is a small VM over it, and both firmwares compile once at the end of a sync — after WiFi is down — and store the bytes next to the source. A render streams the stored program into RAM and never parses. Output was held byte-identical to the tree walker on the 18 goldens, on the serialize→deserialize path, and on the 576-render oracle used for the tables above.</p>
+  </div>
+  <div class="tbl-wrap col">
+    <table>
+      <thead><tr><th>Measured</th><th>Before</th><th>After</th></tr></thead>
+      <tbody>
+        <tr><td>Seascape II resident program (Watchy, serial log)</td><td class="num">~146,000 B tree (est.)</td><td class="num">32,715 B</td></tr>
+        <tr><td>Seascape II front half at wake (Watchy)</td><td class="num">parse, ~47% of render</td><td class="num">load 67 ms, no parse</td></tr>
+        <tr><td>Largest free block after rendering Seascape II + warm-up (Watchy)</td><td class="num">26 KB after a parse (crash log)</td><td class="num">110,580 B, unchanged</td></tr>
+        <tr><td>Seascape II under BLE, constrained simulator</td><td class="num">OOM → reboot</td><td class="num">renders, peak 68 KB</td></tr>
+        <tr><td>Display-list generation, real scripts (host)</td><td class="num">—</td><td class="num">2–9× faster</td></tr>
+        <tr><td>Display-list generation, harness city.mp (host)</td><td class="num">12.3 ms</td><td class="num">8.8 ms</td></tr>
+        <tr><td>Parse time (host, now sync-only)</td><td class="num">—</td><td class="num">unchanged (0.9–1.0×)</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="col">
+    <p>Storage got the fixes argued for in the thread that followed this note: mounting never formats, every writer goes through a temp-and-rename, and the stored program is a versioned, CRC-checked cache that is recompiled rather than trusted. Full account in <code>docs/dev-journal/2026-09-03-compiled-programs.md</code>.</p>
+  </div>
+</section>
+
 <footer class="end">
   <span>Sources: <code>micropatterns_runtime.cpp</code>, <code>micropatterns_command.h</code>, <code>micropatterns_drawing.cpp</code></span>
   <span><code>Watchy_MicroPatterns/src/main.cpp</code>, <code>render_controller.cpp</code></span>

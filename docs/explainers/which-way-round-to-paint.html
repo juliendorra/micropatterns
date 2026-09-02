@@ -864,6 +864,15 @@ footer.end {
   </div>
 </section>
 
+
+<section>
+  <p class="kicker">Implemented · 2026-09-03</p>
+  <h2>What was built, and what was not</h2>
+  <div class="col">
+    <p>The front half was replaced (see the companion note): scripts compile once to a flat program and renders load it from flash. The display list, the occupancy map, the occlusion buffer and the reverse-order traversal were <em>kept</em>, unchanged — the question this page asks is still open, and is now cheaper to answer, because the front half no longer dominates memory: Seascape II's resident program is 32,715 B on the Watchy against a peak display list of 14,040 B, and the largest free block after a render is 90,100 B with 122,008 B free. The map A/B on hardware remains the next measurement.</p>
+  </div>
+</section>
+
 <footer class="end">
   <span>Sources: <code>display_list_renderer.cpp</code>, <code>micropatterns_drawing.cpp</code>, <code>occlusion_buffer.h</code></span>
   <span><code>docs/analysis/m5paper-rasterizer-perf.md</code> §2, §4</span>
