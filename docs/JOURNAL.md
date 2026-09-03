@@ -796,3 +796,236 @@ neutrality, no-map fallback, `audit-sweep`.
 What this buys beyond fidelity: there is now exactly one parser and one renderer
 for the language. Every divergence in the audit came from there being two.
 
+
+---
+
+## 2026-09-03 -- The sine table, two bounds bugs, and a fixed-point rasteriser
+                 that won for a reason I had explicitly ruled out
+
+Session covering: a measurement that said "don't bother", a change made anyway
+for consistency, three bugs introduced by it, two long-standing rendering bugs
+found by accident, a documented conclusion about this hardware overturned, the
+first per-operation on-device benchmark, and a 15-42% rasteriser speedup from an
+idea I had argued against in writing two hours earlier.
+
+Read the wrong turns. Four of the eight sections below are mistakes.
+
+### 1. The question, and the answer nobody wanted
+
+`ROTATE` used `sinf`/`cosf` while the language advertises integer math. Would a
+sine table be faster on device?
+
+Instrumented `matrix_make_rotation` and counted: **at most 109 calls in the
+entire 54-render corpus, and zero in half of it.** Rasterisation is 91% of
+device compute (2026-08-27 baseline) and the trig sits in the interpreter, once
+per `ROTATE`, never per pixel. Host benchmark: +0.76% aggregate, against a
+parse-phase control -- which contains no trigonometry -- that moved +/-10% over
+the same runs. The signal was smaller than the instrument's noise.
+
+So: no. Adopted anyway, for two reasons that are not speed. `README.md:179` had
+claimed since forever that `ROTATE` "uses integer math internally (e.g.
+precomputed sin/cos tables)" -- the spec had been describing a table the code
+did not have. And dropping libm's sine saved 4-5 KB of flash on all three WASM
+builds.
+
+**Dead end worth recording:** the first version of the write-up said every
+changed pixel was "an edge pixel, none is a shape in the wrong place". That was
+checked by looking at 48x48 crops centred on the FIRST differing pixel, which is
+a terrible sample. Measuring distance-from-nearest-edge properly showed
+`thunderstorms__c42` had pixels **22 px from any edge**. The claim was wrong and
+had already been published. See section 2 for why.
+
+### 2. Three bugs in the sine table, each invisible to the previous test
+
+**a. Composing rotation matrices compounds the table's error.** `ROTATE` did
+`matrix = matrix * R(d)`, and a Q15-rounded `(c,s)` has `c^2 + s^2 = 1 +/- 6e-5`,
+so every composition scaled the matrix slightly. Measured at `matrix_invert`
+across the corpus: worst `|det - 1|` was **6.6e-3 with the table against 1.3e-6
+with sinf** -- a 5,000x increase, and a 0.66% scale error. That is what put
+pixels 22 px from an edge: the phase of a pattern fill inside a rotated region
+slid several pixels.
+
+Fix: carry the accumulated angle as an INTEGER and rebuild the matrix from it,
+instead of multiplying matrices. `ROTATE d` becomes `angle = (angle + d) mod
+360`, which cannot drift. The transform is only ever translations and rotations
+(`CMD_SCALE` sets a separate integer factor and never touches the matrix), so
+`(angleDeg, tx, ty)` is its exact and complete state.
+
+**b. My first inverse was wrong, and "cleaner" was the reason.** Having made the
+matrix rigid, I replaced `matrix_invert` with a bare transpose -- no determinant,
+no division, very tidy. It made low-rotation scripts WORSE. A transpose is the
+inverse of a perfectly orthonormal matrix; a table `(c,s)` is orthonormal to one
+ulp, and the rasteriser uses both matrices -- the forward one to place a shape,
+the inverse one to decide which pattern pixel each screen pixel samples. They
+have to agree. The determinant division is not optional; what a rigid transform
+buys is that the determinant is `c^2 + s^2` in closed form and can never be zero.
+
+**c. Q15 cannot represent 1.0, so the identity rotation was not the identity.**
+Q15 puts 1.0 at 32768, which does not fit an `int16_t`. Clamped to 32767, so
+`cos(0) = 0.99997` and every `TRANSLATE` issued at angle 0 -- most of them -- was
+quietly scaled. Invisible in a worst-case-error bound, visible only as small
+diffs on scripts that barely rotate. Fixed by storing the table as `int32_t`,
+which makes the four cardinal angles exact and costs 720 bytes.
+
+Combined effect, measured against the original `sinf` renderer over 54 renders:
+**3,701 differing pixels became 279**, and 41 of 54 renders became byte-identical
+to the float original.
+
+### 3. A test that found two bugs nobody was looking for
+
+While answering "what is `0.7071f` for?", the answer turned out to be: it places
+four diagonal sample points for `fillCircle`'s bounding box, and the whole
+approach is wrong.
+
+Generalised it into a test: **a shape's ink area is invariant under rotation.**
+Render one primitive at a spread of angles, count non-white pixels, flag anything
+that moves. Three suspects, two real:
+
+- **`FILL_CIRCLE` bounded itself with the AABB of an inscribed OCTAGON.** Eight
+  sampled points undershoot a rotated disk by `r*(1 - cos 22.5deg)` = 7.6% of the
+  radius. Measured on radius 200: 400 px wide at ROTATE 0, **372 px at ROTATE
+  22**, losing 4.4% of its area and drawing eight flat sides.
+- **Every axis-aligned `LINE` drew NOTHING.** A zero-area shape has a
+  zero-thickness AABB; `floor`/`ceil` collapsed it to `minY == maxY`, and the
+  "clipped away to nothing" test culled the item. ROTATE 0/90/180 rendered **0
+  pixels**; ROTATE 1/89/91 rendered all 401. The fix changed **zero goldens**,
+  which is the most complete statement of a coverage gap available.
+- **`rect_outline` was a FALSE POSITIVE** and saying so matters. Its 7.9% spread
+  is Bresenham: a line of length L at angle t paints `L*max(|cos|,|sin|)` pixels.
+  At 22.5deg that is 924 of 1000; measured 925. Not lost coverage.
+
+Both real bugs predate the display-list renderer and neither had golden
+coverage. `corpus/bounds.mp` now provokes both.
+
+**A cascade nobody planned:** because the matrix is provably rigid, its columns
+are unit vectors, so every "how long is the transformed radius" computation has
+the closed form `lr * scale`. That retired 8 `transformPoint` calls per
+`FILL_CIRCLE` down to 1, two `sqrtf` in `drawCircle`, and two `std::hypot` in the
+bounds pass. Correctness and cost moved the same way, which is not the usual deal.
+
+### 4. "Serial is worthless on this device" was wrong
+
+`analysis/watchy-port-attempt-log.md` concluded the Watchy's serial output is
+unusable and built a vibration-motor telemetry channel because of it.
+
+**Serial works.** 115200, normal DTR/RTS polarity, and the firmware is chatty:
+boot banner, heap, RTC, script list, per-render timings. What made it look dead
+is that the **Watchy deep-sleeps between renders** -- a sleeping ESP32 transmits
+nothing, so a listener attached at the wrong moment sees silence. Reset the board
+and it talks immediately.
+
+That is the THIRD instrument artifact on this one device, after `--after
+no_reset` being read as device state and macOS lacking `timeout`. Section 5.4 of
+the attempt log states the lesson and this is one more instance of it. The
+lesson is apparently not learnable by writing it down once.
+
+### 5. Building the on-device benchmark, and what it cost
+
+- **`env:m5paper-bench` does not compile.** `mp_bench.cpp` still calls a
+  four-argument `DisplayListRenderer` constructor that became three-argument. The
+  bench nobody ran had rotted.
+- Wrote a Watchy bench with its OWN `main()` and a `build_src_filter` that drops
+  `src/*`. No SPIFFS, ScriptManager, WiFi, BLE or RTC: none is under measurement
+  and all of it competes for a PICO-D4's ~180 KB.
+- **That broke the normal firmware.** `env:watchy2` selects sources with `+<*>`,
+  so merely creating the file gave a duplicate `setup`/`loop`/`g_display`. Fixed
+  by guarding the file with `#if MP_BENCH`, the convention `mp_bench.h` already
+  used -- not by editing the normal env.
+- **First per-operation corpus was wrong twice.** Repeating a full-canvas fill 24
+  times measured the same work as once: the occlusion buffer correctly culls
+  every item after the first (24 items, 1 rendered). And a rotated rect
+  translated to the corner rendered **0 items** -- entirely off-screen. Fixed by
+  covering the canvas exactly once per script and taking statistics from reps,
+  and by checking `rendered items`, not just that it parsed.
+
+Result for the sine-table work, on hardware: rasterisation unchanged (as
+predicted), **display-list generation 6-24% faster on every rotating script,
+with `city` and `nest` -- which never rotate -- at 0.0% as the control.**
+
+### 6. Q16.16: I predicted it would lose, in writing, and was wrong
+
+The argument I made was: both targets are ESP32 with an FPU, so fixed point
+trades a one-cycle `MUL.S` for a 32x32->64 multiply and a shift, and cannot win.
+That framing **assumed fixed point means doing the same arithmetic in integers.**
+It does not have to.
+
+A pattern coordinate along a scanline is affine: `b(x+1) = b(x) + d`. In float
+that recurrence is unusable because repeated addition drifts, so the float loop
+recomputes `im0*x + m2y + im4` from scratch every pixel, multiplies by a
+reciprocal, and converts to int. **In fixed point the recurrence is exact**, and
+`>> 16` is an exact floor, so the conversion disappears with it. Per pixel per
+axis: two multiplies become none, and the float->int conversion goes.
+
+> The win is not a faster multiply. It is not multiplying. An FPU does not help
+> with work you no longer do.
+
+The device deltas are LARGER than the host's (-42.4% vs -35.9% on
+`op_draw_asset`), which is the same story from the other side: the eliminated
+operations are cheap on x86-64 and expensive on Xtensa.
+
+**The generalisable error:** I evaluated a technique by its most obvious
+implementation and reported the conclusion as a property of the technique. The
+correct output would have been "here is what I would measure", not "here is why
+it cannot work". The harness existed to answer it in ten minutes.
+
+**And `fillCircle`'s share of the win is not fixed point at all.** The float path
+inverse-transformed every pixel purely to ask "inside the circle?", then threw
+the coordinates away. A circle under a rigid transform is a circle, so the test
+is `|screen - Centre| <= r*SCALE` -- answerable per SCANLINE as a half-width
+`sqrt(R^2 - dy^2)`. One root per row instead of a transform per pixel, and the
+old `narrowSpan` bisection goes too because the new span is exact rather than
+conservative. Solid `fill_circle` is **-30.9%** with no pattern arithmetic to
+speed up.
+
+### 7. The equivalence gate could not fail, and finding that out was luck
+
+`compare-paths displaylist displaylist-fixed` printed **21/21 identical** on the
+first run. That is the answer a correct fast path gives. It is also exactly the
+answer a fast path that never executed gives, and there was no way to tell them
+apart.
+
+Establishing which world we were in meant deliberately corrupting the fixed loops
+until the comparison failed (517,506 pixels). It ran. But **"go and sabotage it"
+is not a procedure anyone will repeat**, so it is not a fix.
+
+The renderer now counts pixels emitted through fixed-point inner loops --
+accumulated per SPAN, so it costs nothing in the loop it measures -- and
+`compare-paths` enforces it in both directions: a fast path reporting zero fails,
+and a path named `*-float` reporting non-zero fails too, because a reference that
+is secretly running the code it is a reference FOR is equally vacuous while
+looking more convincing. The new gate was itself verified by forcing every range
+check to fail: it printed `21 identical, 0 differing` -- a clean false pass under
+the old gate -- followed by `FAIL: ... executed none. Every comparison above is
+vacuous.`
+
+This generalises past this change. `audit-sweep` already carries the same idea
+("two cases must FAIL"). Any gate whose passing state is indistinguishable from
+its not-running state needs a positive control, and it is worth asking of the
+existing ones.
+
+**Second overclaim caught by being asked:** I wrote that the screen-space circle
+span produces byte-identical output, having checked exactly one configuration.
+Probed properly across rotation, scale, radius, clipping and sub-pixel centre
+placement: 8 of 9 identical, and an off-centre rotated disk differs by **2 px**.
+Mathematically equivalent, differently rounded. Both overclaims this session came
+from generalising a single sample.
+
+### 8. Where it landed
+
+Fixed point is now the **default**, goldens rebaked. The float rasteriser stays
+selectable as `displaylist-float` with its own golden set in `golden-float/`,
+gated by `make verify-float` in `ci` -- a superseded implementation that stays
+runnable, so the comparison can be re-made rather than re-argued. `make
+compare-float` reports the distance: 3 of 21 goldens differ, `artdeco_default` by
+34 px of 518,400 (0.0066%).
+
+The two are not byte-identical and cannot be made so: Q16.16 quantises to
+1/65536, so wherever a float value sits closer than that to an integer, the two
+floors disagree. **A pure-integer exact DDA is available, though, and the sine
+table is what made it available** -- `SCALE` and `TRANSLATE` are integers and
+rotation is now `C/32768` with `C` an exact integer, so every per-pixel step is
+an exact rational and a Bresenham-style carry is possible. Roughly double the
+Q16.16 inner loop, still far below float, and bit-identical across every
+toolchain -- which the current float path is not, having been measured
+disagreeing with itself by 21 px between `-Os` WASM and `-O2` native. See
+`analysis/is-q16-16-integer-math.md`.
