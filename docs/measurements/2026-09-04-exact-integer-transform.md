@@ -4,10 +4,11 @@ Removing the last floats from the rasteriser's *forward* path: line and rect
 endpoints, circle centres, and the filled-circle scanline span including its
 `sqrtf`. Selectable as render path `displaylist-int`.
 
-**Result: byte-identical output, and between +0.0% and +0.9% on whole scripts —
-free within measurement error.** The isolated operations it touches cost between
-+0.3% and +2.6%. It is not a speedup and was never going to be; what it buys is
-exactness and a step toward not linking soft-float at all.
+**Result after two rounds: byte-identical output, and −0.5% to +0.2% on whole
+scripts.** Isolated probes land between −4.9% and +2.6%. It was never going to be
+a speedup — it does the same arithmetic in integers — and getting it to parity
+took finding two performance bugs of my own, which is most of what this file is
+about.
 
 Measured on a Watchy with all three paths alternating inside one firmware run.
 
@@ -32,30 +33,36 @@ identical rather than merely close.
 
 ## Result
 
+Final, milliseconds of rasterisation, min of 7 reps:
+
 | operation | float | Q16.16 | vs float | + integer xform | vs Q16.16 |
 |---|---|---|---|---|---|
-| `op_draw_asset` | 36.18 | 20.85 | −42.4% | 20.85 | +0.0% |
-| `op_fill_circle_pattern_rot` | 49.55 | 29.36 | −40.7% | 30.00 | +2.2% |
-| `op_fill_rect_pattern_rot` | 59.23 | 39.77 | −32.9% | 39.77 | +0.0% |
-| `op_fill_circle` | 35.63 | 24.66 | −30.8% | 25.30 | **+2.6%** |
-| `op_fill_rect_pattern` | 42.26 | 35.95 | −14.9% | 35.95 | +0.0% |
-| `op_rect_outline` | 2.32 | 2.32 | +0.0% | 2.36 | +2.0% |
-| `op_line` | 5.50 | 5.50 | +0.0% | 5.54 | +0.7% |
-| `op_circle_outline` | 4.11 | 4.11 | +0.0% | 4.12 | +0.3% |
-| `op_fill_rect_solid` | 33.02 | 33.02 | +0.0% | 33.02 | +0.0% |
-| `op_fill_pixel` | 2.07 | 2.07 | +0.0% | 2.07 | +0.0% |
+| `op_draw_asset` | 36.22 | 20.87 | −42.4% | 20.89 | +0.1% |
+| `op_fill_circle_pattern_rot` | 49.43 | 29.38 | −40.6% | 30.03 | +2.2% |
+| `op_fill_rect_pattern_rot` | 59.26 | 39.79 | −32.8% | 39.79 | −0.0% |
+| `op_fill_circle` | 35.48 | 24.66 | −30.5% | 25.31 | **+2.6%** |
+| `op_fill_rect_pattern` | 42.29 | 35.98 | −14.9% | 35.98 | +0.0% |
+| `op_line` | 5.52 | 5.52 | +0.0% | 5.54 | +0.3% |
+| `op_rect_outline` | 2.35 | 2.35 | +0.0% | 2.36 | +0.4% |
+| `op_circle_outline` | 4.11 | 4.11 | +0.0% | 4.11 | +0.0% |
+| `op_fill_rect_solid` | 33.04 | 33.04 | +0.0% | 33.04 | +0.0% |
+| `op_fill_pixel` | 2.08 | 2.08 | +0.0% | 1.98 | **−4.9%** |
 
 Whole scripts — the number that decides whether this matters:
 
 | script | Q16.16 | + integer xform |
 |---|---|---|
-| `city` | 50.53 | +0.0% |
-| `emulator_welcome` | 37.71 | +0.0% |
-| `nest` | 12.53 | +0.0% |
-| `i32` | 0.46 | +0.0% |
-| `artdeco_default` | 43.41 | +0.2% |
-| `prims` | 9.52 | +0.5% |
-| `bounds` | 0.65 | +0.9% |
+| `nest` | 12.42 | −0.5% |
+| `emulator_welcome` | 37.75 | −0.2% |
+| `prims` | 9.52 | −0.0% |
+| `city` | 50.49 | +0.0% |
+| `artdeco_default` | 43.43 | +0.2% |
+| `i32` | 0.46 | +1.1% |
+| `bounds` | 0.69 | +1.8% |
+
+`op_fill_pixel` ending up 4.9% FASTER than float is the one genuine win: it is
+120 one-pixel items, so it is dominated by per-item transform cost, and an
+integer multiply-add beats a float one once the divisions are gone.
 
 **The overhead is per-item and per-row, never per-pixel**, which is why a probe
 built to hammer one primitive shows 2% and a real script shows nothing. It is
@@ -95,6 +102,73 @@ its centre is computed once against 200 scanlines, so removing one duplicate
 transform could not have mattered. The remaining cost there is the genuine
 per-row `dyN * dyN` and the root.
 
+## Round two: the AABB corners, and a 50% regression that taught the most
+
+Converting the remaining per-item corner transforms -- `fillRect`, `drawAsset`,
+`drawPixel`, `drawFilledPixel` -- made `op_fill_pixel` **50% SLOWER** (2.80 ms to
+4.20 ms) while every other probe stayed flat.
+
+`op_fill_pixel` is 120 one-pixel items that paint 33 ink pixels between them, so
+it is almost pure transform cost with no drawing to hide behind. That is what
+made it the probe that caught this, and it is why a corpus needs a case with a
+bad work-to-overhead ratio in it.
+
+The cause was not int64 and not the corner count:
+
+```c
+int32_t mp_sin_q15(int deg) {
+    deg %= 360;                 // <- an integer DIVISION
+    ...
+}
+```
+
+`xformPointQ15` called it **twice per point** for cos and sin, so a four-corner
+AABB paid eight integer divisions per item. The angle cannot change within a
+transform snapshot, so both entries now resolve once, in `TransformSnapshot`.
+
+| probe | corners per item | before hoist | after hoist |
+|---|---|---|---|
+| `op_fill_pixel` | 4 | **+50.0%** | **−4.9%** |
+| `op_rect_outline` | 4 | +2.1% | +0.4% |
+| `op_line` | 2 | +0.6% | +0.3% |
+| `op_circle_outline` | 1 | +0.2% | +0.0% |
+
+After the fix the integer transform is at parity or slightly ahead everywhere
+except the filled-circle span, and whole scripts come out at −0.5% to +0.2%.
+
+Note that the earlier "the cost scales with the number of int64 multiplies"
+reading was wrong twice over: first it was double work (round one), then it was
+integer division. The corner count correlated with both, which is exactly how a
+plausible wrong cause survives two rounds of measurement.
+
+## What actually links, and what "remove the last floats" really means
+
+`xtensa-esp32-elf-nm` on the firmware, reading the symbol TYPES rather than
+assuming:
+
+| symbol | address | type | |
+|---|---|---|---|
+| `__addsf3`, `__subsf3`, `__mulsf3` | `0x4000…` | **A** | ROM, costs no flash |
+| `__floatsisf`, `__fixsfsi`, `__floatunsisf` | `0x4000…` | **A** | ROM |
+| `__divsf3` | `0x40255a9c` | **T** | **linked into flash** |
+| `sqrtf`, `__ieee754_sqrtf` | `0x4021…` | **T** | **linked into flash** |
+
+The ESP32's FPU does add, multiply and int conversion in hardware, and the ROM
+carries the helpers anyway. **Only float division and square root cost flash.**
+"The binary still links soft-float" was too broad; the real target is two
+symbols, and they come from:
+
+- `sqrtf` -- the float circle span, which the integer path already avoids.
+- `__divsf3` -- `exactReciprocal` (once per fill item), `invSf` (once per
+  scanline), the `v / sf` fallbacks, and `1.0f / det` in `matrix_set_rigid`.
+
+And the architectural point that follows: **as long as `displaylist-float`
+remains selectable at runtime, both symbols stay in the binary no matter what
+the integer path does.** A real FPU-less port has to compile the float path out
+with `#if`, not choose between them at run time. That is a build-configuration
+decision, not a rasteriser one, and it is worth knowing before more of the
+renderer is rewritten in pursuit of it.
+
 ## What is left, and what would actually pay
 
 - **The filled-circle span still costs 2.6%.** It could avoid both the 64-bit
@@ -102,11 +176,21 @@ per-row `dyN * dyN` and the root.
   Bresenham draws a circle — additions and comparisons only. Not built, because
   the whole-script effect is 0.0% and the risk is in bounds arithmetic, which is
   where both of 2026-09-03's real bugs lived.
-- **Float is not gone.** The display-list bounds pass, `fillRect`/`drawAsset`
-  AABB corners, and the inverse matrix are all still float. Until every one is
-  converted the binary still links soft-float, so the *dependency* argument —
-  the actual reason to do this on an ESP32-C3 or RP2040 — is not yet cashed in.
-  This change is one step of several, not the finish line.
+- **Float is not gone.** Still float: the display-list bounds pass, the Q16.16
+  DDA setup (which derives its start and increment from the float inverse
+  matrix, `invSf` included), `narrowSpan`, and `matrix_set_rigid`'s `1.0f/det`.
+  The AABB corners in `fillRect`/`drawAsset`/`drawPixel`/`drawFilledPixel` ARE
+  converted as of round two.
+- **The DDA setup is the last hard one, and it is not mechanical.** Its start
+  and increment are exactly `(C*dxN + S*dyN) / (D*s)` and `C*32768 / (D*s)` with
+  `D = C^2 + S^2` — exact rationals, so it is doable. But rendering them as
+  Q16.16 needs a 64-bit division, which trades `__divsf3` for `__udivdi3`: a
+  different library call, not no library call. Removing BOTH means either an
+  approximation (`D ~= 32768^2`, a 6e-5 relative error that WOULD change output)
+  or a reciprocal computed once per item and multiplied thereafter. That is a
+  precision decision, not a conversion — and worth taking deliberately, given
+  every pixel difference this project has shipped so far came from exactly such
+  a trade.
 - `displaylist-int` is byte-identical to the default, so it needs no goldens of
   its own. `make compare-int` is in `ci`: if the two ever stop agreeing, that is
   a bug rather than a trade-off, unlike `compare-float`.

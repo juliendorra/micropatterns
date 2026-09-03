@@ -123,6 +123,15 @@ struct TransformSnapshot {
     float scale = 1.0f;
     int32_t angleDeg = 0;
     int32_t scaleInt = 1;   // xf->scale is always integral; this is it, as an int
+    // The angle's table entries, resolved ONCE per snapshot. mp_sin_q15 reduces
+    // its argument with `% 360`, which is an integer division, and the transform
+    // needs both cos and sin -- so looking them up per POINT cost two divisions
+    // per corner. Measured: op_fill_pixel, which is 120 one-pixel items and
+    // almost no drawing, ran 50% slower on the integer path until these moved
+    // here. The angle cannot change within a snapshot, so this is the only
+    // place they belong.
+    int32_t cosQ15 = MP_Q15_ONE;
+    int32_t sinQ15 = 0;
 
     TransformSnapshot() {
         // Zero the whole object INCLUDING PADDING before setting any field.

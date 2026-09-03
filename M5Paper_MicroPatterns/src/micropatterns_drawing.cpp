@@ -243,8 +243,8 @@ void MicroPatternsDrawing::transformPoint(float logical_x, float logical_y, cons
 static inline void xformPointQ15(const DisplayListItem& item, int32_t lx, int32_t ly,
                                  int64_t& sxNum, int64_t& syNum) {
     const TransformSnapshot& xf = *item.xf;
-    const int32_t C = mp_sin_q15(xf.angleDeg + 90);
-    const int32_t S = mp_sin_q15(xf.angleDeg);
+    const int32_t C = xf.cosQ15;   // resolved once per snapshot, not per point
+    const int32_t S = xf.sinQ15;
     const int64_t X = (int64_t)lx * xf.scaleInt;
     const int64_t Y = (int64_t)ly * xf.scaleInt;
 
@@ -278,6 +278,30 @@ static inline void xformPointQ15(const DisplayListItem& item, int32_t lx, int32_
 
     sxNum = (int64_t)C * X - (int64_t)S * Y + xf.txNum;
     syNum = (int64_t)S * X + (int64_t)C * Y + xf.tyNum;
+}
+
+// Screen AABB of a logical rectangle's four corners, exactly, with no float.
+// The corners are transformed as Q15 numerators and the box taken there, so the
+// floor/ceil at the end are a shift and a negated shift rather than libm calls.
+static inline void aabbQ15(const DisplayListItem& item,
+                           int32_t lx0, int32_t ly0, int32_t lx1, int32_t ly1,
+                           int& minx, int& maxx, int& miny, int& maxy) {
+    int64_t px[4], py[4];
+    xformPointQ15(item, lx0, ly0, px[0], py[0]);
+    xformPointQ15(item, lx1, ly0, px[1], py[1]);
+    xformPointQ15(item, lx0, ly1, px[2], py[2]);
+    xformPointQ15(item, lx1, ly1, px[3], py[3]);
+    int64_t mnx = px[0], mxx = px[0], mny = py[0], mxy = py[0];
+    for (int i = 1; i < 4; ++i) {
+        if (px[i] < mnx) mnx = px[i];
+        if (px[i] > mxx) mxx = px[i];
+        if (py[i] < mny) mny = py[i];
+        if (py[i] > mxy) mxy = py[i];
+    }
+    minx = (int)mp_q15_floor(mnx);
+    miny = (int)mp_q15_floor(mny);
+    maxx = (int)(-((-mxx) >> MP_Q15_SHIFT));   // ceil, divisor is a power of two
+    maxy = (int)(-((-mxy) >> MP_Q15_SHIFT));
 }
 
 // Screen-space radius of a logical radius under the item's transform.
@@ -400,6 +424,11 @@ void MicroPatternsDrawing::drawPixel(const DisplayListItem& item) {
     int lx = item.x();
     int ly = item.y();
 
+    int min_sx, max_sx, min_sy, max_sy;
+    if (_integerTransform) {
+        ++_integerXformCalls;
+        aabbQ15(item, lx, ly, lx + 1, ly + 1, min_sx, max_sx, min_sy, max_sy);
+    } else {
     float s_tl_x, s_tl_y, s_tr_x, s_tr_y, s_bl_x, s_bl_y, s_br_x, s_br_y;
     transformPoint(static_cast<float>(lx), static_cast<float>(ly), item, s_tl_x, s_tl_y);
     transformPoint(static_cast<float>(lx + 1), static_cast<float>(ly), item, s_tr_x, s_tr_y);
@@ -407,10 +436,11 @@ void MicroPatternsDrawing::drawPixel(const DisplayListItem& item) {
     transformPoint(static_cast<float>(lx + 1), static_cast<float>(ly + 1), item, s_br_x, s_br_y);
 
     // Determine screen-space bounding box (rounded to int for iteration)
-    int min_sx = static_cast<int>(floor(std::min({s_tl_x, s_tr_x, s_bl_x, s_br_x})));
-    int max_sx = static_cast<int>(ceil(std::max({s_tl_x, s_tr_x, s_bl_x, s_br_x})));
-    int min_sy = static_cast<int>(floor(std::min({s_tl_y, s_tr_y, s_bl_y, s_br_y})));
-    int max_sy = static_cast<int>(ceil(std::max({s_tl_y, s_tr_y, s_bl_y, s_br_y})));
+    min_sx = static_cast<int>(floor(std::min({s_tl_x, s_tr_x, s_bl_x, s_br_x})));
+    max_sx = static_cast<int>(ceil(std::max({s_tl_x, s_tr_x, s_bl_x, s_br_x})));
+    min_sy = static_cast<int>(floor(std::min({s_tl_y, s_tr_y, s_bl_y, s_br_y})));
+    max_sy = static_cast<int>(ceil(std::max({s_tl_y, s_tr_y, s_bl_y, s_br_y})));
+    }
 
     // Clip to canvas
     min_sx = std::max(0, min_sx);
@@ -458,16 +488,22 @@ void MicroPatternsDrawing::drawFilledPixel(const DisplayListItem& item) {
     int lx = item.x();
     int ly = item.y();
 
+    int min_sx, max_sx, min_sy, max_sy;
+    if (_integerTransform) {
+        ++_integerXformCalls;
+        aabbQ15(item, lx, ly, lx + 1, ly + 1, min_sx, max_sx, min_sy, max_sy);
+    } else {
     float s_tl_x, s_tl_y, s_tr_x, s_tr_y, s_bl_x, s_bl_y, s_br_x, s_br_y;
     transformPoint(static_cast<float>(lx), static_cast<float>(ly), item, s_tl_x, s_tl_y);
     transformPoint(static_cast<float>(lx + 1), static_cast<float>(ly), item, s_tr_x, s_tr_y);
     transformPoint(static_cast<float>(lx), static_cast<float>(ly + 1), item, s_bl_x, s_bl_y);
     transformPoint(static_cast<float>(lx + 1), static_cast<float>(ly + 1), item, s_br_x, s_br_y);
 
-    int min_sx = static_cast<int>(floor(std::min({s_tl_x, s_tr_x, s_bl_x, s_br_x})));
-    int max_sx = static_cast<int>(ceil(std::max({s_tl_x, s_tr_x, s_bl_x, s_br_x})));
-    int min_sy = static_cast<int>(floor(std::min({s_tl_y, s_tr_y, s_bl_y, s_br_y})));
-    int max_sy = static_cast<int>(ceil(std::max({s_tl_y, s_tr_y, s_bl_y, s_br_y})));
+    min_sx = static_cast<int>(floor(std::min({s_tl_x, s_tr_x, s_bl_x, s_br_x})));
+    max_sx = static_cast<int>(ceil(std::max({s_tl_x, s_tr_x, s_bl_x, s_br_x})));
+    min_sy = static_cast<int>(floor(std::min({s_tl_y, s_tr_y, s_bl_y, s_br_y})));
+    max_sy = static_cast<int>(ceil(std::max({s_tl_y, s_tr_y, s_bl_y, s_br_y})));
+    }
 
     min_sx = std::max(0, min_sx);
     min_sy = std::max(0, min_sy);
@@ -586,16 +622,21 @@ void MicroPatternsDrawing::fillRect(const DisplayListItem& item) {
     int lh = item.h();
     if (lw <= 0 || lh <= 0) return;
 
-    float s_tl_x, s_tl_y, s_tr_x, s_tr_y, s_bl_x, s_bl_y, s_br_x, s_br_y;
-    transformPoint(static_cast<float>(lx), static_cast<float>(ly), item, s_tl_x, s_tl_y);
-    transformPoint(static_cast<float>(lx + lw), static_cast<float>(ly), item, s_tr_x, s_tr_y);
-    transformPoint(static_cast<float>(lx), static_cast<float>(ly + lh), item, s_bl_x, s_bl_y);
-    transformPoint(static_cast<float>(lx + lw), static_cast<float>(ly + lh), item, s_br_x, s_br_y);
-
-    int min_sx = static_cast<int>(floor(std::min({s_tl_x, s_tr_x, s_bl_x, s_br_x})));
-    int max_sx = static_cast<int>(ceil(std::max({s_tl_x, s_tr_x, s_bl_x, s_br_x})));
-    int min_sy = static_cast<int>(floor(std::min({s_tl_y, s_tr_y, s_bl_y, s_br_y})));
-    int max_sy = static_cast<int>(ceil(std::max({s_tl_y, s_tr_y, s_bl_y, s_br_y})));
+    int min_sx, max_sx, min_sy, max_sy;
+    if (_integerTransform) {
+        ++_integerXformCalls;
+        aabbQ15(item, lx, ly, lx + lw, ly + lh, min_sx, max_sx, min_sy, max_sy);
+    } else {
+        float s_tl_x, s_tl_y, s_tr_x, s_tr_y, s_bl_x, s_bl_y, s_br_x, s_br_y;
+        transformPoint(static_cast<float>(lx), static_cast<float>(ly), item, s_tl_x, s_tl_y);
+        transformPoint(static_cast<float>(lx + lw), static_cast<float>(ly), item, s_tr_x, s_tr_y);
+        transformPoint(static_cast<float>(lx), static_cast<float>(ly + lh), item, s_bl_x, s_bl_y);
+        transformPoint(static_cast<float>(lx + lw), static_cast<float>(ly + lh), item, s_br_x, s_br_y);
+        min_sx = static_cast<int>(floor(std::min({s_tl_x, s_tr_x, s_bl_x, s_br_x})));
+        max_sx = static_cast<int>(ceil(std::max({s_tl_x, s_tr_x, s_bl_x, s_br_x})));
+        min_sy = static_cast<int>(floor(std::min({s_tl_y, s_tr_y, s_bl_y, s_br_y})));
+        max_sy = static_cast<int>(ceil(std::max({s_tl_y, s_tr_y, s_bl_y, s_br_y})));
+    }
 
     min_sx = std::max(0, min_sx);
     min_sy = std::max(0, min_sy);
@@ -1046,16 +1087,23 @@ void MicroPatternsDrawing::drawAsset(const DisplayListItem& item, const MicroPat
     int lx_asset_origin = item.x();
     int ly_asset_origin = item.y();
 
-    float s_tl_x, s_tl_y, s_tr_x, s_tr_y, s_bl_x, s_bl_y, s_br_x, s_br_y;
-    transformPoint(static_cast<float>(lx_asset_origin), static_cast<float>(ly_asset_origin), item, s_tl_x, s_tl_y);
-    transformPoint(static_cast<float>(lx_asset_origin + asset.width), static_cast<float>(ly_asset_origin), item, s_tr_x, s_tr_y);
-    transformPoint(static_cast<float>(lx_asset_origin), static_cast<float>(ly_asset_origin + asset.height), item, s_bl_x, s_bl_y);
-    transformPoint(static_cast<float>(lx_asset_origin + asset.width), static_cast<float>(ly_asset_origin + asset.height), item, s_br_x, s_br_y);
-
-    int min_sx = static_cast<int>(floor(std::min({s_tl_x, s_tr_x, s_bl_x, s_br_x})));
-    int max_sx = static_cast<int>(ceil(std::max({s_tl_x, s_tr_x, s_bl_x, s_br_x})));
-    int min_sy = static_cast<int>(floor(std::min({s_tl_y, s_tr_y, s_bl_y, s_br_y})));
-    int max_sy = static_cast<int>(ceil(std::max({s_tl_y, s_tr_y, s_bl_y, s_br_y})));
+    int min_sx, max_sx, min_sy, max_sy;
+    if (_integerTransform) {
+        ++_integerXformCalls;
+        aabbQ15(item, lx_asset_origin, ly_asset_origin,
+                lx_asset_origin + asset.width, ly_asset_origin + asset.height,
+                min_sx, max_sx, min_sy, max_sy);
+    } else {
+        float s_tl_x, s_tl_y, s_tr_x, s_tr_y, s_bl_x, s_bl_y, s_br_x, s_br_y;
+        transformPoint(static_cast<float>(lx_asset_origin), static_cast<float>(ly_asset_origin), item, s_tl_x, s_tl_y);
+        transformPoint(static_cast<float>(lx_asset_origin + asset.width), static_cast<float>(ly_asset_origin), item, s_tr_x, s_tr_y);
+        transformPoint(static_cast<float>(lx_asset_origin), static_cast<float>(ly_asset_origin + asset.height), item, s_bl_x, s_bl_y);
+        transformPoint(static_cast<float>(lx_asset_origin + asset.width), static_cast<float>(ly_asset_origin + asset.height), item, s_br_x, s_br_y);
+        min_sx = static_cast<int>(floor(std::min({s_tl_x, s_tr_x, s_bl_x, s_br_x})));
+        max_sx = static_cast<int>(ceil(std::max({s_tl_x, s_tr_x, s_bl_x, s_br_x})));
+        min_sy = static_cast<int>(floor(std::min({s_tl_y, s_tr_y, s_bl_y, s_br_y})));
+        max_sy = static_cast<int>(ceil(std::max({s_tl_y, s_tr_y, s_bl_y, s_br_y})));
+    }
 
     min_sx = std::max(0, min_sx);
     min_sy = std::max(0, min_sy);

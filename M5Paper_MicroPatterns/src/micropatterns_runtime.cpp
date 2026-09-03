@@ -82,6 +82,8 @@ const TransformSnapshot* MicroPatternsRuntime::currentTransform() {
         snap.scale = _currentState.scale;
         snap.scaleInt = (int32_t)_currentState.scale;   // always integral, see CMD_SCALE
         snap.angleDeg = _currentState.angleDeg;
+        snap.cosQ15 = mp_sin_q15(_currentState.angleDeg + 90);
+        snap.sinQ15 = mp_sin_q15(_currentState.angleDeg);
         snap.txNum = _currentState.txNum;
         snap.tyNum = _currentState.tyNum;
         // A loop body that does RESET_TRANSFORMS / SCALE / TRANSLATE with the

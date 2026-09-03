@@ -1098,3 +1098,46 @@ The filled-circle span could drop both its 64-bit multiply and its root by
 stepping the half-width the way Bresenham draws a circle. Not built: the
 whole-script effect is 0.0%, and the risk lives in bounds arithmetic, which is
 where both of yesterday's real bugs were.
+
+### 5. Round two: a 50% regression, and the third wrong cause in a row
+
+Converting the remaining per-item AABB corners made `op_fill_pixel` **50%
+slower** (2.80 ms to 4.20 ms) while everything else stayed flat.
+
+The probe caught it because it is 120 one-pixel items painting 33 ink pixels
+between them -- almost pure transform cost with no drawing to hide behind. A
+corpus needs a case with a deliberately bad work-to-overhead ratio, and this is
+what that case is for.
+
+The cause was `mp_sin_q15`, which reduces its argument with `deg %= 360` -- an
+integer DIVISION -- and was being called twice per transformed point, for cos and
+sin. A four-corner AABB paid eight integer divisions per item. The angle cannot
+change within a snapshot, so both entries now resolve once into
+`TransformSnapshot`. `op_fill_pixel` went to **-4.9%**, i.e. faster than float;
+`op_rect_outline` +2.1% to +0.4%; `op_circle_outline` to exactly +0.0%.
+
+**That is three wrong causes for the same symptom.** First "int64 multiplies",
+which was really double work. Then "int64 multiplies" again after the double
+work was removed. Then, finally, integer division in a lookup helper. The corner
+count correlated with all three, which is precisely how a plausible wrong
+explanation survives repeated measurement -- each round confirmed the
+correlation and none of them tested the mechanism.
+
+### 6. What actually links, checked instead of assumed
+
+I had been repeating that the binary "still links soft-float". `nm` on the
+firmware, read by symbol TYPE rather than by name:
+
+- `__addsf3`, `__subsf3`, `__mulsf3`, `__floatsisf`, `__fixsfsi` are all type
+  **A** at `0x4000xxxx` -- ROM addresses, costing no flash.
+- `__divsf3`, `sqrtf` and `__ieee754_sqrtf` are type **T** -- genuinely linked.
+
+The ESP32's FPU does add, multiply and conversion in hardware. **Only float
+division and square root cost anything**, and they come from `exactReciprocal`,
+`invSf`, the `v / sf` fallbacks and `1.0f / det`.
+
+And the architectural consequence, which matters more than the rest: **while
+`displaylist-float` stays selectable at runtime, both symbols remain in the
+binary no matter what the integer path does.** An FPU-less port has to compile
+the float path out, not choose at run time. That is a build decision, and it is
+worth knowing BEFORE rewriting more of the renderer in pursuit of it.
