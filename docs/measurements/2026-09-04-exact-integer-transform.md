@@ -4,11 +4,13 @@ Removing the last floats from the rasteriser's *forward* path: line and rect
 endpoints, circle centres, and the filled-circle scanline span including its
 `sqrtf`. Selectable as render path `displaylist-int`.
 
-**Result after two rounds: byte-identical output, and −0.5% to +0.2% on whole
-scripts.** Isolated probes land between −4.9% and +2.6%. It was never going to be
-a speedup — it does the same arithmetic in integers — and getting it to parity
-took finding two performance bugs of my own, which is most of what this file is
-about.
+**Result: byte-identical output, and it costs up to 13% on the heaviest real
+script.** Do not turn it on for an ESP32. It exists for a target without an FPU.
+
+That verdict is the opposite of what this file said after two rounds, and the
+reason matters more than the verdict: the synthetic corpus said −0.5% to +0.2%,
+"free within measurement error". The twelve scripts actually on the device said
+`art_deco_4` **+13.2%** and `seascape_2` **+5.3%**. See "The corpus was lying".
 
 Measured on a Watchy with all three paths alternating inside one firmware run.
 
@@ -169,13 +171,61 @@ with `#if`, not choose between them at run time. That is a build-configuration
 decision, not a rasteriser one, and it is worth knowing before more of the
 renderer is rewritten in pursuit of it.
 
+## The corpus was lying, and only the real art caught it
+
+Everything above was measured on ten synthetic probes and seven small corpus
+scripts. Adding the **twelve scripts actually on the device** — from the
+2026-09-03 SPIFFS backup, compiled into the bench — changed the conclusion.
+
+Q16.16 against float, on real art, milliseconds of rasterisation:
+
+| script | float | Q16.16 | |
+|---|---|---|---|
+| `art_deco_4` | 514.75 | 132.99 | **−74.2%** |
+| `thunderstorms` | 123.22 | 74.13 | −39.8% |
+| `disconnected` | 86.81 | 55.57 | −36.0% |
+| `grid` | 57.42 | 38.58 | −32.8% |
+| `seascape_4` | 140.34 | 96.28 | −31.4% |
+| `confetti` | 59.55 | 43.44 | −27.1% |
+| `city_2_by_telohtrab` | 58.70 | 43.41 | −26.0% |
+| `circuits` | 59.21 | 44.01 | −25.7% |
+| `eyes` | 58.06 | 45.38 | −21.8% |
+| `seascape_2` | 75.15 | 58.93 | −21.6% |
+| `reconnected` | 52.42 | 42.29 | −19.3% |
+| `city_by_telohtrab` | 47.99 | 38.82 | −19.1% |
+
+**The Q16.16 win is much bigger on real work than the corpus suggested** — −19%
+to −74%, against the corpus's −11% to −27%. `art_deco_4` alone goes from 515 ms
+to 133 ms.
+
+The exact-integer transform on top of that:
+
+| script | Q16.16 | + integer xform | |
+|---|---|---|---|
+| `art_deco_4` | 132.99 | 150.54 | **+13.2%** |
+| `seascape_2` | 58.93 | 62.05 | **+5.3%** |
+| the other ten | — | — | −0.1% to +0.2% |
+
+**The two that regress are the only two that use `FILL_CIRCLE`.** Every script
+without it is flat to the tenth of a percent. So the +2.6% measured on
+`op_fill_circle` in isolation was not a rounding curiosity: in a script made of
+filled circles it compounds into 13%.
+
+The synthetic corpus could not have found this. `op_fill_circle` was in it and
+did report +2.6% — what was missing was any script *made of* filled circles, so
+the per-op cost never carried the weight it carries in real work.
+
+> A probe tells you what an operation costs. Only the real scripts tell you how
+> much of that operation there is.
+
 ## What is left, and what would actually pay
 
-- **The filled-circle span still costs 2.6%.** It could avoid both the 64-bit
-  multiply and the root entirely by stepping the half-width down the rows the way
-  Bresenham draws a circle — additions and comparisons only. Not built, because
-  the whole-script effect is 0.0% and the risk is in bounds arithmetic, which is
-  where both of 2026-09-03's real bugs lived.
+- **The filled-circle span is now the whole problem, not a curiosity.** At +2.6%
+  per operation it costs 13% on `art_deco_4`, and it is the only reason
+  `displaylist-int` cannot be adopted. It could avoid both the 64-bit multiply
+  and the root by stepping the half-width down the rows the way Bresenham draws
+  a circle — additions and comparisons only. Now clearly worth building; it was
+  dismissed one round earlier on the strength of a corpus showing 0.0%.
 - **Float is not gone.** Still float: the display-list bounds pass, the Q16.16
   DDA setup (which derives its start and increment from the float inverse
   matrix, `invSf` included), `narrowSpan`, and `matrix_set_rigid`'s `1.0f/det`.
