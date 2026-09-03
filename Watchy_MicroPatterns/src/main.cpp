@@ -201,6 +201,7 @@ static void showNotice(const char* title, const char* line1, const char* line2,
 static void fullRefresh();
 static bool loadScriptIndex();
 static void browseScript(int delta);
+static void showScript(int index, bool announce, bool allowDeghost = true);
 static void serviceBrowse();
 static bool anyButtonDown();
 static bool sampleButtons();
@@ -396,7 +397,7 @@ static bool renderAbortRequested()
 // `state` carries this script's own $COUNTER in, and the time actually used
 // back out, so the caller can persist both -- the same in/out arrangement the
 // M5Paper's RenderController has.
-static bool renderScript(int index, ScriptExecState& state)
+static bool renderScript(int index, ScriptExecState& state, bool allowDeghost)
 {
     if (index < 0 || index >= (int)g_scripts.size()) return false;
     const ScriptEntry& scr = g_scripts[index];
@@ -471,7 +472,7 @@ static bool renderScript(int index, ScriptExecState& state)
     // exactly once; the display list is built outside it so the expensive work
     // is not repeated per page.
     t0 = millis();
-    const bool fullRefreshThisTime = beginPanelUpdate(false);
+    const bool fullRefreshThisTime = beginPanelUpdate(false, allowDeghost);
     bool aborted = false;
     g_display.firstPage();
     do {
@@ -509,7 +510,7 @@ static bool renderScript(int index, ScriptExecState& state)
 // `announce` shows the script name on its own frame first. Only worth doing
 // when the script actually CHANGES -- on a re-run you already know what you are
 // looking at, and the title frame is a whole extra panel update.
-static void showScript(int index, bool announce)
+static void showScript(int index, bool announce, bool allowDeghost)
 {
     if (g_scripts.empty()) {
         g_lastRenderMs = millis();
@@ -541,7 +542,7 @@ static void showScript(int index, bool announce)
     g_lastRenderMs = millis();
     armRenderGuard(humanId);
     g_browse.renderStarted(millis(), g_pressCount);
-    const bool rendered = renderScript(g_browse.current(), state);
+    const bool rendered = renderScript(g_browse.current(), state, allowDeghost);
     g_browse.renderFinished(millis(), rendered);
     if (!rendered) {
         disarmRenderGuard(false);
@@ -596,7 +597,23 @@ static void serviceBrowse()
         // firing between a press and its release.
         if (!wasBrowsing) log_i("Auto re-render after %lus idle", AUTO_RERUN_INTERVAL_MS / 1000);
         // The title, when there was one, is already on the panel.
-        showScript(g_browse.current(), false);
+        //
+        // A browse render never spends the de-ghost; the idle re-render always
+        // may. The flashing refresh takes 2.2s against 550ms for a fast one,
+        // and the budget charges two units per press -- one for the title and
+        // one for the render -- so browsing walked into a flash about every
+        // twelfth press. It landed BETWEEN two presses, while the user was
+        // still deciding where to go next, which is the worst place for it:
+        // mid-navigation the panel simply stops answering for over two seconds
+        // and the press that follows looks ignored.
+        //
+        // The debt is deferred, not forgiven. _since keeps climbing through the
+        // whole browsing burst and the first frame that allows a de-ghost pays
+        // all of it at once -- and that frame is this same call, 83s after the
+        // last press, repainting a script nobody is waiting on. The flash still
+        // happens, as often as the panel needs it; it just no longer happens
+        // where somebody is watching for a response.
+        showScript(g_browse.current(), false, /*allowDeghost=*/!wasBrowsing);
     }
 }
 
@@ -1334,6 +1351,12 @@ void loop()
             // multi-second render starts, not after.
             b.wasDown = true;
             b.downAt  = millis();
+            // Acknowledge every press. Measured on the device, drawing the
+            // indicator costs 402ms: this panel's partial-refresh waveform runs
+            // for a fixed time no matter how small the window, so a 26x26 box
+            // costs the same as the whole 200x200 screen. That is the price of
+            // telling the user their press landed, and it is worth paying --
+            // without it a press looks ignored until the title arrives.
             drawCornerIndicator(b.corner, true);
 
             // BLE is an explicit top-left/Back action. It costs roughly 90KB of
@@ -1360,7 +1383,15 @@ void loop()
 
         if (!down && b.wasDown) {
             b.wasDown = false;
-            drawCornerIndicator(b.corner, false);   // clear the acknowledgement
+            // Clearing it is a different matter. Every button except top-left
+            // is followed within a few hundred ms by a frame that repaints the
+            // whole screen -- the script's title for a browse, the script
+            // itself for a re-run -- and that frame erases the corner for free.
+            // Spending another 402ms to rub out a box that is about to be
+            // overwritten anyway just delays the frame the user is waiting for.
+            // Top-left opens the BLE window and paints nothing afterwards, so
+            // there its indicator would sit on screen forever uncleared.
+            if (b.corner == CORNER_TL) drawCornerIndicator(b.corner, false);
             unsigned long held = millis() - b.downAt;
             if (held < 40) continue;                 // debounce bounce/noise
 
@@ -1375,7 +1406,8 @@ void loop()
                     break;
                 case CORNER_BL:
                     log_i("Button: bottom-left -> re-run current script");
-                    showScript(g_browse.current(), false);      // same script: no title
+                    // Navigation as well, even though the id did not change.
+                    showScript(g_browse.current(), false, /*allowDeghost=*/false);
                     break;
                 case CORNER_TL:
                     // BLE was opened on press. Only a hold adds sync/refresh.
