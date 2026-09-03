@@ -59,9 +59,9 @@ OBJS         := $(CORE_OBJS) $(HARNESS_OBJS)
 
 BIN := $(BUILD)/mpharness
 
-.PHONY: all clean verify bench bake list profile
+.PHONY: all clean verify bench bake list profile policy
 
-all: $(BIN)
+all: $(BIN) $(BUILD)/mppolicy
 
 $(BIN): $(OBJS)
 	$(CXX) $(CXXFLAGS) $(OBJS) -o $@
@@ -80,8 +80,18 @@ $(BUILD):
 list: $(BIN)
 	$(BIN) list --corpus corpus --golden golden
 
-verify: $(BIN)
+verify: $(BIN) policy
 	$(BIN) verify --corpus corpus --golden golden
+
+# The browse and refresh policy, off-device. Pure logic with an injected clock,
+# so the timing rules that used to be tuned against a panel by hand are pinned
+# by tests instead. Deliberately part of `verify`: every case in it is a bug
+# that shipped, and none of them needed hardware to reproduce.
+$(BUILD)/mppolicy: $(BUILD)/h_policy_test.o $(BUILD)/core_mp_browse_policy.o
+	$(CXX) $(CXXFLAGS) $^ -o $@
+
+policy: $(BUILD)/mppolicy
+	$(BUILD)/mppolicy
 
 bench: $(BIN)
 	$(BIN) bench --corpus corpus --reps 7 --json out/bench.json

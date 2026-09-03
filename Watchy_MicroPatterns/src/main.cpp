@@ -14,6 +14,8 @@
 #include <SPI.h>
 
 #include "mp_program.h"
+#include "mp_browse_policy.h"
+#include "mp_refresh_budget.h"
 #include "micropatterns_runtime.h"
 #include "display_list_renderer.h"
 #include "watchy_canvas.h"
@@ -105,7 +107,6 @@ static MPNetworkManager* g_networkManager = nullptr;
 struct ScriptEntry { String humanId; String name; String fileId; };
 static std::vector<ScriptEntry> g_scripts;
 
-static int  g_currentScript = 0;
 
 // A render can exhaust the fragmented heap and abort() before setup reaches
 // loop(). RTC slow memory survives that reboot without adding an NVS write on
@@ -122,8 +123,18 @@ static bool g_continueRenderCrashStreak = false;
 // timer; the render only starts once the presses stop. Same value and same
 // behaviour as the M5Paper.
 #define TITLE_SETTLE_MS 450
-static int           g_pendingScript = -1;   // -1: nothing waiting to render
-static unsigned long g_renderDueAt   = 0;
+// Selection, settle window and the periodic re-render all live in the shared
+// policy now (mp_browse_policy.h), which the host harness tests with a clock it
+// can move by hand. Every rule in it is a bug this firmware shipped and that
+// took a panel, a stopwatch and a lot of guessing to find.
+static MpBrowsePolicy g_browse;
+
+// Press EDGES, not the pin level. A render is abandoned by a NEW press; a
+// button still held from before it started is not a request to abandon it, and
+// treating it as one meant a sticky contact aborted every render it triggered.
+// This is also the only counter that can advance while a render blocks loop(),
+// which is why sampling lives in a function the render callback can call.
+static uint32_t g_pressCount = 0;
 
 
 // STAGE REPORTER -- the only working instrument on this device.
@@ -190,8 +201,9 @@ static void showNotice(const char* title, const char* line1, const char* line2,
 static void fullRefresh();
 static bool loadScriptIndex();
 static void browseScript(int delta);
-static void renderIfSettled();
+static void serviceBrowse();
 static bool anyButtonDown();
+static bool sampleButtons();
 static void syncScripts(bool announce);
 static bool syncTimeFromNTP();
 
@@ -282,7 +294,9 @@ static const unsigned long AUTO_RERUN_INTERVAL_MS = 83UL * 1000UL;
 // too, so both are an hour out in summer.
 static const int MP_TZ_OFFSET_HOURS = 1;
 static unsigned long g_lastRenderMs = 0;
-static int g_updatesSinceFull = WATCHY_DEGHOST_INTERVAL;  // force full on first use
+// Starts spent, so the first update of a session is a full one: a partial
+// update onto a panel of unknown contents leaves it grey.
+static MpRefreshBudget g_panelBudget(WATCHY_DEGHOST_INTERVAL);
 
 // Selects the window mode for the next page loop. Returns true if this update
 // will be a full (flashing) refresh.
@@ -296,15 +310,9 @@ static int g_updatesSinceFull = WATCHY_DEGHOST_INTERVAL;  // force full on first
 // which is the frame the user is already waiting on.
 static bool beginPanelUpdate(bool forceFull, bool allowDeghost = true)
 {
-    const bool full = forceFull ||
-                      (allowDeghost && g_updatesSinceFull >= WATCHY_DEGHOST_INTERVAL);
-    if (full) {
-        g_display.setFullWindow();
-        g_updatesSinceFull = 0;
-    } else {
-        g_display.setPartialWindow(0, 0, g_display.width(), g_display.height());
-        g_updatesSinceFull++;
-    }
+    const bool full = g_panelBudget.beginUpdate(forceFull, allowDeghost);
+    if (full) g_display.setFullWindow();
+    else      g_display.setPartialWindow(0, 0, g_display.width(), g_display.height());
     return full;
 }
 
@@ -343,6 +351,7 @@ static bool loadScriptIndex()
         if (e.fileId.isEmpty() || e.fileId == "null") continue;
         g_scripts.push_back(e);
     }
+    g_browse.setScriptCount((int)g_scripts.size());
     log_i("Script index: %u script(s) on device", (unsigned)g_scripts.size());
     return !g_scripts.empty();
 }
@@ -357,6 +366,29 @@ static bool anyButtonDown()
 {
     return digitalRead(BTN_BACK) == HIGH || digitalRead(BTN_MENU) == HIGH ||
            digitalRead(BTN_UP)   == HIGH || digitalRead(BTN_DOWN) == HIGH;
+}
+
+// Samples the buttons and advances g_pressCount on a fresh press.
+//
+// Called from loop() and, crucially, from inside the render's interrupt
+// callback: a render blocks loop() for half a second or more, so this is the
+// only place the count can move while one is running. Without that, a press
+// arriving mid-render could not be told apart from one still held from before.
+static bool sampleButtons()
+{
+    static bool wasDown = false;
+    const bool down = anyButtonDown();
+    if (down && !wasDown) g_pressCount++;
+    wasDown = down;
+    return down;
+}
+
+// The renderer asks this many times a frame. A button held since before the
+// render began is not an abort request; a new one is.
+static bool renderAbortRequested()
+{
+    sampleButtons();
+    return g_browse.abortRequested(g_pressCount);
 }
 
 // Renders g_scripts[index] and pushes it to the panel.
@@ -444,9 +476,9 @@ static bool renderScript(int index, ScriptExecState& state)
     g_display.firstPage();
     do {
         DisplayListRenderer renderer(&g_canvas, W, H);
-        renderer.setInterruptCheckCallback(anyButtonDown);
+        renderer.setInterruptCheckCallback(renderAbortRequested);
         renderer.render(dl);
-        if (anyButtonDown()) {
+        if (renderAbortRequested()) {
             // Leave WITHOUT calling nextPage(). The buffer holds a half-drawn
             // frame and nextPage() is what pushes it to the panel, so breaking
             // here costs the work but never shows it. The next firstPage()
@@ -460,13 +492,13 @@ static bool renderScript(int index, ScriptExecState& state)
     if (aborted) {
         log_i("Render of '%s' abandoned after %lums: button pressed",
               scr.name.c_str(), tRender);
-        // The de-ghost counter must not advance for a frame never shown.
-        if (!fullRefreshThisTime && g_updatesSinceFull > 0) g_updatesSinceFull--;
+        // The de-ghost budget must not advance for a frame never shown.
+        if (!fullRefreshThisTime) g_panelBudget.undoUncommitted();
         return false;
     }
     log_i("Panel update: %s (%d/%d until de-ghost)",
           fullRefreshThisTime ? "FULL (de-ghost)" : "fast partial",
-          g_updatesSinceFull, WATCHY_DEGHOST_INTERVAL);
+          g_panelBudget.since(), g_panelBudget.interval());
 
     log_i("Rendered '%s' in %lu ms (gen %lu + raster %lu)",
           scr.name.c_str(), tGen + tRender, tGen, tRender);
@@ -485,8 +517,8 @@ static void showScript(int index, bool announce)
         return;
     }
     const int n = (int)g_scripts.size();
-    g_currentScript = (index % n + n) % n;
-    const String& humanId = g_scripts[g_currentScript].humanId;
+    g_browse.setCurrent(index);
+    const String& humanId = g_scripts[g_browse.current()].humanId;
 
     // $COUNTER belongs to the SCRIPT, not to the device, and it is read back
     // from SPIFFS rather than held in RAM. It used to be one global int
@@ -503,12 +535,15 @@ static void showScript(int index, bool announce)
         state.counter = 0;   // first run of this script on this device
     }
 
-    if (announce) showScriptName(g_scripts[g_currentScript].name.c_str());
+    if (announce) showScriptName(g_scripts[g_browse.current()].name.c_str());
     // Survives a reboot, same as on the M5Paper.
     if (g_scriptManager) g_scriptManager->saveCurrentScriptId(humanId);
     g_lastRenderMs = millis();
     armRenderGuard(humanId);
-    if (!renderScript(g_currentScript, state)) {
+    g_browse.renderStarted(millis(), g_pressCount);
+    const bool rendered = renderScript(g_browse.current(), state);
+    g_browse.renderFinished(millis(), rendered);
+    if (!rendered) {
         disarmRenderGuard(false);
         // renderScript() has already shown the specific reason where it knows
         // one, and says nothing at all when the user simply pressed on.
@@ -516,7 +551,7 @@ static void showScript(int index, bool announce)
         // The counter is NOT saved here, so an abandoned render does not
         // consume a tick -- same principle as the de-ghost counter being wound
         // back for a frame that was never shown.
-        log_i("Render did not complete for index %d", g_currentScript);
+        log_i("Render did not complete for index %d", g_browse.current());
         return;
     }
     disarmRenderGuard(true);
@@ -534,32 +569,28 @@ static void showScript(int index, bool announce)
 static void browseScript(int delta)
 {
     if (g_scripts.empty()) { showScript(0, true); return; }
-    const int n = (int)g_scripts.size();
-    const int from = (g_pendingScript >= 0) ? g_pendingScript : g_currentScript;
-    g_pendingScript = ((from + delta) % n + n) % n;
-    showScriptName(g_scripts[g_pendingScript].name.c_str());
-    // Armed AFTER the title is on the panel, not before. showScriptName() is a
-    // full-screen partial update and takes about as long as a render's own
-    // panel push (~485ms), so arming first spent the whole settle window
-    // driving the very frame it was supposed to leave up: renderIfSettled()
-    // then fired on the next pass. That went unnoticed while renderScript()
-    // still parsed the script -- several hundred ms during which the title sat
-    // readable by accident. Loading a compiled program takes ~40ms instead, so
-    // the title was overwritten almost at once. The M5Paper arms in this order
-    // already (its main.cpp, after showBanner/showMessage).
-    g_renderDueAt = millis() + TITLE_SETTLE_MS;
+    if (g_browse.browse(delta, millis()) != MpBrowseAction::ShowTitle) return;
+    showScriptName(g_scripts[g_browse.pending()].name.c_str());
+    // Only now does the settle window start. Drawing that title just took about
+    // as long as the window itself, and arming before it meant the whole window
+    // was spent driving the very frame it was meant to leave up.
+    g_browse.titleDrawn(millis());
 }
 
-// Renders the browsed-to script once the presses have stopped.
-static void renderIfSettled()
+// Drives the policy once per pass and carries out whatever it asks for.
+//
+// Everything that used to be open-coded here -- the settle deadline, holding
+// off while a button is down, the periodic re-render -- is in MpBrowsePolicy,
+// where the harness tests it against a clock it can move. This is only the
+// hands.
+static void serviceBrowse()
 {
-    if (g_pendingScript < 0) return;
-    if ((long)(millis() - g_renderDueAt) < 0) return;
-    if (anyButtonDown()) { g_renderDueAt = millis() + TITLE_SETTLE_MS; return; }
-
-    const int target = g_pendingScript;
-    g_pendingScript = -1;
-    showScript(target, false);   // the title is already on screen
+    if (g_scripts.empty()) return;
+    const bool down = sampleButtons();
+    if (g_browse.poll(millis(), down, g_pressCount) == MpBrowseAction::Render) {
+        // The title, when there was one, is already on the panel.
+        showScript(g_browse.current(), false);
+    }
 }
 
 // Minimal serial channel, mirroring the M5Paper console: list / run N / next.
@@ -655,6 +686,7 @@ static void drawCornerIndicator(Corner c, bool filled)
     // press. The residue it does leave is in one corner and cannot outlive the
     // next full-screen frame, which every path that draws an indicator is
     // about to perform anyway.
+    g_panelBudget.noteUncharged();
     g_display.setPartialWindow(x, y, S, S);
     g_display.firstPage();
     do {
@@ -765,7 +797,7 @@ static void fullRefresh()
     // returns. Setting the counter to the interval told the very next render to
     // do a third full refresh, so one gesture produced black / white / flash,
     // which reads exactly like a failed attempt being retried.
-    g_updatesSinceFull = 0;
+    g_panelBudget.reset();
     g_display.setFullWindow();
     for (int pass = 0; pass < 2; ++pass) {
         g_display.firstPage();
@@ -874,6 +906,16 @@ void setup()
 
     Serial.begin(115200);
     delay(200);
+
+    // The browse rules, in one place and shared with the M5Paper. The values
+    // stay per-device because the panels are not alike; the RULES do not.
+    {
+        MpBrowsePolicy::Config cfg;
+        cfg.titleSettleMs   = TITLE_SETTLE_MS;
+        cfg.autoRerunMs     = AUTO_RERUN_INTERVAL_MS;
+        cfg.buttonHoldCapMs = 1500;
+        g_browse.configure(cfg);
+    }
     Serial.println("MPCON|boot: setup() entered"); Serial.flush();
     log_i("Micropatterns Watchy build starting");
     logHeap("boot");
@@ -1079,14 +1121,14 @@ void setup()
         String currentId;
         if (g_scriptManager->getCurrentScriptId(currentId) && currentId.length()) {
             for (size_t i = 0; i < g_scripts.size(); i++) {
-                if (g_scripts[i].humanId == currentId) { g_currentScript = (int)i; break; }
+                if (g_scripts[i].humanId == currentId) { g_browse.setCurrent((int)i); break; }
             }
         }
 
         const bool unfinished = g_renderGuardMagic == RENDER_GUARD_MAGIC &&
-            g_renderGuardScriptHash == scriptIdHash(g_scripts[g_currentScript].humanId);
+            g_renderGuardScriptHash == scriptIdHash(g_scripts[g_browse.current()].humanId);
         if (unfinished) {
-            const String failedName = g_scripts[g_currentScript].name;
+            const String failedName = g_scripts[g_browse.current()].name;
             if (g_renderCrashCount < 3) g_renderCrashCount++;
             disarmRenderGuard(false);
             g_continueRenderCrashStreak = true;
@@ -1097,9 +1139,9 @@ void setup()
                               "last='%s' -- send: run <index>\n",
                               (unsigned)g_renderCrashCount, failedName.c_str());
             } else {
-                g_currentScript = (g_currentScript + 1) % (int)g_scripts.size();
+                g_browse.setCurrent(g_browse.current() + 1);
                 Serial.printf("MPCON|recovery skipped crashed script '%s'; trying '%s'\n",
-                              failedName.c_str(), g_scripts[g_currentScript].name.c_str());
+                              failedName.c_str(), g_scripts[g_browse.current()].name.c_str());
             }
         } else if (g_renderGuardMagic == RENDER_GUARD_MAGIC) {
             // The script list or saved selection changed while the marker was
@@ -1130,7 +1172,7 @@ void setup()
             showNotice("Recovery mode", "Repeated script crashes",
                        "send: run <index>", "serial console is active");
         } else if (g_lastRenderMs == 0) {
-            showScript(g_currentScript, true);
+            showScript(g_browse.current(), true);
         }
     } else {
         // Nothing on the device: a first sync is the only useful thing to do.
@@ -1179,7 +1221,7 @@ static void sleepUntilSomethingHappens()
 {
     if (MPProvisioning::windowOpen()) { delay(20); return; }
     if (Serial.available() > 0)       { return; }
-    if (g_pendingScript >= 0)         { delay(10); return; }   // a render is due
+    if (g_browse.browsing())          { delay(10); return; }   // a title is settling
 
     // Stay awake while someone is at the console.
     //
@@ -1199,9 +1241,10 @@ static void sleepUntilSomethingHappens()
     // the time.
     if (millis() - g_lastSerialMs < CONSOLE_AWAKE_MS) { delay(20); return; }
 
-    const unsigned long since = millis() - g_lastRenderMs;
-    if (since >= AUTO_RERUN_INTERVAL_MS) return;          // due now; do not sleep
-    const unsigned long remaining = AUTO_RERUN_INTERVAL_MS - since;
+    // One owner for the deadline: the policy. This kept its own copy of the
+    // same arithmetic, which is how the two came to disagree in the first place.
+    const unsigned long remaining = g_browse.msUntilAutoRerun(millis());
+    if (remaining == 0) return;                          // due now; do not sleep
 
     // A button held down would wake us instantly and forever, so only sleep
     // once all four are released.
@@ -1232,7 +1275,7 @@ void loop()
 {
     pollSerial();
     MPProvisioning::tick();
-    renderIfSettled();
+    serviceBrowse();
 
     // Heartbeat. Without it, a device whose boot output was simply missed looks
     // exactly like a hung one -- which cost real time diagnosing this port. Any
@@ -1244,28 +1287,14 @@ void loop()
     if (millis() - lastBeat > 60000) {
         lastBeat = millis();
         Serial.printf("MPCON|alive t=%lus script=%d/%u heap=%u\n",
-                      millis() / 1000, g_currentScript, (unsigned)g_scripts.size(),
+                      millis() / 1000, g_browse.current(), (unsigned)g_scripts.size(),
                       ESP.getFreeHeap());
         Serial.flush();
     }
 
-    // Periodic re-render, so time-dependent scripts keep advancing on their own.
-    // Deliberately checked BEFORE the buttons: if a press arrives during the
-    // render the button handler simply sees it on the next pass.
-    //
-    // Not while a title is waiting to settle. Browsing does not touch
-    // g_lastRenderMs, so a press that lands more than AUTO_RERUN_INTERVAL_MS
-    // after the last render used to re-render the OUTGOING script straight
-    // over the title the press had just put up -- and then, on the next pass,
-    // render the one actually chosen. That is the "stuck on the previous
-    // script, then the new one" sequence, and it happened on exactly the
-    // presses most likely to occur: the ones after the watch has been sitting
-    // idle. The M5Paper cannot hit it; its equivalent is gated on AppState.
-    if (!g_renderRecoverySafeMode && g_pendingScript < 0 &&
-        millis() - g_lastRenderMs >= AUTO_RERUN_INTERVAL_MS) {
-        log_i("Auto re-render after %lus idle", AUTO_RERUN_INTERVAL_MS / 1000);
-        showScript(g_currentScript, false);   // no title: same script
-    }
+    // The periodic re-render belongs to the policy now (MpBrowsePolicy::poll,
+    // driven by serviceBrowse above). It used to be open-coded here and ungated,
+    // and would repaint the outgoing script straight over a fresh title.
 
     // --- Buttons ----------------------------------------------------------
     //
@@ -1317,7 +1346,7 @@ void loop()
             // panel" -- the de-ghost is just what a fresh start looks like.
             syncScripts(true);
             fullRefresh();
-            showScript(g_currentScript, false);   // re-run: no title
+            showScript(g_browse.current(), false);   // re-run: no title
             b.wasDown = false;
             continue;
         }
@@ -1339,7 +1368,7 @@ void loop()
                     break;
                 case CORNER_BL:
                     log_i("Button: bottom-left -> re-run current script");
-                    showScript(g_currentScript, false);      // same script: no title
+                    showScript(g_browse.current(), false);      // same script: no title
                     break;
                 case CORNER_TL:
                     // BLE was opened on press. Only a hold adds sync/refresh.
