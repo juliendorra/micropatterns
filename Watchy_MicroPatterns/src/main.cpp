@@ -205,6 +205,22 @@ static void browseScript(int delta);
 static void showScript(int index, bool announce, bool allowDeghost = true);
 static void serviceBrowse();
 static bool anyButtonDown();
+
+// True between a button's press edge and its release edge.
+//
+// A press is two events and only the second one does anything, so the watch
+// must stay awake across the gap. It did not: drawing the press indicator takes
+// 402ms on this panel, which is longer than a human holds a button, so the loop
+// pass that saw the press finished with every pin already low again. The sleep
+// check asks the pins, the pins say nothing is held, and the watch napped with
+// the release still unconsumed -- for up to 83s. The next press was then spent
+// re-arming that state and only the one after it acted, which is the "press it
+// twice" the watch has had since browsing got its own sleep.
+//
+// Deliberately not "is a pin high": that is the question that was already being
+// asked, and it is the wrong one. This is about an edge the firmware owes the
+// user an answer to, not about what the hardware looks like right now.
+static volatile bool g_pressUnfinished = false;
 static bool sampleButtons();
 static void syncScripts(bool announce);
 static bool syncTimeFromNTP();
@@ -1265,6 +1281,7 @@ static void sleepUntilSomethingHappens()
     if (MPProvisioning::windowOpen()) { delay(20); return; }
     if (Serial.available() > 0)       { return; }
     if (g_browse.browsing())          { delay(10); return; }   // a title is settling
+    if (g_pressUnfinished)            { delay(10); return; }   // a release is owed
 
     // Stay awake while someone is at the console.
     //
@@ -1434,6 +1451,10 @@ void loop()
             }
         }
     }
+
+    // One press still owes a release; do not let the watch sleep through it.
+    g_pressUnfinished = btns[0].wasDown || btns[1].wasDown ||
+                        btns[2].wasDown || btns[3].wasDown;
 
     sleepUntilSomethingHappens();
 }
