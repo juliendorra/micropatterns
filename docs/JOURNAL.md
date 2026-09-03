@@ -1141,3 +1141,40 @@ And the architectural consequence, which matters more than the rest: **while
 binary no matter what the integer path does.** An FPU-less port has to compile
 the float path out, not choose at run time. That is a build decision, and it is
 worth knowing BEFORE rewriting more of the renderer in pursuit of it.
+
+### 7. The corpus was lying, and only the real art caught it
+
+Everything in sections 5 and 6 was measured on ten synthetic probes and the
+seven small corpus scripts, and concluded the exact-integer transform was "free
+within measurement error" at -0.5% to +0.2%.
+
+Then the **twelve scripts actually on the device** went into the bench, taken
+from the 2026-09-03 SPIFFS backup. They say something else:
+
+- Q16.16 against float is far BIGGER on real work than the corpus suggested:
+  -19% to -74%, against the corpus's -11% to -27%. `art_deco_4` goes from
+  **515 ms to 133 ms**.
+- The exact-integer transform on top costs **+13.2% on art_deco_4** and +5.3% on
+  seascape_2, while the other ten sit between -0.1% and +0.2%.
+
+**The two that regress are the only two that use FILL_CIRCLE.** So the +2.6%
+measured on `op_fill_circle` in isolation was not noise to be waved away -- in a
+script made of filled circles it compounds to 13%.
+
+The corpus could not have found this. `op_fill_circle` was in it and did report
++2.6%; what the corpus lacked was any script *made of* filled circles, so the
+per-op cost never carried the weight it carries in real work.
+
+> A probe tells you what an operation costs. Only the real scripts tell you how
+> much of that operation there is.
+
+Two consequences. `displaylist-int` stays OFF: on an ESP32 it is a 13% regression
+on the heaviest script for no speed benefit, and it exists for a target without
+an FPU. And the filled-circle span -- dismissed one round earlier as "0.0% on
+whole scripts, not worth the risk" -- is now the only thing standing between the
+integer path and parity, which makes the Bresenham half-width worth building
+after all.
+
+The bench corpus now carries all three sets, and `gen_ops_corpus.py` picks up
+the newest device backup automatically, so this cannot silently go back to being
+synthetic-only.

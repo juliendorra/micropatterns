@@ -5,13 +5,19 @@ The Watchy has no filesystem access in the bench build on purpose -- SPIFFS,
 ScriptManager and the network stack are all excluded so the firmware measures
 the renderer and nothing else. Scripts therefore ship as string literals.
 
-Two sets, because "speed per operation" needs both granularities:
+Three sets, because a renderer change has to be judged at three scales:
 
   ops/*.mp                      one primitive each, sized so its inner loop
                                 dominates -- the per-OPERATION numbers
   ../host_harness/corpus/*.mp   whole scripts under the golden gate -- the
                                 per-PHASE numbers, comparable with
                                 docs/measurements/2026-08-27-m5paper-baseline.md
+  ../device/backups/<latest>/   THE REAL ART. The scripts actually on the
+                                device, pulled from the newest SPIFFS dump.
+                                The corpus above is deliberately synthetic and
+                                small; these are what the watch spends its
+                                battery on, and a change that helps the probes
+                                but not these has not helped anything.
 
 Regenerate with:
     python3 tools/device_bench/gen_ops_corpus.py
@@ -28,6 +34,20 @@ def collect():
         out.append(('op', os.path.basename(p)[:-3], p))
     for p in sorted(glob.glob(os.path.join(ROOT, 'tools', 'host_harness', 'corpus', '*.mp'))):
         out.append(('script', os.path.basename(p)[:-3], p))
+
+    # The newest device backup, by directory name. Content files are named by
+    # fileId (s0, s1, ...), so list.json supplies the human names.
+    backups = sorted(glob.glob(os.path.join(ROOT, 'tools', 'device', 'backups', '20*')))
+    if backups:
+        newest = backups[-1]
+        listing = os.path.join(newest, 'files', 'scripts', 'list.json')
+        if os.path.exists(listing):
+            import json
+            for entry in json.load(open(listing)):
+                body = os.path.join(newest, 'files', 'scripts', 'content', entry['fileId'])
+                if os.path.exists(body):
+                    ident = ''.join(c if c.isalnum() else '_' for c in entry['id'])
+                    out.append(('real', ident, body))
     return out
 
 def main():

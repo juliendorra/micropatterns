@@ -93,7 +93,7 @@ def aggregate(records):
 def show(meta, agg, title):
     print(f"\n{title}   {meta.get('build','?')}  {meta.get('canvas','?')}  reps={meta.get('reps','?')}")
     print(f"{'script':30s} {'items':>6s} {'rend':>5s} {'parse':>9s} {'dlist':>9s} {'raster':>10s}")
-    for kind in ("op", "script"):
+    for kind in ("op", "script", "real"):
         names = [n for n, e in agg.items() if e["kind"] == kind]
         if not names: continue
         print(f"-- {kind} " + "-"*62)
@@ -108,7 +108,7 @@ def compare_paths_same_run(path):
     single firmware run, so no cross-flash variation can leak into the delta."""
     agg = json.load(open(path))["agg"]
     print(f"{'script':26s} {'float':>9s} {'fixed':>9s} {'vs flt':>8s} {'int':>9s} {'vs fix':>8s}")
-    for kind in ("op", "script"):
+    for kind in ("op", "script", "real"):
         rows = [(n, agg[n], agg.get(n + "@fixed"), agg.get(n + "@int")) for n in sorted(agg)
                 if "@" not in n and agg[n]["kind"] == kind and agg.get(n + "@fixed")]
         if not rows: continue
@@ -128,7 +128,7 @@ def compare(a_path, b_path):
     A, B = json.load(open(a_path)), json.load(open(b_path))
     a, b = A["agg"], B["agg"]
     print(f"{'script':30s} {'phase':>8s} {'before':>10s} {'after':>10s} {'delta':>9s}")
-    for kind in ("op", "script"):
+    for kind in ("op", "script", "real"):
         names = [n for n in sorted(set(a) & set(b)) if a[n]["kind"] == kind]
         if not names: continue
         print(f"-- {kind} " + "-"*60)
