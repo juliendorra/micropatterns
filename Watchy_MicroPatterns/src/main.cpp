@@ -521,8 +521,17 @@ static void browseScript(int delta)
     const int n = (int)g_scripts.size();
     const int from = (g_pendingScript >= 0) ? g_pendingScript : g_currentScript;
     g_pendingScript = ((from + delta) % n + n) % n;
-    g_renderDueAt = millis() + TITLE_SETTLE_MS;
     showScriptName(g_scripts[g_pendingScript].name.c_str());
+    // Armed AFTER the title is on the panel, not before. showScriptName() is a
+    // full-screen partial update and takes about as long as a render's own
+    // panel push (~485ms), so arming first spent the whole settle window
+    // driving the very frame it was supposed to leave up: renderIfSettled()
+    // then fired on the next pass. That went unnoticed while renderScript()
+    // still parsed the script -- several hundred ms during which the title sat
+    // readable by accident. Loading a compiled program takes ~40ms instead, so
+    // the title was overwritten almost at once. The M5Paper arms in this order
+    // already (its main.cpp, after showBanner/showMessage).
+    g_renderDueAt = millis() + TITLE_SETTLE_MS;
 }
 
 // Renders the browsed-to script once the presses have stopped.
@@ -1218,7 +1227,16 @@ void loop()
     // Periodic re-render, so time-dependent scripts keep advancing on their own.
     // Deliberately checked BEFORE the buttons: if a press arrives during the
     // render the button handler simply sees it on the next pass.
-    if (!g_renderRecoverySafeMode &&
+    //
+    // Not while a title is waiting to settle. Browsing does not touch
+    // g_lastRenderMs, so a press that lands more than AUTO_RERUN_INTERVAL_MS
+    // after the last render used to re-render the OUTGOING script straight
+    // over the title the press had just put up -- and then, on the next pass,
+    // render the one actually chosen. That is the "stuck on the previous
+    // script, then the new one" sequence, and it happened on exactly the
+    // presses most likely to occur: the ones after the watch has been sitting
+    // idle. The M5Paper cannot hit it; its equivalent is gated on AppState.
+    if (!g_renderRecoverySafeMode && g_pendingScript < 0 &&
         millis() - g_lastRenderMs >= AUTO_RERUN_INTERVAL_MS) {
         log_i("Auto re-render after %lus idle", AUTO_RERUN_INTERVAL_MS / 1000);
         showScript(g_currentScript, false);   // no title: same script
