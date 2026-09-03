@@ -6,11 +6,49 @@
 #include "mp_provisioning.h"   // BLE provisioning, shared with the Watchy firmware
 #include "script_sync.h"        // Server sync procedure, shared with the Watchy firmware
 #include "mp_messages.h"       // Panel wording, shared with the Watchy firmware
+#include "mp_browse_policy.h"  // Browse/settle rules, shared with the Watchy firmware
 
-// How long a script title stays up, alone, before its render starts. Long
-// enough to press again and move on; short enough not to feel like a delay.
-// Same value on the Watchy.
-#define TITLE_SETTLE_MS 450
+// --- Browsing ---------------------------------------------------------------
+//
+// The settle window, the held-button cap and the "which script is chosen" state
+// used to be open-coded in MainControlTask, in parallel with the Watchy's own
+// copy of the same three ideas. Both copies were arrived at by watching a panel
+// and guessing, and each was fixed on one device while the other kept the bug.
+// Commit a51e4cf moved the rules into MpBrowsePolicy, where the host harness
+// drives them with a clock it can move by hand; this is the M5Paper half of
+// that move.
+//
+// ADAPTER. The policy indexes scripts by position, this firmware names them by
+// humanId, and the two are reconciled by tracking the id alongside rather than
+// by mirroring the list into an index array. That is much the smaller change:
+// ScriptManager already owns the ordering, the wrap-around and -- crucially --
+// persisting the choice to flash so a reboot or a 77s wake resumes the same
+// script (selectNextScript / saveCurrentScriptId). Making the policy
+// authoritative would have meant lifting all of that into main.cpp for no gain,
+// because what was actually broken here was never the ordering: it was the
+// timing. So the policy owns WHEN, ScriptManager owns WHICH, and g_pendingId is
+// the one string that carries identity across the settle window.
+static MpBrowsePolicy g_browse;
+static String         g_pendingId;   // the humanId behind g_browse.pending()
+
+// Input EDGES seen so far, monotonically increasing. This is what rule 4 needs:
+// a render is abandoned by a NEW instruction, not by a button that merely reads
+// low. On this device that count is free and exact -- InputTask disables a pin's
+// interrupt on the press and re-enables it only after seeing the release, so
+// every item on g_inputEventQueue is one edge. Serial-console run requests
+// arrive on the same queue and count too: they are equally "something new
+// arrived after this render began", which is the question abortRequested() is
+// really asking.
+static uint32_t g_pressCount = 0;
+
+// Live button level, for rule 3. Active LOW: InputManager configures all three
+// pins with pull-ups and a negative-edge interrupt.
+static bool anyButtonDown()
+{
+    return digitalRead(BUTTON_UP_PIN)   == LOW ||
+           digitalRead(BUTTON_DOWN_PIN) == LOW ||
+           digitalRead(BUTTON_PUSH_PIN) == LOW;
+}
 
 #if MP_BENCH
 #include "bench/mp_bench.h" // env:m5paper-bench only; compiled out otherwise
@@ -149,6 +187,37 @@ void setup() {
     }
     esp_task_wdt_reset();
 
+    // The browse rules, shared with the Watchy; the numbers, deliberately not.
+    {
+        MpBrowsePolicy::Config cfg;
+        // How long a script title stays up, alone, before its render starts.
+        // Long enough to press again and move on; short enough not to feel like
+        // a delay. The Watchy uses the same 450, but as its own constant: they
+        // agree today by measurement, not by contract.
+        cfg.titleSettleMs   = 450;
+        // The longest a held button may postpone a settled render. Rule 3: a
+        // contact that never reads low would otherwise hold the device on a
+        // title indefinitely, which from the bench is indistinguishable from a
+        // crash and was in fact reported as one.
+        cfg.buttonHoldCapMs = 1500;
+        // NO policy-driven periodic re-render on this device.
+        //
+        // The Watchy stays awake and needs the policy to tell it when 83s have
+        // passed. The M5Paper does not stay awake: MainControlTask goes into
+        // light sleep after 3s idle and the SoC timer wakes it 77s later
+        // (SystemManager::DEFAULT_SLEEP_DURATION_S), and the wake path already
+        // triggers a fresh render so time- and counter-dependent scripts
+        // advance. A second deadline running in parallel with the sleep timer
+        // would be a duplicate of it that could only ever disagree -- exactly
+        // the class of bug this file is being cured of -- and it could not even
+        // fire, since the task is not running while asleep. Zero means "the
+        // caller has its own cadence"; poll() then only ever answers for a
+        // settled title.
+        cfg.autoRerunMs     = 0;
+        g_browse.configure(cfg);
+    }
+    esp_task_wdt_reset();
+
     // 3. Create Tasks
     xTaskCreatePinnedToCore(MainControlTask_Function, "MainCtrlTask", MAIN_CONTROL_TASK_STACK_SIZE, NULL, MAIN_CONTROL_TASK_PRIORITY, &g_mainControlTaskHandle, 1);
     xTaskCreatePinnedToCore(InputTask_Function, "InputTask", INPUT_TASK_STACK_SIZE, NULL, INPUT_TASK_PRIORITY, &g_inputTaskHandle, 1); // Core 1 for responsiveness
@@ -178,6 +247,27 @@ void setup() {
     // MainControlTask_Function will take over the role of the main application loop.
     // Delete this task (setup) as it's done.
     vTaskDelete(NULL);
+}
+
+// Tells the policy how many scripts there are.
+//
+// It refuses to act on an empty list, so this has to be right before the first
+// press; but it only changes when a sync brings scripts in or takes them away,
+// so it is called at task start and after a fetch rather than per press. The
+// list read is cached in ScriptManager, but it is still a JSON document copy
+// and that is not something to pay for on every button.
+static void refreshBrowseScriptCount()
+{
+    JsonDocument listDoc;
+    int n = 0;
+    if (g_scriptManager && g_scriptManager->loadScriptList(listDoc) && listDoc.is<JsonArray>()) {
+        n = (int)listDoc.as<JsonArray>().size();
+    }
+    // A device with no list still has the built-in default script to browse, and
+    // a policy told there are zero scripts would answer Nothing forever -- so the
+    // floor is one, not zero.
+    g_browse.setScriptCount(n > 0 ? n : 1);
+    log_i("Browse policy: %d script(s) selectable.", g_browse.scriptCount());
 }
 
 // Helper function to queue a render job
@@ -211,6 +301,10 @@ static bool triggerScriptRender(const String& humanIdToRender, bool useAsIsState
                 if (xQueueSend(g_renderCommandQueue, &defaultJobQueueItem, pdMS_TO_TICKS(100)) == pdTRUE) {
                     currentAppState_ref = AppState::RENDERING_SCRIPT;
                     currentLoadedScriptId_ref = defaultJobData.script_id;
+                    // See the note at the other xQueueSend below: the render
+                    // brackets are opened here, at the single point where a job
+                    // actually reaches RenderTask.
+                    g_browse.renderStarted(millis(), g_pressCount);
                     return true;
                 } else {
                     log_e("triggerScriptRender: Failed to send render job for default script '%s'.", defaultJobData.script_id.c_str());
@@ -278,6 +372,12 @@ static bool triggerScriptRender(const String& humanIdToRender, bool useAsIsState
         if (xQueueSend(g_renderCommandQueue, &jobQueueItem, pdMS_TO_TICKS(100)) == pdTRUE) {
             currentAppState_ref = AppState::RENDERING_SCRIPT;
             currentLoadedScriptId_ref = jobData.script_id; // Update the main task's tracker
+            // Open the render bracket HERE, not at any of the eight call sites,
+            // because this is the one place a job actually reaches RenderTask.
+            // renderStarted() records the press count as it stands now, which is
+            // what lets abortRequested() tell a genuinely new press from a
+            // button that was already down when the render began (rule 4).
+            g_browse.renderStarted(millis(), g_pressCount);
             return true;
         } else {
             log_e("triggerScriptRender: Failed to send render job for '%s'.", jobData.script_id.c_str());
@@ -413,9 +513,9 @@ void MainControlTask_Function(void *pvParameters) {
     // Title browsing: a script change shows its name immediately but does not
     // start the render until the presses stop. Holding a render off for a
     // moment is what makes it possible to page through titles at the speed of
-    // the button rather than the speed of the renderer.
-    String pendingHumanId;
-    TickType_t pendingRenderAt = 0;
+    // the button rather than the speed of the renderer. The deadline that used
+    // to live here, next to a copy of the id, is g_browse's now.
+    refreshBrowseScriptCount();
 
     for (;;) {
         esp_task_wdt_reset();
@@ -433,11 +533,31 @@ void MainControlTask_Function(void *pvParameters) {
 
         MPProvisioning::tick();   // closes the provisioning window when it expires
 
-        // The presses have stopped: render whatever title is showing.
-        if (!pendingHumanId.isEmpty() && xTaskGetTickCount() >= pendingRenderAt &&
-            currentState != AppState::RENDERING_SCRIPT) {
-            const String toRender = pendingHumanId;
-            pendingHumanId = "";
+        // Ask the policy what to do about the title on screen.
+        //
+        // Everything that used to be spelled out here -- the deadline, and the
+        // fact that a render must not be started on top of one already running
+        // -- is in MpBrowsePolicy::poll(), which the harness tests against a
+        // clock it can move. This is only the hands.
+        //
+        // The live button level is passed in for rule 3, which is new behaviour
+        // on this device: a finger still on the button extends the window, so
+        // the render waits for the user to actually settle rather than firing
+        // under their thumb. That extension is only safe because it is capped:
+        // InputTask leaves a held pin's interrupt disabled until it sees the
+        // release, so a contact stuck low produces no further events at all and
+        // an uncapped extension would be a hang with no way out.
+        //
+        // Guarded rather than filtered afterwards: poll() COMMITS the selection
+        // when it answers Render, so calling it in a state that cannot act on
+        // the answer would drop the title on the floor. The policy has its own
+        // in-flight interlock; this one covers the window where the two views
+        // of "is a render running" could still disagree, which is precisely the
+        // preemptive-IDLE handoff below.
+        if (currentState != AppState::RENDERING_SCRIPT &&
+            g_browse.poll(millis(), anyButtonDown(), g_pressCount) == MpBrowseAction::Render) {
+            const String toRender = g_pendingId;
+            g_pendingId = "";
             log_i("MainCtrl: Title settled on '%s'. Triggering render.", toRender.c_str());
             triggerScriptRender(toRender, false, currentState, currentLoadedScriptId);
         }
@@ -452,12 +572,25 @@ void MainControlTask_Function(void *pvParameters) {
             // stack: the window always ends 20s after the LAST press.
             MPProvisioning::openWindow();
             log_i("MainCtrl: Received input event: %d", (int)inputEvent.type);
-            
+
+            // One edge, by construction -- see g_pressCount at the top of this
+            // file. Counted before anything below looks at it, because
+            // abortRequested() is asking "did something new arrive since this
+            // render began", and this event IS that something.
+            g_pressCount++;
+
             // Activity indicator is now drawn by InputManager::taskFunction with specific type
 
             // Stop ongoing render or fetch if significant input
-            if (currentState == AppState::RENDERING_SCRIPT) { // Check if currently rendering
-                log_i("MainCtrl: Input received during render. Requesting interrupt.");
+            if (currentState == AppState::RENDERING_SCRIPT && g_browse.abortRequested(g_pressCount)) {
+                // Rule 4: abandoned by a NEW press, never by a button that is
+                // merely down. The distinction did not exist on this device
+                // before -- the test was "an event arrived", which happens to
+                // be equivalent here because a held pin produces no further
+                // events -- but asking the policy is what keeps the two
+                // firmwares from drifting apart again, and it is now the same
+                // question the Watchy asks from inside its page loop.
+                log_i("MainCtrl: New input during render. Requesting interrupt.");
                 // Plain flag first: this is the one the rasterizer's inner loops
                 // actually poll, so it is what makes the abort land quickly.
                 g_renderInterruptRequested = true;
@@ -465,6 +598,12 @@ void MainControlTask_Function(void *pvParameters) {
                 // Preemptively change state to allow new render to be queued.
                 // The RenderTask will eventually send its (now hopefully interrupted) status.
                 currentState = AppState::IDLE;
+                // Close the render bracket at the same moment, and with
+                // completed=false: a frame abandoned mid-raster is not a frame
+                // the user saw (rule 5). Leaving the policy to find out only
+                // when the stale result arrives would block the next title's
+                // render behind a render nobody is waiting for any more.
+                g_browse.renderFinished(millis(), false);
                 log_i("MainCtrl: State changed to IDLE preemptively due to render interrupt request.");
             }
             if (currentState == AppState::FETCHING_DATA) { // Check if currently fetching
@@ -475,7 +614,16 @@ void MainControlTask_Function(void *pvParameters) {
 
             if (inputEvent.type == InputEventType::NEXT_SCRIPT || inputEvent.type == InputEventType::PREVIOUS_SCRIPT) {
                 String selectedHumanId, selectedName;
+                const int delta = (inputEvent.type == InputEventType::PREVIOUS_SCRIPT) ? -1 : +1;
                 if (g_scriptManager->selectNextScript(inputEvent.type == InputEventType::PREVIOUS_SCRIPT, selectedHumanId, selectedName)) {
+                    // The policy is stepped for its state machine, not for its
+                    // arithmetic: ScriptManager has already walked and wrapped
+                    // the list and told us the id. What browse() does that
+                    // matters is refuse to arm the settle window -- see
+                    // titleDrawn() below.
+                    const bool wasBrowsing = g_browse.browsing();
+                    g_browse.browse(delta, millis());
+                    g_pendingId = selectedHumanId;
                     // Name now, render later. This used to be followed by a
                     // blocking vTaskDelay(500), which meant every press cost
                     // half a second before the next one was even read -- so
@@ -497,15 +645,24 @@ void MainControlTask_Function(void *pvParameters) {
                     // already white, and a band push touches 34 rows instead of
                     // 960.
                     g_displayManager->clearActivityIndicators();
-                    if (pendingHumanId.isEmpty()) {
+                    if (!wasBrowsing) {
                         g_displayManager->showMessage(selectedName, 250, 15, false, true);
                     } else {
                         g_displayManager->showBanner(selectedName, 250, 15);
                     }
-                    pendingHumanId = selectedHumanId;
-                    pendingRenderAt = xTaskGetTickCount() + pdMS_TO_TICKS(TITLE_SETTLE_MS);
-                    log_i("MainCtrl: Selected '%s'; render in %dms unless another press arrives.",
-                          selectedHumanId.c_str(), TITLE_SETTLE_MS);
+                    // ONLY NOW is the window armed, and only titleDrawn() can
+                    // arm it. Both showMessage() and showBanner() block on the
+                    // panel until the frame is out, and on this panel that is
+                    // hundreds of milliseconds -- the same order as the window
+                    // itself. Arming before the push, which is what a plain
+                    // "deadline = now + 450" does wherever it is written, spends
+                    // the whole window driving the very frame it exists to leave
+                    // up. That is rule 1, and it is the bug that made a title
+                    // vanish the instant it appeared once loading a compiled
+                    // program stopped taking long enough to hide it.
+                    g_browse.titleDrawn(millis());
+                    log_i("MainCtrl: Selected '%s'; render in %ums unless another press arrives.",
+                          selectedHumanId.c_str(), (unsigned)g_browse.config().titleSettleMs);
                 } else {
                     // selectNextScript failed or returned default
                     log_w("MainCtrl: selectNextScript failed or no scripts available. Current script: '%s'", currentLoadedScriptId.c_str());
@@ -556,16 +713,32 @@ void MainControlTask_Function(void *pvParameters) {
 
             log_i("MainCtrl: Received render result for '%s'. Success: %s, Interrupted: %s",
                   received_script_id.c_str(), renderResultItem.success ? "Yes":"No", renderResultItem.interrupted ? "Yes":"No");
-            
+
+            // Close the render bracket, but ONLY for a render we still believe
+            // is in flight.
+            //
+            // An interrupted render already closed it at the interrupt request
+            // above, and went preemptively IDLE at the same moment. Its result
+            // then arrives late, by which time the next title may have started
+            // a render of its own -- and closing the bracket unconditionally
+            // here would close THAT one, on the strength of a result belonging
+            // to a render nobody is waiting for. The AppState check is what
+            // distinguishes the two: RENDERING_SCRIPT means the bracket this
+            // result belongs to is still open.
+            if (currentState == AppState::RENDERING_SCRIPT) {
+                g_browse.renderFinished(millis(), renderResultItem.success);
+            }
+
+
             // A result for a script we have already left is stale: the user
             // pressed on, and acting on it would repaint the old script over the
             // title of the new one -- which is the "previous render appears
             // briefly anyway" flicker.
-            if (!pendingHumanId.isEmpty() ||
+            if (g_browse.browsing() ||
                 (!currentLoadedScriptId.isEmpty() && received_script_id != currentLoadedScriptId)) {
                 log_i("MainCtrl: Ignoring stale render result for '%s' (now on '%s').",
                       received_script_id.c_str(),
-                      pendingHumanId.isEmpty() ? currentLoadedScriptId.c_str() : pendingHumanId.c_str());
+                      g_browse.browsing() ? g_pendingId.c_str() : currentLoadedScriptId.c_str());
                 if (currentState == AppState::RENDERING_SCRIPT) currentState = AppState::IDLE;
             } else if (renderResultItem.success) {
                 // A script that rendered is not a failing script any more: a
@@ -716,6 +889,9 @@ void MainControlTask_Function(void *pvParameters) {
                 }
 
                 if (fetchResultItem.new_scripts_available) {
+                    // The only moment the number of selectable scripts can
+                    // change, so the only moment the policy needs telling.
+                    refreshBrowseScriptCount();
                     g_displayManager->showMessage("New scripts", 400, 15);
                     vTaskDelay(pdMS_TO_TICKS(1000));
                     bool currentStillValid = false;
@@ -787,6 +963,16 @@ void MainControlTask_Function(void *pvParameters) {
         // so staying awake for it is the right trade.
         if (MPProvisioning::windowOpen()) {
             lastActivityTime = xTaskGetTickCount();   // hold off the idle timer
+        }
+
+        // Nor while a title is settling. The 3s idle threshold has always been
+        // comfortably longer than the 450ms window, so this never bit; but rule
+        // 3 lets a held button push a settled render out by up to 1.5s more, and
+        // sleeping on top of a title the user is still choosing would strand the
+        // panel showing a name whose script never rendered. The Watchy makes the
+        // same check before its own sleep.
+        if (g_browse.browsing()) {
+            lastActivityTime = xTaskGetTickCount();
         }
 
         if (currentState == AppState::IDLE && !MPProvisioning::windowOpen() &&

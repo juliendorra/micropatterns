@@ -24,9 +24,14 @@ void hostSetCanvasSize(int width, int height) {
 // guards the script framebuffer) and _panelMutex (short-held, guards EPD
 // transactions and the indicator scratch canvas). The host has no concurrency,
 // so both are null here and the lock methods are no-ops.
+//
+// _panelBudget has no default constructor on purpose -- a de-ghost interval is
+// a per-panel measurement, not something to default into -- so it is seeded
+// here with the same firmware constant even though nothing on the host drives a
+// panel. The harness renders; it never pushes.
 DisplayManager::DisplayManager()
     : _canvasMutex(nullptr), _panelMutex(nullptr), _isInitialized(false),
-      _canvasW(0), _canvasH(0) {}
+      _canvasW(0), _canvasH(0), _panelBudget(SCRIPT_DEGHOST_INTERVAL) {}
 
 DisplayManager::~DisplayManager() {}
 

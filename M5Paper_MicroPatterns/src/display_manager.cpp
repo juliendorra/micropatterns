@@ -3,7 +3,7 @@
 
 DisplayManager::DisplayManager() : _canvas(&M5.EPD), _indicatorCanvas(&M5.EPD), _isInitialized(false),
                                    _canvasW(540), _canvasH(960),
-                                   _fastUpdatesSinceRefresh(SCRIPT_DEGHOST_INTERVAL)
+                                   _panelBudget(SCRIPT_DEGHOST_INTERVAL)
 {
     _canvasMutex = xSemaphoreCreateMutex();
     _panelMutex = xSemaphoreCreateMutex();
@@ -61,21 +61,19 @@ bool DisplayManager::initializeEPD()
 
 // --- De-ghosting budget ------------------------------------------------------
 //
-// Both helpers require _panelMutex held; the counter is only ever read or
-// written inside a panel transaction, so no extra synchronisation is needed.
-
-void DisplayManager::noteFastUpdateLocked()
-{
-    if (_fastUpdatesSinceRefresh < 0xFFFF)
-    {
-        _fastUpdatesSinceRefresh++;
-    }
-}
-
-void DisplayManager::noteFullRefreshLocked()
-{
-    _fastUpdatesSinceRefresh = 0;
-}
+// _panelBudget.beginUpdate(forceFull, allowDeghost) is now called inline by
+// every path that drives the panel, and it is called BEFORE the push, because
+// its return value is what picks the waveform on the one path that lets the
+// budget decide (pushScriptCanvasLocked). Every caller holds _panelMutex when
+// it does so; the budget is only ever touched inside a panel transaction, so no
+// extra synchronisation is needed.
+//
+// allowDeghost is false everywhere except the finished-script push. That is
+// rule 6: a de-ghost is a seconds-long black/white flash, and landing it on a
+// title, a banner or a press indicator reads as a fault rather than as the
+// panel cleaning itself. The debt is not forgiven by refusing it -- the counter
+// keeps climbing and the next script render pays it, which is the frame the
+// user is already waiting on anyway.
 
 static const char *updateModeName(m5epd_update_mode_t mode)
 {
@@ -130,7 +128,10 @@ void DisplayManager::drawBannerLocked(const String &text, int y_offset, uint16_t
     _indicatorCanvas.drawString(text, band_w / 2, padding);
     // DU4 is the fast waveform; a banner is transient text, it does not need GC16.
     _indicatorCanvas.pushCanvas(0, band_y, UPDATE_MODE_DU4);
-    noteFastUpdateLocked();
+    // Charged, but never allowed to flash: a banner is the title of the script
+    // the user is browsing towards, and it is the single worst frame to spend a
+    // de-ghost on.
+    _panelBudget.beginUpdate(/*forceFull=*/false, /*allowDeghost=*/false);
     _indicatorCanvas.deleteCanvas();
     log_i("DisplayManager: Banner \"%s\" pushed at y=%d.", text.c_str(), (int)band_y);
 }
@@ -239,15 +240,16 @@ void DisplayManager::pushMainCanvasLocked(m5epd_update_mode_t mode, int32_t x, i
         _canvas.pushCanvas(x, y, mode);
         // Keep the de-ghosting budget honest for callers that pick their own
         // mode. Only a GC16 covering the WHOLE panel actually clears accumulated
-        // residue, so only that resets the counter.
-        if (mode == UPDATE_MODE_GC16 && x == 0 && y == 0)
-        {
-            noteFullRefreshLocked();
-        }
-        else
-        {
-            noteFastUpdateLocked();
-        }
+        // residue, so only that counts as the full refresh.
+        //
+        // allowDeghost is false because the caller has ALREADY chosen the
+        // waveform: the budget has no say here and must not pretend otherwise.
+        // This is also the path every title frame takes (showMessage ->
+        // DU4 full canvas), so saying "not on this frame" is rule 6 stated
+        // where it applies rather than left to the fact that the mode happens
+        // to be hardcoded.
+        const bool fullPanelGc16 = (mode == UPDATE_MODE_GC16 && x == 0 && y == 0);
+        _panelBudget.beginUpdate(fullPanelGc16, /*allowDeghost=*/false);
         xSemaphoreGive(_panelMutex);
     }
 }
@@ -280,7 +282,11 @@ void DisplayManager::pushScriptCanvasLocked()
     }
     if (xSemaphoreTake(_panelMutex, portMAX_DELAY) == pdTRUE)
     {
-        const bool deghost = (_fastUpdatesSinceRefresh >= SCRIPT_DEGHOST_INTERVAL);
+        // The one path that lets the budget choose. A finished script render is
+        // the frame the user is already waiting on, so a flash spent here is
+        // very nearly invisible -- which is exactly why every other path passes
+        // allowDeghost=false and defers its debt to this one.
+        const bool deghost = _panelBudget.beginUpdate(/*forceFull=*/false, /*allowDeghost=*/true);
         const m5epd_update_mode_t mode = deghost ? UPDATE_MODE_GC16 : SCRIPT_FAST_UPDATE_MODE;
 
         const uint32_t t0 = millis();
@@ -298,20 +304,11 @@ void DisplayManager::pushScriptCanvasLocked()
         }
         const uint32_t xfer_ms = millis() - t0;
 
-        if (deghost)
-        {
-            noteFullRefreshLocked();
-        }
-        else
-        {
-            noteFastUpdateLocked();
-        }
-
         log_i("DisplayManager: script push mode=%s%s bpp=%d, gram transfer %lu ms, fast updates since de-ghost=%u/%u",
               updateModeName(mode), deghost ? " (periodic de-ghost)" : "",
               used_1bpp ? 1 : 4,
               (unsigned long)xfer_ms,
-              (unsigned)_fastUpdatesSinceRefresh, (unsigned)SCRIPT_DEGHOST_INTERVAL);
+              (unsigned)_panelBudget.since(), (unsigned)_panelBudget.interval());
 
         xSemaphoreGive(_panelMutex);
     }
@@ -422,7 +419,14 @@ void DisplayManager::clearActivityIndicators()
     {
         _indicatorCanvas.fillCanvas(0); // WHITE
         _indicatorCanvas.pushCanvas(x, y, UPDATE_MODE_DU4);
-        noteFastUpdateLocked();
+        // Charged as before. The Watchy stopped charging its corner indicator
+        // (MpRefreshBudget::noteUncharged) because at 1.7% of that panel two
+        // units a press pulled the flash in to every fifth or sixth press; this
+        // indicator is 64x256 of 540x960, nearly twice that share, and nothing
+        // on this device has been measured to say the charge is wrong. Changing
+        // it is a separate question from moving the accounting, so it keeps the
+        // behaviour it had.
+        _panelBudget.beginUpdate(/*forceFull=*/false, /*allowDeghost=*/false);
         _indicatorCanvas.deleteCanvas();
         _lastIndicatorTop = -1;
     }
@@ -495,7 +499,10 @@ void DisplayManager::drawActivityIndicator(ActivityIndicatorType type)
                                       region_h - (2 * outline_thickness),
                                       0); // WHITE
             _indicatorCanvas.pushCanvas(region_screen_x, region_screen_y, UPDATE_MODE_DU4);
-            noteFastUpdateLocked();
+            // A press indicator is the most transient frame this device draws,
+            // and it is drawn from InputTask while a render may be in flight --
+            // the last place a several-second flash could be allowed to land.
+            _panelBudget.beginUpdate(/*forceFull=*/false, /*allowDeghost=*/false);
             _lastIndicatorTop = region_screen_y;
             _indicatorCanvas.deleteCanvas();
             log_i("DisplayManager: Drew activity indicator (type %d at Y:%d) as a region push.", type, region_screen_y);

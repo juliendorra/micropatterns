@@ -4,6 +4,7 @@
 #include <M5EPD.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h" // For mutex
+#include "mp_refresh_budget.h" // Shared de-ghost accounting (see the budget member below)
 // #include "event_defs.h" // No direct dependency found in this header, but if added later, path would need adjustment.
 
 enum ActivityIndicatorType {
@@ -169,15 +170,23 @@ private:
     int _canvasW;
     int _canvasH;
 
-    // Number of fast (non-GC16) panel updates issued since the last full-panel
-    // GC16. Only ever touched while holding _panelMutex. Seeded to the interval
-    // so the FIRST script push after boot is a GC16 -- we do not know what the
-    // panel was showing before (the boot path deliberately does not Clear()).
-    uint16_t _fastUpdatesSinceRefresh;
-
-    // Counter maintenance. Both require _panelMutex held.
-    void noteFastUpdateLocked();
-    void noteFullRefreshLocked();
+    // WHEN to spend a de-ghosting GC16. The counting used to live here as a
+    // plain uint16_t with two helpers; it is now MpRefreshBudget, the same class
+    // the Watchy uses, so the RULE is written once and the host harness tests it
+    // (see the six rules in commit a51e4cf). Rule 6 is the one that matters
+    // here: the flash must never land on a transient frame, and the debt it
+    // skips is deferred rather than forgiven -- every caller therefore says
+    // whether its frame may absorb a flash, instead of the budget guessing.
+    //
+    // SCRIPT_DEGHOST_INTERVAL stays an M5Paper number. The panels are not alike:
+    // this one runs DU at ~260 ms against GC16's ~450 ms over 540x960, the
+    // Watchy is a different controller and a different size. Only the rules are
+    // shared; the constants are per-device on purpose.
+    //
+    // Constructed at the interval, so the FIRST push after boot is a GC16 -- we
+    // do not know what the panel was showing before (the boot path deliberately
+    // does not Clear()). Only ever touched while holding _panelMutex.
+    MpRefreshBudget _panelBudget;
 
     // Draws `text` into _indicatorCanvas and pushes it. Caller MUST hold _panelMutex.
     void drawBannerLocked(const String& text, int y_offset, uint16_t color);
