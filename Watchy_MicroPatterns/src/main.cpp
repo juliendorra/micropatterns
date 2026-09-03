@@ -43,6 +43,7 @@
 #include "nvs_flash.h"
 #include "esp_task_wdt.h"
 #include "esp_sleep.h"
+#include "esp_system.h"
 #include "driver/gpio.h"
 #include "driver/uart.h"
 #include "nvs.h"
@@ -941,6 +942,24 @@ void setup()
         g_browse.configure(cfg);
     }
     Serial.println("MPCON|boot: setup() entered"); Serial.flush();
+    // Why the chip started. A freeze that ends in a restart is a completely
+    // different fault depending on this: a brownout is the battery sagging
+    // under the panel's refresh current, a task watchdog is code that stopped
+    // yielding, a panic is a crash with a backtrace, and a power-on means the
+    // reset line or the battery. Nothing was reading it, so every restart in
+    // this session was indistinguishable from every other -- which is exactly
+    // why "it froze then rebooted" could not be told apart from "it slept".
+    {
+        const esp_reset_reason_t rr = esp_reset_reason();
+        const char* why =
+            rr == ESP_RST_POWERON  ? "power-on"      : rr == ESP_RST_EXT      ? "external pin" :
+            rr == ESP_RST_SW       ? "software"      : rr == ESP_RST_PANIC    ? "PANIC (crash)" :
+            rr == ESP_RST_INT_WDT  ? "interrupt WDT" : rr == ESP_RST_TASK_WDT ? "task WDT" :
+            rr == ESP_RST_WDT      ? "other WDT"     : rr == ESP_RST_BROWNOUT ? "BROWNOUT" :
+            rr == ESP_RST_DEEPSLEEP? "deep-sleep"    : rr == ESP_RST_SDIO     ? "sdio" : "unknown";
+        log_i("Reset reason: %s (%d)", why, (int)rr);
+        Serial.printf("MPCON|reset %s\n", why); Serial.flush();
+    }
     log_i("Micropatterns Watchy build starting");
     logHeap("boot");
 
