@@ -37,6 +37,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const deviceProfileSelect = document.getElementById('deviceProfileSelect');
     const deviceStateSelect = document.getElementById('deviceStateSelect');
     const deviceMemoryReport = document.getElementById('deviceMemoryReport');
+    const deviceDiagnostics = document.getElementById('deviceDiagnostics');
 
     // Display Size UI
     const displaySizeSelect = document.getElementById('displaySizeSelect');
@@ -173,6 +174,99 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
 
     console.log("CodeMirror editor initialized:", codeMirrorEditor); // Check if editor object exists
+    const diagnosticLineHandles = new Set();
+
+    function clearDiagnosticLines() {
+        diagnosticLineHandles.forEach((line) =>
+            codeMirrorEditor.removeLineClass(line, 'background', 'mp-diagnostic-line'));
+        diagnosticLineHandles.clear();
+    }
+
+    function goToDiagnosticLine(lineNumber) {
+        const line = Math.max(0, Math.min(codeMirrorEditor.lineCount() - 1, lineNumber - 1));
+        codeMirrorEditor.setCursor(CodeMirror.Pos(line, 0));
+        codeMirrorEditor.scrollIntoView(CodeMirror.Pos(line, 0), 80);
+        codeMirrorEditor.focus();
+    }
+
+    function renderDeviceDiagnostics(diagnostics, cleanMessage = '') {
+        if (!deviceDiagnostics) return;
+        deviceDiagnostics.replaceChildren();
+        clearDiagnosticLines();
+
+        if (!diagnostics || diagnostics.length === 0) {
+            if (cleanMessage) {
+                const ok = document.createElement('div');
+                ok.className = 'device-diagnostic-ok';
+                ok.textContent = cleanMessage;
+                deviceDiagnostics.appendChild(ok);
+            }
+            return;
+        }
+
+        diagnostics.forEach((d) => {
+            const card = document.createElement('section');
+            card.className = `device-diagnostic device-diagnostic-${d.severity || 'error'}`;
+            card.dataset.code = d.code || 'MP_RUNTIME_ERROR';
+
+            const title = document.createElement('h4');
+            title.textContent = d.title || 'Device compatibility issue';
+            card.appendChild(title);
+
+            if (d.message) {
+                const message = document.createElement('p');
+                message.textContent = d.message;
+                card.appendChild(message);
+            }
+            if (d.explanation) {
+                const explanation = document.createElement('p');
+                explanation.textContent = d.explanation;
+                card.appendChild(explanation);
+            }
+
+            if (d.line) {
+                const lineIndex = d.line - 1;
+                if (lineIndex >= 0 && lineIndex < codeMirrorEditor.lineCount()) {
+                    const handle = codeMirrorEditor.getLineHandle(lineIndex);
+                    if (handle) {
+                        codeMirrorEditor.addLineClass(handle, 'background', 'mp-diagnostic-line');
+                        diagnosticLineHandles.add(handle);
+                    }
+                }
+                const lineButton = document.createElement('button');
+                lineButton.type = 'button';
+                lineButton.className = 'secondary device-diagnostic-line-link';
+                lineButton.textContent = d.sourceText
+                    ? `Go to line ${d.line}: ${d.sourceText}`
+                    : `Go to line ${d.line}`;
+                lineButton.addEventListener('click', () => goToDiagnosticLine(d.line));
+                card.appendChild(lineButton);
+            }
+
+            if (d.evidence && d.evidence.length) {
+                const evidence = document.createElement('dl');
+                d.evidence.forEach((item) => {
+                    const label = document.createElement('dt');
+                    label.textContent = item.label;
+                    const value = document.createElement('dd');
+                    value.textContent = item.value;
+                    evidence.append(label, value);
+                });
+                card.appendChild(evidence);
+            }
+
+            if (d.suggestions && d.suggestions.length) {
+                const suggestions = document.createElement('ul');
+                d.suggestions.forEach((suggestion) => {
+                    const item = document.createElement('li');
+                    item.textContent = suggestion;
+                    suggestions.appendChild(item);
+                });
+                card.appendChild(suggestions);
+            }
+            deviceDiagnostics.appendChild(card);
+        });
+    }
 
     // --- Load from Local Storage ---
     const savedScriptContent = localStorage.getItem(LOCAL_STORAGE_SCRIPT_CONTENT_KEY);
@@ -343,6 +437,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             lines.push(
                 '',
                 'DEVICE WOULD REBOOT',
+                ...(f.line ? [`Source line: ${f.line}`] : []),
                 `Failed in ${ALLOCATION_PHASES[f.phase] || `phase ${f.phase}`} via ` +
                     `${ALLOCATION_SOURCES[f.source] || `source ${f.source}`}`,
                 `Requested ${bytes(f.request)} from ` +
@@ -398,7 +493,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const micropatternsKeywords = [
         // Commands
         "DEFINE", "PATTERN", "VAR", "LET", "COLOR", "FILL", "DRAW", "RESET_TRANSFORMS",
-        "TRANSLATE", "ROTATE", "SCALE", "PIXEL", "LINE", "RECT", "FILL_RECT",
+        "TRANSLATE", "ROTATE", "SCALE", "PIXEL", "FILL_PIXEL", "LINE", "RECT", "FILL_RECT",
         "CIRCLE", "FILL_CIRCLE", "REPEAT", "TIMES", "IF", "THEN", "ELSE",
         "ENDIF", "ENDREPEAT",
         // Parameters (often followed by =)
@@ -608,9 +703,13 @@ document.addEventListener('DOMContentLoaded', async () => {
         ctx.fillRect(0, 0, canvas.width, canvas.height);
     }
 
+    let renderRunId = 0;
+
     function runScript() {
+        const thisRun = ++renderRunId;
         errorLog.textContent = '';
         clearDisplay();
+        renderDeviceDiagnostics([]);
         if (deviceMemoryReport) {
             deviceMemoryReport.classList.remove('device-memory-failure');
             deviceMemoryReport.textContent = 'Running firmware renderer…';
@@ -625,14 +724,17 @@ document.addEventListener('DOMContentLoaded', async () => {
                 // One parse, by the firmware's parser. Its diagnostics are the
                 // ones the device would produce.
                 const lint = await deviceRenderer.lint(scriptText);
+                if (thisRun !== renderRunId) return;
                 lint.forEach((e) => displayError(
                     e.line !== null ? `Line ${e.line}: ${e.message}` : e.message, "Parse"));
                 if (lint.length) hasErrors = true;
+                renderDeviceDiagnostics(lint);
 
                 // Previews from that same parse. Assets defined before any
                 // error are still there, so a broken script keeps its patterns
                 // visible and editable.
                 renderAssetPreviews({ assets: await deviceRenderer.assets() });
+                if (thisRun !== renderRunId) return;
 
                 if (hasErrors) {
                     updateDeviceMemoryReport(null);
@@ -640,7 +742,11 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
 
                 const result = await deviceRenderer.render(scriptText, ctx, environment);
+                if (thisRun !== renderRunId) return;
                 updateDeviceMemoryReport(result.memory);
+                renderDeviceDiagnostics(result.diagnostics, result.memory?.constrained
+                    ? 'This frame fits the selected simulated device profile and memory state.'
+                    : 'This frame rendered successfully. Device memory limits are disabled.');
                 if (!result.ok) {
                     displayError(result.error || 'render failed', "Render");
                     hasErrors = true;
@@ -661,7 +767,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     "Renderer");
             } finally {
                 // Auto-increment the counter after a clean run, unless locked.
-                if (!hasErrors && !isCounterLocked) {
+                if (thisRun === renderRunId && !hasErrors && !isCounterLocked) {
                     env.COUNTER.value = parseInt(env.COUNTER.value, 10) + 1;
                 }
             }

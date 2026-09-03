@@ -1,3 +1,5 @@
+import { diagnosticFromParseError, diagnosticsForRender } from './device_diagnostics.js';
+
 // The DEVICE renderer, in the browser.
 //
 // This is not a third implementation of MicroPatterns -- it is the firmware's
@@ -89,14 +91,27 @@ export class DeviceRenderer {
                 assetWidth: M.cwrap('mp_asset_width', 'number', ['number']),
                 assetHeight: M.cwrap('mp_asset_height', 'number', ['number']),
                 assetData: M.cwrap('mp_asset_data', 'number', ['number']),
+                // Stage 1 of the device's process (compile at sync, radios off)
+                // and its telemetry. See mp_wasm.cpp.
+                compile: M.cwrap('mp_compile', 'number', ['string']),
+                compileError: M.cwrap('mp_compile_error', 'number', []),
+                compileMs: M.cwrap('mp_compile_ms', 'number', []),
+                compileProgramBytes: M.cwrap('mp_compile_program_bytes', 'number', []),
+                compileFileBytes: M.cwrap('mp_compile_file_bytes', 'number', []),
+                hasStored: M.cwrap('mp_has_stored', 'number', ['string']),
                 stats: {
                     items: M.cwrap('mp_display_list_items', 'number', []),
+                    listBytes: M.cwrap('mp_display_list_bytes', 'number', []),
+                    programBytes: M.cwrap('mp_program_bytes', 'number', []),
+                    programFileBytes: M.cwrap('mp_program_file_bytes', 'number', []),
+                    msLoad: M.cwrap('mp_ms_load', 'number', []),
                     rendered: M.cwrap('mp_rendered_items', 'number', []),
                     offscreen: M.cwrap('mp_culled_offscreen', 'number', []),
                     occluded: M.cwrap('mp_culled_occlusion', 'number', []),
                     msParse: M.cwrap('mp_ms_parse', 'number', []),
                     msDisplayList: M.cwrap('mp_ms_displaylist', 'number', []),
                     msRasterize: M.cwrap('mp_ms_rasterize', 'number', []),
+                    occupancyMapUsed: M.cwrap('mp_occupancy_map_used', 'number', []),
                 },
             };
             if (constrained) {
@@ -116,11 +131,14 @@ export class DeviceRenderer {
                     currentInternalFree: number('mp_mem_current_internal_free'),
                     currentInternalLargest: number('mp_mem_current_internal_largest'),
                     peakInternalUsed: number('mp_mem_peak_internal_used'),
+                    peakInternalLine: number('mp_mem_peak_internal_line'),
                     initialPsramFree: number('mp_mem_initial_psram_free'),
                     currentPsramFree: number('mp_mem_current_psram_free'),
                     peakPsramUsed: number('mp_mem_peak_psram_used'),
+                    peakPsramLine: number('mp_mem_peak_psram_line'),
                     failureValid: number('mp_mem_failure_valid'),
                     failureRequest: number('mp_mem_failure_request'),
+                    failureLine: number('mp_mem_failure_line'),
                     failurePhase: number('mp_mem_failure_phase'),
                     failureSource: number('mp_mem_failure_source'),
                     failureCapability: number('mp_mem_failure_capability'),
@@ -135,22 +153,31 @@ export class DeviceRenderer {
         return this.modules.get(profile);
     }
 
-    memorySnapshot(m) {
+    memorySnapshot(m, deviceStateOverride = null) {
         if (!m.constrained) {
             return { profile: 'reference', arduinoVersion: null, idfVersion: null,
                 calibrated: false, stateCalibrated: false,
                 deviceState: this.deviceState, constrained: false, failure: null };
         }
         const x = m.memory;
+        const profile = m.M.UTF8ToString(m.profileName());
+        const calibrated = !!x.calibrated();
+        const deviceState = deviceStateOverride ?? this.deviceState;
         const failed = !!x.failureValid();
         return {
-            profile: m.M.UTF8ToString(m.profileName()),
+            profile,
             arduinoVersion: m.M.UTF8ToString(m.arduinoVersion()),
             idfVersion: m.M.UTF8ToString(m.idfVersion()),
-            calibrated: !!x.calibrated(),
-            stateCalibrated: !!x.stateCalibrated(),
+            calibrated,
+            // mp_compile restores the selected render state before returning,
+            // but its heap snapshot is always radios-off. Use the profile's
+            // radios-off calibration rather than mislabelling compile telemetry
+            // with the restored BLE/Wi-Fi state.
+            stateCalibrated: deviceStateOverride === null
+                ? !!x.stateCalibrated()
+                : (deviceState === 0 && calibrated),
             constrained: true,
-            deviceState: this.deviceState,
+            deviceState,
             allocationCalls: x.allocationCalls(),
             reallocCalls: x.reallocCalls(),
             freeCalls: x.freeCalls(),
@@ -160,14 +187,17 @@ export class DeviceRenderer {
                 currentFree: x.currentInternalFree(),
                 currentLargest: x.currentInternalLargest(),
                 peakUsed: x.peakInternalUsed(),
+                peakLine: x.peakInternalLine(),
             },
             psram: {
                 initialFree: x.initialPsramFree(),
                 currentFree: x.currentPsramFree(),
                 peakUsed: x.peakPsramUsed(),
+                peakLine: x.peakPsramLine(),
             },
             failure: failed ? {
                 request: x.failureRequest(),
+                line: x.failureLine(),
                 phase: x.failurePhase(),
                 source: x.failureSource(),
                 capability: x.failureCapability(),
@@ -195,9 +225,10 @@ export class DeviceRenderer {
         for (let i = 0; i < m.errCount(); i++) {
             const raw = m.M.UTF8ToString(m.errAt(i));
             const match = raw.match(/^Line\s+(\d+):\s*(.*)$/);
-            out.push(match
+            const parsed = match
                 ? { line: parseInt(match[1], 10), message: match[2], raw }
-                : { line: null, message: raw, raw });
+                : { line: null, message: raw, raw };
+            out.push(diagnosticFromParseError(parsed, source));
         }
         return out;
     }
@@ -236,11 +267,49 @@ export class DeviceRenderer {
         const w = ctx.canvas.width, h = ctx.canvas.height;
 
         if (m.constrained) m.setDeviceState(this.deviceState);
+        // The device's two stages, in order. A sync compiles the script with
+        // the radios off and stores the program; a render then loads the
+        // stored program in whatever state the device is in. Doing the same
+        // here keeps the emulator's memory story identical to the device's:
+        // a compile failure is a sync-time event, a render failure a wake-time
+        // one. (A render without a prior compile would reproduce the device's
+        // lazy path -- compile in the current state -- which is not what a
+        // synced device does, so the editor always compiles first.)
+        const compiled = m.compile(source);
+        const compileMemory = this.memorySnapshot(m, 0);
+        const compileStats = compiled ? {
+            msCompile: m.compileMs(),
+            programBytes: m.compileProgramBytes(),
+            programFileBytes: m.compileFileBytes(),
+        } : null;
+        if (!compiled) {
+            const result = {
+                ok: false,
+                stage: 'compile',
+                error: m.M.UTF8ToString(m.compileError()),
+                stats: null,
+                memory: compileMemory,
+                compileMemory,
+            };
+            result.diagnostics = diagnosticsForRender({ ...result, source });
+            return result;
+        }
+
         const ok = m.render(source, w, h,
             env.COUNTER | 0, env.HOUR | 0, env.MINUTE | 0, env.SECOND | 0);
         const memory = this.memorySnapshot(m);
         if (!ok) {
-            return { ok: false, error: m.M.UTF8ToString(m.error()), stats: null, memory };
+            const result = {
+                ok: false,
+                stage: 'render',
+                error: m.M.UTF8ToString(m.error()),
+                stats: null,
+                memory,
+                compileMemory,
+                compileStats,
+            };
+            result.diagnostics = diagnosticsForRender({ ...result, source });
+            return result;
         }
 
         // 8-bit greyscale out of the wasm heap, straight into ImageData. The
@@ -257,16 +326,24 @@ export class DeviceRenderer {
         ctx.putImageData(img, 0, 0);
 
         const s = m.stats;
-        return {
+        const result = {
             ok: true,
             error: null,
             memory,
+            compileMemory,
+            compileStats,
             stats: {
                 totalItems: s.items(), renderedItems: s.rendered(),
+                displayListBytes: s.listBytes(),
+                programBytes: s.programBytes(), programFileBytes: s.programFileBytes(),
+                msLoad: s.msLoad(),
                 culledOffScreen: s.offscreen(), culledByOcclusion: s.occluded(),
+                occupancyMapUsed: !!s.occupancyMapUsed(),
                 msParse: s.msParse(), msDisplayList: s.msDisplayList(),
                 msRasterize: s.msRasterize(),
             },
         };
+        result.diagnostics = diagnosticsForRender({ ...result, source });
+        return result;
     }
 }

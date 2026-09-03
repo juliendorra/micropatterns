@@ -74,6 +74,67 @@
             font-weight: bold;
         }
 
+        #deviceDiagnostics {
+            margin-top: 10px;
+        }
+
+        #deviceDiagnostics:empty {
+            display: none;
+        }
+
+        .device-diagnostic,
+        .device-diagnostic-ok {
+            box-sizing: border-box;
+            margin: 8px 0;
+            padding: 10px;
+            background: var(--bg-color-alt, #fff);
+            color: var(--text-color, #111);
+            border: 2px solid currentColor;
+            font-size: 0.84em;
+            line-height: 1.4;
+        }
+
+        .device-diagnostic-error {
+            color: var(--error-color-fg, #721c24);
+            background: var(--error-color-bg, #f8d7da);
+        }
+
+        .device-diagnostic-warning {
+            color: var(--warning-color-fg, #664d03);
+            background: var(--warning-color-bg, #fff3cd);
+        }
+
+        .device-diagnostic h4 {
+            margin: 0 0 4px;
+            font-size: 1.05em;
+        }
+
+        .device-diagnostic p,
+        .device-diagnostic ul,
+        .device-diagnostic dl {
+            margin: 6px 0 0;
+        }
+
+        .device-diagnostic dt {
+            font-weight: bold;
+        }
+
+        .device-diagnostic dd {
+            margin-left: 1em;
+        }
+
+        .device-diagnostic-line-link {
+            margin-top: 7px;
+            max-width: 100%;
+            text-align: left;
+            white-space: normal;
+            overflow-wrap: anywhere;
+        }
+
+        .CodeMirror .mp-diagnostic-line {
+            background: rgba(255, 196, 0, 0.24);
+        }
+
         #provisioningPanel .prov-hint {
             font-size: 0.8em;
             line-height: 1.4;
@@ -278,6 +339,7 @@ ENDREPEAT
                 <label><input type="checkbox" id="logRenderStats"> Log render stats</label>
             </div>
             <pre id="deviceMemoryReport" role="status" aria-live="polite">Device memory has not been measured yet.</pre>
+            <div id="deviceDiagnostics" aria-live="polite"></div>
         </div>
         <div id="errorLog"></div>
     </div>

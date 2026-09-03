@@ -133,6 +133,8 @@ goldens:
 - the shared renderer-source manifest across M5Paper, Watchy, the native
   harness, and both WASM build families;
 - canonical WASM golden parity and positive/negative parser-language contracts;
+- the versioned editor-diagnostic contract, including structured and legacy
+  runtime errors, source attribution, and successful-run risk warnings;
 - constrained allocator behavior, reboot recovery, device lifecycle, radio
   states, and the City 2 sweep;
 - byte-for-byte freshness of all six committed online-editor `.js`/`.wasm`

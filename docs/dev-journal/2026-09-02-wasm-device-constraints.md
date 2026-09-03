@@ -356,3 +356,46 @@ same Emscripten version embedded `/Users/...` on macOS and `/home/runner/...` on
 Linux. Added `-ffile-prefix-map=<repository>=.` to every canonical and
 constrained compilation stage. This keeps assertion provenance useful while
 making the generated modules reproducible across checkout locations and hosts.
+
+### 2026-09-02 — source-aware editor diagnostics
+
+Put the constrained profiles to direct use in the online editor. Added a small
+firmware-safe source-line hook at the parser, display-list generator, and
+rasterizer boundaries. It compiles to a no-op in native firmware and feeds the
+constrained allocator in WASM. Allocation failure and peak-usage telemetry now
+carry the executing MicroPatterns line. Peak attribution is restarted at each
+render while preserving M5Paper's long-lived heap/session, preventing a prior
+script's line from leaking into the next report.
+
+Added two workload signals from the shared C++ path: display-list bytes and
+whether the occupancy map was actually available. The editor can now distinguish
+a fatal OOM from a successful-but-slower painter-order fallback, memory pressure,
+and risky list growth.
+
+Kept the UX independent of this particular engine. `device_diagnostics.js`
+defines schema version 1 and translates raw runtime results into stable codes,
+severity, source line/excerpt, explanations, evidence, and suggestions. The
+editor cards know only that schema. They highlight the relevant CodeMirror line
+and provide a direct navigation button. A later engine replacement needs one
+adapter update; the cards do not need to be reconnected. Unstructured error
+strings still receive a useful generic diagnostic and best-effort line parsing.
+
+Before the compiled-program change, browser verification on exact Seascape 2
+and Watchy radios-off showed:
+
+```text
+MP_DEVICE_OOM at line 360
+request 10,240; internal free 13,200; largest block 7,668
+explanation: allocator fragmentation
+suggestion: compact/stream the display list; VM bytecode alone does not help
+```
+
+The line button focused line 360 in CodeMirror. The later compiled-program work
+removed that wake-time failure by compiling with radios off and loading a compact
+program at render time. The alert remains applicable to the tracked synthetic
+display-list OOM fixture and any future script that exhausts the list itself.
+
+The full local `make ci` gate passed at this point: 18/18 native and WASM
+goldens, language contract, sanitizers, source parity, diagnostic contract,
+constrained Seascape/City checks, and all six committed editor artifacts
+matching fresh builds. Both Watchy 2 and M5Paper PlatformIO builds also passed.

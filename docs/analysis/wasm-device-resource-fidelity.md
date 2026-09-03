@@ -27,19 +27,31 @@ telemetry records:
 - requested capability and bytes;
 - internal and PSRAM free bytes and largest block at the failed request.
 
+The parser, display-list generator, and rasterizer also publish the currently
+executing MicroPatterns source line to the constrained allocator. An OOM can
+therefore identify the command whose expansion or drawing triggered the failed
+allocation. That line is an execution site, not always the whole root cause:
+an enclosing `REPEAT`, earlier parser fragmentation, and the selected radio
+state can all contribute. The editor links to the line and explains the wider
+context rather than claiming that one command is intrinsically invalid.
+
 The browser's canvas backing store, grayscale transfer buffer, JS bridge, and
 error-report strings stay in support memory. Counting them against the device
 would double-count framebuffers already reflected in a hardware phase-boundary
 heap capture.
 
-Watchy starts a new heap each render, matching reboot/deep-sleep wakes, and
-releases source text after parsing. M5Paper retains its parser and latest
-heap-allocated runtime/renderer across jobs, matching the long-lived
-`RenderTask`. A simulated fatal OOM discards that session before the next job.
+The emulator follows the device's two lifecycle stages. A sync compiles source
+straight into a compact `MpProgram` with radios off and stores serialized bytes
+outside simulated RAM, like flash. A wake loads that program and renders it in
+the selected radio state without parsing source. Watchy starts a new render
+heap at each wake; M5Paper retains its latest runtime/renderer across jobs,
+matching its long-lived `RenderTask`. A simulated fatal OOM discards that
+session before the next job.
 
-## Seascape 2: reproduced cause
+## Seascape 2: reproduced cause and mitigation
 
-At the fixed verification seed (counter 0, 12:34:56), calibrated Watchy reports:
+The original source-at-wake path reproduced this failure at the fixed
+verification seed (counter 0, 12:34:56):
 
 ```text
 phase:              display-list generation
@@ -50,11 +62,18 @@ largest block:       7,668 bytes
 peak internal used: 165,604 bytes
 ```
 
-The same allocator initially rendered Seascape 2 when the host
-`std::string` shim was still in use. Replacing it with exact Arduino 3.1.3
-WString changed allocation sizes, 16-byte capacity growth, and fragmentation,
-and the failure appeared. Aggregate free memory is not the deciding value:
-13,200 bytes are free, but no 10,240-byte contiguous block exists.
+The display-list vector growth was the failed request, but the retained parsed
+tree had already consumed and fragmented most of the heap. Aggregate free
+memory was not the deciding value: 13,200 bytes were free, but no 10,240-byte
+contiguous block existed.
+
+The current firmware fixes that lifecycle. Seascape 2 compiles during sync with
+radios off, then renders from its stored compact program at a roughly 68 KB
+Watchy peak in both radios-off and BLE states. The display list remains; the
+failed allocation disappeared because the 146 KB fragmented parse tree no
+longer coexists with it. A tracked synthetic fixture still forces genuine
+display-list growth past the heap boundary, so that failure class and its
+diagnostics remain covered in clean-checkout CI.
 
 ## City 2: not a large-display-list failure
 
@@ -80,25 +99,48 @@ serial crash phase and heap snapshot before attributing it to tile count.
 These are separate axes:
 
 - **Streaming instead of a display list** directly removes the growing
-  `std::vector<DisplayListItem>`. It would prevent the reproduced Seascape 2
-  allocation, but sacrifices front-to-back occupancy/occlusion culling and may
-  redraw expensive overlapping primitives.
+  `std::vector<DisplayListItem>`. It prevents a genuine list-capacity failure,
+  but sacrifices front-to-back occupancy/occlusion culling and may redraw
+  expensive overlapping primitives.
 - **A compact display-list representation** keeps the buffered architecture but
   reduces its slope and allocation sizes. It addresses Seascape more directly
   than changing execution format elsewhere.
-- **VM bytecode by itself does nothing to allocator fidelity or OOM.** If the
-  existing String/map/list parse tree is retained and then compiled to
-  bytecode, peak memory can increase because both representations coexist.
-- **A parser that emits a compact linear bytecode/IR directly** could help
-  parser fragmentation by eliminating many String and tree-node allocations.
-  That benefit comes from the compact allocation/lifetime design, not from the
-  fact that execution is called a VM. It also does not remove a separately
-  materialized display list unless the VM streams primitives or uses the IR as
-  the render list.
+- **VM bytecode added beside the old tree would not help.** Peak memory could
+  increase because both representations coexist.
+- **The implemented compiler emits a compact linear program directly and moves
+  compilation to sync time.** That removes thousands of String/tree allocations
+  from the wake-time heap. It fixes Seascape 2 even though the allocation that
+  finally failed was display-list growth, because that list no longer competes
+  with the fragmented parse tree. The benefit comes from representation and
+  lifetime, not merely calling execution a VM.
+- **The VM does not remove the display list.** A script whose generated list is
+  itself too large can still fail; the tracked OOM fixture proves this. Streaming
+  or a more compact list is the relevant remedy for that distinct case.
 
-The measured failures should determine which change is justified: Seascape 2
-currently points at display-list growth after a fragmentation-heavy parse;
-City 2 does not.
+The measured failure layer should determine which change is justified:
+Seascape 2 needed the parsed-program lifetime fixed; the synthetic list fixture
+needs list compaction/streaming; City 2 needs neither in current sweeps.
+
+## Stable editor diagnostic boundary
+
+Raw WASM exports are deliberately not the UI contract. `DeviceRenderer`
+collects engine errors and telemetry, then `device_diagnostics.js` translates
+them into a versioned, engine-neutral object containing severity, stable code,
+origin, source line/excerpt, explanation, evidence, and suggestions. The editor
+cards and source navigation consume only that object.
+
+This separates three responsibilities:
+
+1. the current runtime reports whatever facts it can observe;
+2. one adapter normalizes those facts and degrades gracefully when a future
+   engine exposes only an error string;
+3. the editor presents and navigates diagnostics without understanding ESP-IDF
+   heap fields.
+
+The contract currently reports parser errors, device OOM/reboot risks,
+low-memory occupancy-map fallback, high heap pressure, and large display-list
+growth. A pure Node contract test locks both structured current-runtime input
+and unstructured future-runtime fallback.
 
 ## Verification and rebuild
 
@@ -106,16 +148,18 @@ City 2 does not.
 cd tools/host_harness
 make verify-wasm                  # canonical pixel goldens
 make verify-wasm-constrained      # parity, OOM, recovery, states, persistence, City 2
+make verify-device-diagnostics    # engine-neutral editor alert contract
 make sync-wasm                    # rebuild and copy all six static browser artifacts
 make ci                           # complete pre-deploy drift gate
 ```
 
 The constrained verification checks successful pixels against the canonical
-module, always tests a tracked display-list OOM fixture, reproduces the exact
-Watchy Seascape 2 failure when that user script is present, renders successfully
-after the simulated reboot, compares radio budgets, exercises M5Paper's
-persistent lifecycle, and sweeps City 2. The tracked fixture keeps the clean-
-checkout gate self-contained without taking ownership of local example scripts.
+module, always tests a tracked display-list OOM fixture, and—when the user-owned
+Seascape 2 script is present—checks that it compiles radios-off and renders from
+the stored program in both radios-off and BLE states. It also checks recovery,
+radio budgets, M5Paper's persistent lifecycle, and the City 2 sweep. The tracked
+fixture keeps clean-checkout CI self-contained without taking ownership of local
+example scripts.
 
 The CI aggregate additionally checks the positive and negative DSL parser
 contract, confirms all five consumers compile the same six renderer sources,
@@ -137,3 +181,5 @@ runs weekly and on manual dispatch.
 - CPU instruction timing, cache/PSRAM latency, FreeRTOS interleavings, watchdog
   expiry, and e-ink transfer/waveform behavior are not simulated.
 - Browser timings are not device timings.
+- A successful editor run proves only one `(script, dimensions, counter, time,
+  profile, radio state)` sample. Intermittent scripts require a sweep.

@@ -19,6 +19,12 @@ For the full MicroPatterns language specification and project details, please se
     *   Select radios off, BLE, or Wi-Fi/TLS to include the corresponding memory
         reservation. The report says when the device would reboot and includes
         the failed allocation phase, source, request, free bytes, and largest block.
+        A diagnostic card explains the failure and links directly to the source
+        line whose execution triggered it. Successful frames also warn when the
+        renderer drops to its low-memory painter-order fallback, approaches a
+        heap budget, or builds an unusually large display list.
+        Compile failures are identified as radios-off sync-time failures;
+        render failures are identified as wake-time reboot risks.
 4.  **Set Display Size:**
     *   Use the "Display Size" dropdown above the canvas to select dimensions.
     *   **540x960 (M5Paper)** is the default. It initially displays at 50% zoom (270x480 pixels on your screen) for better viewing.
@@ -38,7 +44,11 @@ For the full MicroPatterns language specification and project details, please se
     *   **Unlocked State (🔓):** When the counter is unlocked, successfully running a script (either via "Run Script" or by other means that trigger a re-run) will automatically increment the `$COUNTER` value by one. This is useful for observing iterative changes.
     *   **Locked State (🔒):** When the counter is locked, it will **not** auto-increment after a script run. This is helpful for debugging or when you want to run the script multiple times with the same `$COUNTER` value. The background of the `$COUNTER` input field will be slightly grayed out to visually indicate it's locked.
     *   Manually changing the `$COUNTER` value in its input field is always possible, regardless of the lock state. The "Run Script" button will always use the currently displayed `$COUNTER` value.
-10. **Errors:** Any parsing or runtime errors will appear in the red box below the script input, indicating the line number and error message.
+10. **Errors and device risks:** Parser errors, runtime failures, and constrained
+    device warnings appear below the memory report. Use **Go to line** to focus
+    the responsible command in the editor. A clean result applies only to the
+    current script inputs, counter/time values, profile, and radio state; it is
+    not a promise that every possible frame will fit.
 11. **Patterns:** Patterns defined using `DEFINE PATTERN` in the script will be listed under "Patterns Defined" after a successful parse. Click on a preview to interactively edit its pixels in the editor. You can also drag & drop image files onto previews to import them.
     *   **Add a pattern:** Pick a size (8x8 up to 20x20, the parser's maximum) below the previews and click "Add new pattern". A new `DEFINE PATTERN` line is written into the script — after the last existing `DEFINE PATTERN`, or after the leading comment header if there is none, so it always precedes any `FILL`/`DRAW` that could use it. It starts as a checkerboard, visible as soon as you use it, and is then editable like any other preview.
     *   **Clone a pattern:** The duplicate icon next to a pattern's name copies its size and pixel data into a new `DEFINE PATTERN`. The copy is independent — editing it rewrites only its own line.
@@ -70,6 +80,12 @@ For the full MicroPatterns language specification and project details, please se
 *   The firmware parser supplies lint errors and pattern previews; there is no
     JavaScript renderer or second runtime. `simulator.js` owns only editor/UI
     behavior and the canvas transfer.
+*   `device_diagnostics.js` is the stable, versioned adapter between raw engine
+    output and editor UX. `DeviceRenderer` translates whichever runtime is in
+    use into that contract; cards, source navigation, and explanations consume
+    only the contract. Replacing the engine therefore changes the adapter, not
+    every alert. `make verify-device-diagnostics` locks this behavior without
+    loading WebAssembly.
 *   Resource simulation does not predict wall-clock time, watchdog expiry,
     FreeRTOS scheduling, radio timing, or e-ink waveforms. See
     [wasm-device-resource-fidelity.md](../docs/analysis/wasm-device-resource-fidelity.md)
