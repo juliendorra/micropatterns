@@ -45,6 +45,7 @@ struct MpHeapSnapshot {
 
 struct MpAllocationFailure {
     bool valid = false;
+    int sourceLine = 0;
     size_t requested = 0;
     MpMemoryCapability capability = MpMemoryCapability::Default;
     MpAllocationPhase phase = MpAllocationPhase::Idle;
@@ -59,6 +60,8 @@ struct MpAllocationTelemetry {
     uint32_t reallocCalls = 0;
     size_t peakInternalUsed = 0;
     size_t peakPsramUsed = 0;
+    int peakInternalSourceLine = 0;
+    int peakPsramSourceLine = 0;
     MpHeapSnapshot initialInternal;
     MpHeapSnapshot initialPsram;
     MpHeapSnapshot currentInternal;
@@ -69,11 +72,17 @@ struct MpAllocationTelemetry {
 // Reset the simulator to the compile-time device profile and requested radio
 // state. All prior simulated pointers become invalid.
 bool mpDeviceAllocatorReset(MpDeviceState state);
+// Starts a new user-visible render measurement without rebuilding a persistent
+// device heap. This keeps M5Paper's cross-render allocations realistic while
+// ensuring peak/failure source lines belong to the current script.
+void mpDeviceBeginRenderTelemetry();
 void mpDeviceSetRequestedState(MpDeviceState state);
 MpDeviceState mpDeviceRequestedState();
 
 void mpDeviceSetPhase(MpAllocationPhase phase);
 MpAllocationPhase mpDevicePhase();
+void mpDeviceSetSourceLine(int line);
+int mpDeviceSourceLine();
 
 void* mpDeviceMalloc(size_t size,
                      MpMemoryCapability capability = MpMemoryCapability::Default,

@@ -65,6 +65,7 @@ size_t g_internalCount = 0;
 Region g_external;
 bool g_active = false;
 MpAllocationPhase g_phase = MpAllocationPhase::Idle;
+int g_sourceLine = 0;
 MpDeviceState g_requestedState = MpDeviceState::RadiosOff;
 MpAllocationTelemetry g_telemetry;
 void* g_radioReservation = nullptr;
@@ -116,8 +117,14 @@ void updateTelemetry()
             g_telemetry.currentPsram.totalFree
         ? g_telemetry.initialPsram.totalFree - g_telemetry.currentPsram.totalFree
         : 0;
-    g_telemetry.peakInternalUsed = std::max(g_telemetry.peakInternalUsed, internalUsed);
-    g_telemetry.peakPsramUsed = std::max(g_telemetry.peakPsramUsed, psramUsed);
+    if (internalUsed > g_telemetry.peakInternalUsed) {
+        g_telemetry.peakInternalUsed = internalUsed;
+        g_telemetry.peakInternalSourceLine = g_sourceLine;
+    }
+    if (psramUsed > g_telemetry.peakPsramUsed) {
+        g_telemetry.peakPsramUsed = psramUsed;
+        g_telemetry.peakPsramSourceLine = g_sourceLine;
+    }
 }
 
 void recordFailure(size_t size, MpMemoryCapability cap, MpAllocationSource source)
@@ -125,6 +132,7 @@ void recordFailure(size_t size, MpMemoryCapability cap, MpAllocationSource sourc
     if (g_telemetry.failure.valid) return;
     updateTelemetry();
     g_telemetry.failure.valid = true;
+    g_telemetry.failure.sourceLine = g_sourceLine;
     g_telemetry.failure.requested = size;
     g_telemetry.failure.capability = cap;
     g_telemetry.failure.phase = g_phase;
@@ -183,6 +191,7 @@ bool mpDeviceAllocatorReset(MpDeviceState state)
 {
     g_active = false;
     g_phase = MpAllocationPhase::Idle;
+    g_sourceLine = 0;
     g_telemetry = MpAllocationTelemetry{};
     g_radioReservation = nullptr;
     g_internalCount = 0;
@@ -218,8 +227,26 @@ bool mpDeviceAllocatorReset(MpDeviceState state)
         // The profile's initial state is after radio reservations.
         g_telemetry.initialInternal = g_telemetry.currentInternal;
         g_telemetry.peakInternalUsed = 0;
+        g_telemetry.peakInternalSourceLine = 0;
     }
     return true;
+}
+
+void mpDeviceBeginRenderTelemetry()
+{
+    g_sourceLine = 0;
+    updateTelemetry();
+    g_telemetry.failure = MpAllocationFailure{};
+    g_telemetry.peakInternalUsed = g_telemetry.initialInternal.totalFree >=
+            g_telemetry.currentInternal.totalFree
+        ? g_telemetry.initialInternal.totalFree - g_telemetry.currentInternal.totalFree
+        : 0;
+    g_telemetry.peakPsramUsed = g_telemetry.initialPsram.totalFree >=
+            g_telemetry.currentPsram.totalFree
+        ? g_telemetry.initialPsram.totalFree - g_telemetry.currentPsram.totalFree
+        : 0;
+    g_telemetry.peakInternalSourceLine = 0;
+    g_telemetry.peakPsramSourceLine = 0;
 }
 
 void mpDeviceSetRequestedState(MpDeviceState state) { g_requestedState = state; }
@@ -227,6 +254,8 @@ MpDeviceState mpDeviceRequestedState() { return g_requestedState; }
 
 void mpDeviceSetPhase(MpAllocationPhase phase) { g_phase = phase; }
 MpAllocationPhase mpDevicePhase() { return g_phase; }
+void mpDeviceSetSourceLine(int line) { g_sourceLine = line > 0 ? line : 0; }
+int mpDeviceSourceLine() { return g_sourceLine; }
 bool mpDeviceAllocationActive() { return g_active; }
 void mpDeviceSetAllocationActive(bool active) { g_active = active; }
 
