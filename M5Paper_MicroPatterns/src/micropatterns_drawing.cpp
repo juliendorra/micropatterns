@@ -209,6 +209,7 @@ void MicroPatternsDrawing::resetPixelOccupationMap() {
     }
     _overdrawSkippedPixels = 0;
     _fixedPointPixels = 0;
+    _integerXformCalls = 0;
 }
 
 void MicroPatternsDrawing::clearCanvas() {
@@ -226,6 +227,57 @@ void MicroPatternsDrawing::transformPoint(float logical_x, float logical_y, cons
     float scaled_lx = logical_x * item.xf->scale;
     float scaled_ly = logical_y * item.xf->scale;
     matrix_apply_to_point(item.xf->matrix, scaled_lx, scaled_ly, screen_x, screen_y);
+}
+
+// Exact integer forward transform: a logical point to screen space, returned as
+// Q15 numerators rather than pixels.
+//
+// This is the float transformPoint() below, done without floats. Every input is
+// already whole -- the logical coordinate, the scale, and both table entries --
+// and the table entries share the denominator MP_Q15_ONE, so the result is a
+// whole number over that same denominator. Nothing rounds until a caller asks
+// for a pixel index.
+//
+// int64 throughout: a script may TRANSLATE by any int32, and the products here
+// reach 2^15 * 2^31 before the offset is even added.
+static inline void xformPointQ15(const DisplayListItem& item, int32_t lx, int32_t ly,
+                                 int64_t& sxNum, int64_t& syNum) {
+    const TransformSnapshot& xf = *item.xf;
+    const int32_t C = mp_sin_q15(xf.angleDeg + 90);
+    const int32_t S = mp_sin_q15(xf.angleDeg);
+    const int64_t X = (int64_t)lx * xf.scaleInt;
+    const int64_t Y = (int64_t)ly * xf.scaleInt;
+
+    // 32-BIT FAST PATH.
+    //
+    // The int64 form below is correct for every input a script can express --
+    // lx and SCALE are both int32, so X can be enormous -- but that generality
+    // was being paid on every item, and 64-bit arithmetic is expensive here:
+    // Xtensa has no add-with-carry, so a 64-bit add becomes a compare and a
+    // branch. Measured on a Watchy, the int64-only version cost 3.6% on
+    // op_rect_outline (four corners per item) against 0.6% on op_line (two).
+    // The cost tracked the NUMBER OF MULTIPLIES, not the arithmetic being
+    // integer -- which is also why replacing the integer sqrt changed nothing.
+    //
+    // Every coordinate a real script produces fits in 32 bits with room spare.
+    // With |X|,|Y| <= 2^14 and |t| <= 2^26 the worst case is
+    //     32768 * 2^14 * 2 + 2^26  =  1.14e9  <  2^31
+    // so the expression cannot overflow. Anything outside that -- a translate
+    // of millions, a scale that makes X astronomical -- falls through to the
+    // exact int64 form rather than wrapping silently.
+    const int64_t kLim = 1 << 14;
+    const int64_t kOff = 1 << 26;
+    if (X <= kLim && X >= -kLim && Y <= kLim && Y >= -kLim &&
+        xf.txNum <= kOff && xf.txNum >= -kOff &&
+        xf.tyNum <= kOff && xf.tyNum >= -kOff) {
+        const int32_t x32 = (int32_t)X, y32 = (int32_t)Y;
+        sxNum = (int64_t)(C * x32 - S * y32 + (int32_t)xf.txNum);
+        syNum = (int64_t)(S * x32 + C * y32 + (int32_t)xf.tyNum);
+        return;
+    }
+
+    sxNum = (int64_t)C * X - (int64_t)S * Y + xf.txNum;
+    syNum = (int64_t)S * X + (int64_t)C * Y + xf.tyNum;
 }
 
 // Screen-space radius of a logical radius under the item's transform.
@@ -465,6 +517,16 @@ void MicroPatternsDrawing::drawLine(const DisplayListItem& item) {
     int lx2 = item.x2();
     int ly2 = item.y2();
 
+    if (_integerTransform) {
+        ++_integerXformCalls;
+        // Two endpoints, exactly, then integer Bresenham. No float touched.
+        int64_t ax, ay, bx, by;
+        xformPointQ15(item, lx1, ly1, ax, ay);
+        xformPointQ15(item, lx2, ly2, bx, by);
+        rawLine(mp_q15_round(ax), mp_q15_round(ay),
+                mp_q15_round(bx), mp_q15_round(by), item.color);
+        return;
+    }
     float sx1_f, sy1_f, sx2_f, sy2_f;
     transformPoint(static_cast<float>(lx1), static_cast<float>(ly1), item, sx1_f, sy1_f);
     transformPoint(static_cast<float>(lx2), static_cast<float>(ly2), item, sx2_f, sy2_f);
@@ -487,6 +549,24 @@ void MicroPatternsDrawing::drawRect(const DisplayListItem& item) {
     // this same file. Measured: RECT X=10 WIDTH=20 covered x 10..30 while
     // FILL_RECT covered 10..29. The web emulator always used width-1 and was
     // right; see docs/analysis/web-device-renderer-audit.md.
+    if (_integerTransform) {
+        ++_integerXformCalls;
+        int64_t tlx, tly, trx, trry, blx2, bly2, brx, bry;
+        xformPointQ15(item, lx,          ly,          tlx,  tly);
+        xformPointQ15(item, lx + lw - 1, ly,          trx,  trry);
+        xformPointQ15(item, lx,          ly + lh - 1, blx2, bly2);
+        xformPointQ15(item, lx + lw - 1, ly + lh - 1, brx,  bry);
+        const int TLX = mp_q15_round(tlx), TLY = mp_q15_round(tly);
+        const int TRX = mp_q15_round(trx), TRY = mp_q15_round(trry);
+        const int BLX = mp_q15_round(blx2), BLY = mp_q15_round(bly2);
+        const int BRX = mp_q15_round(brx), BRY = mp_q15_round(bry);
+        rawLine(TLX, TLY, TRX, TRY, item.color);
+        rawLine(TRX, TRY, BRX, BRY, item.color);
+        rawLine(BRX, BRY, BLX, BLY, item.color);
+        rawLine(BLX, BLY, TLX, TLY, item.color);
+        return;
+    }
+
     transformPoint(static_cast<float>(lx), static_cast<float>(ly), item, s_tl_x, s_tl_y);
     transformPoint(static_cast<float>(lx + lw - 1), static_cast<float>(ly), item, s_tr_x, s_tr_y);
     transformPoint(static_cast<float>(lx), static_cast<float>(ly + lh - 1), item, s_bl_x, s_bl_y);
@@ -676,16 +756,29 @@ void MicroPatternsDrawing::drawCircle(const DisplayListItem& item) {
     int lr = item.radius();
     if (lr <= 0) return;
      
-    float scx_f, scy_f;
-    transformPoint(static_cast<float>(lcx), static_cast<float>(lcy), item, scx_f, scy_f);
+    float scx_f = 0.0f, scy_f = 0.0f, screen_radius_approx = 0.0f;
+    if (!_integerTransform) {
+        transformPoint(static_cast<float>(lcx), static_cast<float>(lcy), item, scx_f, scy_f);
+        // Was two sqrtf of the matrix column norms. Those columns are unit
+        // vectors -- the matrix is rigid -- so both roots computed 1.0 to
+        // within 1.5e-5.
+        screen_radius_approx = screenRadiusOf(lr, item);
+    }
      
-    // Was two sqrtf of the matrix column norms. Those columns are unit vectors
-    // -- the matrix is rigid -- so both roots computed 1.0 to within 1.5e-5.
-    float screen_radius_approx = screenRadiusOf(lr, item);
-     
-    int scx = static_cast<int>(round(scx_f));
-    int scy = static_cast<int>(round(scy_f));
-    int scaledRadius = static_cast<int>(round(screen_radius_approx));
+    int scx, scy, scaledRadius;
+    if (_integerTransform) {
+        ++_integerXformCalls;
+        // The centre exactly, and the radius is already whole: lr * scaleInt.
+        int64_t cxn, cyn;
+        xformPointQ15(item, lcx, lcy, cxn, cyn);
+        scx = mp_q15_round(cxn);
+        scy = mp_q15_round(cyn);
+        scaledRadius = lr * item.xf->scaleInt;
+    } else {
+        scx = static_cast<int>(round(scx_f));
+        scy = static_cast<int>(round(scy_f));
+        scaledRadius = static_cast<int>(round(screen_radius_approx));
+    }
     if (scaledRadius < 1) scaledRadius = 1;
 
     int x_coord = scaledRadius;
@@ -728,14 +821,43 @@ void MicroPatternsDrawing::fillCircle(const DisplayListItem& item) {
     // bounds both already computed the extent the exact way; only this one
     // sampled. The inside test below was always the exact disk test, so the
     // whole bug lived in these bounds.
-    float scx_f, scy_f;
-    transformPoint(static_cast<float>(lcx), static_cast<float>(lcy), item, scx_f, scy_f);
-    const float screen_radius = screenRadiusOf(lr, item);
+    float scx_f = 0.0f, scy_f = 0.0f, screen_radius = 0.0f;
+    if (!_integerTransform) {
+        transformPoint(static_cast<float>(lcx), static_cast<float>(lcy), item, scx_f, scy_f);
+        screen_radius = screenRadiusOf(lr, item);
+    }
 
-    int min_sx = static_cast<int>(floor(scx_f - screen_radius));
-    int max_sx = static_cast<int>(ceil(scx_f + screen_radius));
-    int min_sy = static_cast<int>(floor(scy_f - screen_radius));
-    int max_sy = static_cast<int>(ceil(scy_f + screen_radius));
+    // The same centre and radius held exactly. The radius needs no conversion
+    // at all: it is lr * scaleInt, both whole.
+    int64_t scxNum = 0, scyNum = 0;
+    const int32_t screen_radius_i = lr * item.xf->scaleInt;
+    // (R * ONE)^2 is constant for the whole item. It was being recomputed once
+    // per scanline -- a 64-bit multiply per row for a value that never changes,
+    // exactly the waste the float path had already been taught to avoid with
+    // the hoisted im0..im5 in fillRect.
+    int64_t radiusNumSq = 0;
+    if (_integerTransform) {
+        ++_integerXformCalls;
+        xformPointQ15(item, lcx, lcy, scxNum, scyNum);
+        const int64_t RN = (int64_t)screen_radius_i * MP_Q15_ONE;
+        radiusNumSq = RN * RN;
+    }
+
+    int min_sx, max_sx, min_sy, max_sy;
+    if (_integerTransform) {
+        // The same box, from the exact centre and radius. ceil of a value over a
+        // power of two is -((-v) >> k), floor is v >> k.
+        const int64_t RN = (int64_t)screen_radius_i * MP_Q15_ONE;
+        min_sx = (int)mp_q15_floor(scxNum - RN);
+        max_sx = (int)(-((-(scxNum + RN)) >> MP_Q15_SHIFT));
+        min_sy = (int)mp_q15_floor(scyNum - RN);
+        max_sy = (int)(-((-(scyNum + RN)) >> MP_Q15_SHIFT));
+    } else {
+        min_sx = static_cast<int>(floor(scx_f - screen_radius));
+        max_sx = static_cast<int>(ceil(scx_f + screen_radius));
+        min_sy = static_cast<int>(floor(scy_f - screen_radius));
+        max_sy = static_cast<int>(ceil(scy_f + screen_radius));
+    }
     
     min_sx = std::max(0, min_sx);
     min_sy = std::max(0, min_sy);
@@ -808,13 +930,32 @@ void MicroPatternsDrawing::fillCircle(const DisplayListItem& item) {
         // necessary but not sufficient) and still tested every pixel inside it.
         // This span is exact, so nothing inside it needs testing.
         if (_fixedPointEnabled) {
-            const float dyc = (static_cast<float>(sy_iter) + 0.5f) - scy_f;
-            const float rr = screen_radius * screen_radius - dyc * dyc;
-            if (rr <= 0.0f) continue;
-            const float hw = sqrtf(rr);
-            // Pixel centres, so the bounds are on sx + 0.5.
-            int fx0 = (int)ceilf(scx_f - hw - 0.5f);
-            int fx1 = (int)floorf(scx_f + hw - 0.5f) + 1;
+            int fx0, fx1;
+            if (_integerTransform) {
+                // No float and no sqrtf. A pixel centre sx+0.5 is the whole
+                // number (2*sx+1) over 2, so in Q15 numerators it is
+                // sx*MP_Q15_ONE + MP_Q15_ONE/2. The radius and the centre are
+                // both exact, so R^2 - dy^2 is an exactly representable whole
+                // number and its root is an integer square root.
+                const int64_t dyN = (int64_t)sy_iter * MP_Q15_ONE + (MP_Q15_ONE / 2) - scyNum;
+                const int64_t rr  = radiusNumSq - dyN * dyN;
+                if (rr <= 0) continue;
+                const int64_t hwN = mp_isqrt64(rr);
+                // sx*ONE + ONE/2 must lie in [cx - hw, cx + hw]. The divisor is
+                // a power of two, so ceil is -((-a) >> k) and floor is a >> k.
+                const int64_t lo = scxNum - hwN - (MP_Q15_ONE / 2);
+                const int64_t hi = scxNum + hwN - (MP_Q15_ONE / 2);
+                fx0 = (int)(-((-lo) >> MP_Q15_SHIFT));
+                fx1 = (int)(hi >> MP_Q15_SHIFT) + 1;
+            } else {
+                const float dyc = (static_cast<float>(sy_iter) + 0.5f) - scy_f;
+                const float rr = screen_radius * screen_radius - dyc * dyc;
+                if (rr <= 0.0f) continue;
+                const float hw = sqrtf(rr);
+                // Pixel centres, so the bounds are on sx + 0.5.
+                fx0 = (int)ceilf(scx_f - hw - 0.5f);
+                fx1 = (int)floorf(scx_f + hw - 0.5f) + 1;
+            }
             if (fx0 < min_sx) fx0 = min_sx;
             if (fx1 > max_sx) fx1 = max_sx;
             if (fx0 >= fx1) continue;

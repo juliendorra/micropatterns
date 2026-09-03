@@ -80,6 +80,10 @@ const TransformSnapshot* MicroPatternsRuntime::currentTransform() {
         memcpy(snap.matrix, _currentState.matrix, sizeof(float) * 6);
         memcpy(snap.inverseMatrix, _currentState.inverseMatrix, sizeof(float) * 6);
         snap.scale = _currentState.scale;
+        snap.scaleInt = (int32_t)_currentState.scale;   // always integral, see CMD_SCALE
+        snap.angleDeg = _currentState.angleDeg;
+        snap.txNum = _currentState.txNum;
+        snap.tyNum = _currentState.tyNum;
         // A loop body that does RESET_TRANSFORMS / SCALE / TRANSLATE with the
         // same arguments every iteration marks the state dirty every iteration
         // but recomputes the same numbers, so compare against the last snapshot
@@ -288,20 +292,37 @@ void MicroPatternsRuntime::generateDisplayList() {
                 _currentState.angleDeg = 0;
                 _currentState.tx = 0.0f;
                 _currentState.ty = 0.0f;
+                _currentState.txNum = 0;
+                _currentState.tyNum = 0;
                 matrix_identity(_currentState.matrix);
                 matrix_identity(_currentState.inverseMatrix);
                 _xfDirty = true;
                 ++pc;
                 continue;
             case CMD_TRANSLATE: {
-                const float dx = (float)resolve(in.op[0], in.line);
-                const float dy = (float)resolve(in.op[1], in.line);
+                // Resolved ONCE. resolve() reports errors against the source
+                // line, so calling it twice per operand would double-report a
+                // bad one.
+                const int32_t idx = resolve(in.op[0], in.line);
+                const int32_t idy = resolve(in.op[1], in.line);
+                const float dx = (float)idx;
+                const float dy = (float)idy;
                 // M' = M * T(d), so the offset moves by the CURRENT rotation
                 // applied to d. The angle is untouched.
                 const float s = mp_sin_deg(_currentState.angleDeg);
                 const float c = mp_sin_deg(_currentState.angleDeg + 90);
                 _currentState.tx += c * dx - s * dy;
                 _currentState.ty += s * dx + c * dy;
+                // The same step, kept exactly. Both operands are integers and
+                // both table entries are whole numbers over MP_Q15_ONE, so each
+                // product is a whole number over MP_Q15_ONE and the running
+                // total never leaves that denominator.
+                {
+                    const int64_t C = mp_sin_q15(_currentState.angleDeg + 90);
+                    const int64_t S = mp_sin_q15(_currentState.angleDeg);
+                    _currentState.txNum += C * idx - S * idy;
+                    _currentState.tyNum += S * idx + C * idy;
+                }
                 matrix_set_rigid(_currentState.matrix, _currentState.inverseMatrix,
                                  _currentState.angleDeg, _currentState.tx, _currentState.ty);
                 _xfDirty = true;

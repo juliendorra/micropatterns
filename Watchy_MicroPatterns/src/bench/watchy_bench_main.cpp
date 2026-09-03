@@ -82,7 +82,12 @@ static const int kHour = 12, kMinute = 34, kSecond = 56;
 // clock, temperature, heap layout or flash cache state; alternating reps inside
 // one run puts both paths under identical conditions and interleaves whatever
 // drift remains across both of them equally.
-static void benchOne(const MPBenchScript& s, bool fixedPoint)
+// 0 = float rasteriser, 1 = Q16.16 fills, 2 = Q16.16 fills + exact-integer
+// forward transform (line/rect endpoints, circle centres, filled-circle span).
+enum MPBenchPath { MPB_FLOAT = 0, MPB_FIXED = 1, MPB_INT = 2 };
+static const char* kPathName[3] = { "float", "fixed", "int" };
+
+static void benchOne(const MPBenchScript& s, int pathMode)
 {
     const int W = g_display.width();
     const int H = g_display.height();
@@ -98,7 +103,7 @@ static void benchOne(const MPBenchScript& s, bool fixedPoint)
 
         if (!ok) {
             Serial.printf("MPBENCH|kind=%s name=%s path=%s rep=%d error=parse\n",
-                          s.kind, s.name, fixedPoint ? "fixed" : "float", rep);
+                          s.kind, s.name, kPathName[pathMode], rep);
             const std::vector<String>& errs = parser.getErrors();
             for (size_t i = 0; i < errs.size() && i < 3; ++i) {
                 Serial.printf("MPBENCH|kind=%s name=%s parse_error=%s\n",
@@ -125,14 +130,15 @@ static void benchOne(const MPBenchScript& s, bool fixedPoint)
 
         t0 = esp_timer_get_time();
         DisplayListRenderer renderer(&g_canvas, W, H);
-        renderer.setFixedPointEnabled(fixedPoint);
+        renderer.setFixedPointEnabled(pathMode != MPB_FLOAT);
+        renderer.setIntegerTransformEnabled(pathMode == MPB_INT);
         renderer.render(dl);
         const int64_t raster_us = esp_timer_get_time() - t0;
 
         Serial.printf("MPBENCH|kind=%s name=%s path=%s rep=%d items=%u rendered=%d "
                       "parse_us=%lld dl_us=%lld raster_us=%lld "
                       "prog_bytes=%u heap=%u largest=%u\n",
-                      s.kind, s.name, fixedPoint ? "fixed" : "float", rep,
+                      s.kind, s.name, kPathName[pathMode], rep,
                       (unsigned)dl.size(), renderer.getRenderedItems(),
                       (long long)parse_us, (long long)dl_us, (long long)raster_us,
                       (unsigned)parser.getProgram().byteSize(),
@@ -168,8 +174,9 @@ void setup()
     Serial.flush();
 
     for (int i = 0; i < MPBENCH_SCRIPT_COUNT; ++i) {
-        benchOne(kMPBenchScripts[i], false);   // float
-        benchOne(kMPBenchScripts[i], true);    // Q16.16
+        benchOne(kMPBenchScripts[i], MPB_FLOAT);
+        benchOne(kMPBenchScripts[i], MPB_FIXED);
+        benchOne(kMPBenchScripts[i], MPB_INT);
     }
 
     Serial.println("MPBENCH|end");

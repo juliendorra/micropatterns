@@ -3,6 +3,7 @@
 
 #include <Arduino.h>
 #include <vector>
+#include <cstring>        // For memset (see TransformSnapshot)
 #include "matrix_utils.h" // For matrix_identity
 
 // Command types. The values double as MpInstr::type in the compiled program
@@ -79,6 +80,15 @@ struct MicroPatternsState {
     int32_t angleDeg = 0;   // cumulative rotation, always normalised to [0,360)
     float tx = 0.0f, ty = 0.0f;
 
+    // The SAME offset as tx/ty, held exactly: a whole-number numerator over
+    // MP_Q15_ONE. TRANSLATE adds R(angle) * (dx,dy) with dx,dy integers, and
+    // every table entry is a whole number over 32768, so each step contributes
+    // another whole number over the SAME denominator -- and adding fractions
+    // that share a denominator never changes it. The offset is therefore exact
+    // for as many TRANSLATEs as a script cares to issue, where tx/ty round on
+    // every one of them.
+    int64_t txNum = 0, tyNum = 0;
+
     // Derived from (angleDeg, tx, ty) on every transform command, and the only
     // form the rasteriser reads. Kept as matrices so the per-pixel hot loop is
     // untouched by any of the above.
@@ -105,13 +115,29 @@ struct MicroPatternsState {
 // pooled snapshot instead of each carrying their own 52-byte copy. The pool is
 // owned by MicroPatternsRuntime and lives as long as the display list does.
 struct TransformSnapshot {
+    // Exact integer transform state, carried alongside the float matrices so a
+    // rasteriser can use either. int64 first: see the memset in the constructor.
+    int64_t txNum = 0, tyNum = 0;
     float matrix[6];
     float inverseMatrix[6];
     float scale = 1.0f;
+    int32_t angleDeg = 0;
+    int32_t scaleInt = 1;   // xf->scale is always integral; this is it, as an int
 
     TransformSnapshot() {
+        // Zero the whole object INCLUDING PADDING before setting any field.
+        // currentTransform() de-duplicates snapshots with memcmp over
+        // sizeof(TransformSnapshot), and mixing int64 and int32 members gives
+        // this struct trailing padding. Uninitialised padding bytes would make
+        // two genuinely identical transforms compare unequal, silently
+        // defeating the pooling that exists to stop every item carrying its own
+        // copy. It was 13 floats with no padding before, which is why this did
+        // not need saying until now.
+        memset(this, 0, sizeof(*this));
         matrix_identity(matrix);
         matrix_identity(inverseMatrix);
+        scale = 1.0f;
+        scaleInt = 1;
     }
 };
 

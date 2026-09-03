@@ -59,7 +59,7 @@ OBJS         := $(CORE_OBJS) $(HARNESS_OBJS)
 
 BIN := $(BUILD)/mpharness
 
-.PHONY: all clean verify bench bake list profile policy verify-float bake-float compare-float
+.PHONY: all clean verify bench bake list profile policy verify-float bake-float compare-float compare-int
 
 all: $(BIN) $(BUILD)/mppolicy
 
@@ -104,6 +104,14 @@ bake-float: $(BIN)
 # failure rather than a difference.
 compare-float: $(BIN)
 	$(BIN) compare-paths displaylist displaylist-float --corpus corpus --golden golden
+
+# Unlike compare-float this one IS a gate, and belongs in ci: the exact-integer
+# transform is byte-identical to the default by construction -- every input is a
+# whole number over a fixed denominator, so nothing rounds -- and if it ever
+# stops being identical, that is a bug rather than a trade-off. The check also
+# refuses to pass if the integer path performed no integer transforms.
+compare-int: $(BIN)
+	$(BIN) compare-paths displaylist displaylist-int --corpus corpus --golden golden
 
 # The browse and refresh policy, off-device. Pure logic with an injected clock,
 # so the timing rules that used to be tuned against a panel by hand are pinned
@@ -235,7 +243,7 @@ verify-emulator-wasm: wasm wasm-constrained
 
 # Required pre-deploy gate. The longer generated lifetime soak remains a
 # scheduled/manual CI job; these checks are deterministic and run on every push.
-ci: verify verify-float audit-sweep sanitize verify-strict verify-source-parity \
+ci: verify verify-float compare-int audit-sweep sanitize verify-strict verify-source-parity \
 	verify-wasm verify-language-wasm verify-device-diagnostics \
 	verify-wasm-constrained verify-emulator-wasm
 

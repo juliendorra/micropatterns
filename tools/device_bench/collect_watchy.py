@@ -107,17 +107,22 @@ def compare_paths_same_run(path):
     """float vs fixed from ONE capture -- the paths alternated per rep inside a
     single firmware run, so no cross-flash variation can leak into the delta."""
     agg = json.load(open(path))["agg"]
-    print(f"{'script':30s} {'rend':>5s} {'float':>10s} {'fixed':>10s} {'delta':>9s}")
+    print(f"{'script':26s} {'float':>9s} {'fixed':>9s} {'vs flt':>8s} {'int':>9s} {'vs fix':>8s}")
     for kind in ("op", "script"):
-        rows = [(n, agg[n], agg.get(n + "@fixed")) for n in sorted(agg)
+        rows = [(n, agg[n], agg.get(n + "@fixed"), agg.get(n + "@int")) for n in sorted(agg)
                 if "@" not in n and agg[n]["kind"] == kind and agg.get(n + "@fixed")]
         if not rows: continue
-        print(f"-- {kind} " + "-"*58)
-        for n, f, x in rows:
-            a, b = f["raster_us"]["min"], x["raster_us"]["min"]
-            d = (b - a) / a * 100 if a else 0
-            flag = "" if f["rendered"] == x["rendered"] else "  ITEMS DIFFER"
-            print(f"{n:30s} {f['rendered']:>5} {a/1000:>9.2f}m {b/1000:>9.2f}m {d:>+8.1f}%{flag}")
+        print(f"-- {kind} " + "-"*62)
+        for n, f, x, i in rows:
+            a = f["raster_us"]["min"]
+            b = x["raster_us"]["min"]
+            db = (b - a) / a * 100 if a else 0
+            if i:
+                c = i["raster_us"]["min"]
+                dc = (c - b) / b * 100 if b else 0
+                print(f"{n:26s} {a/1000:>8.2f}m {b/1000:>8.2f}m {db:>+7.1f}% {c/1000:>8.2f}m {dc:>+7.1f}%")
+            else:
+                print(f"{n:26s} {a/1000:>8.2f}m {b/1000:>8.2f}m {db:>+7.1f}% {'-':>9s} {'-':>8s}")
 
 def compare(a_path, b_path):
     A, B = json.load(open(a_path)), json.load(open(b_path))

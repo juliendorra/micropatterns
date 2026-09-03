@@ -53,6 +53,8 @@ struct RenderCounters {
     // fixed point that reports 0 here did not actually run it -- see
     // compare-paths, which treats that as a failure rather than a pass.
     unsigned long fixedPointPixels = 0;
+    // Items transformed by the exact-integer path. Same gate, same reason.
+    unsigned long integerXformCalls = 0;
     // Honest label: this is "pixels whose final value differs from white",
     // derived by scanning the canvas. It is NOT a count of rawPixel() calls --
     // the drawing layer does not track that. Use it as a coverage proxy only.

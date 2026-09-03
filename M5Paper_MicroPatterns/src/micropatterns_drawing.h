@@ -52,6 +52,7 @@ public:
 private:
     bool _usePixelOccupationMap;
     bool _fixedPointEnabled = true;
+    bool _integerTransform = false;
     unsigned int _overdrawSkippedPixels; // For stats
 
     // Pixels emitted through a fixed-point inner loop this render.
@@ -68,6 +69,12 @@ private:
     // per SPAN, never per pixel, so it costs nothing in the loop it measures.
     unsigned long _fixedPointPixels = 0;
 
+    // Same reasoning as _fixedPointPixels, for the exact-integer transform:
+    // "identical output" is also what a path that never ran would report, and
+    // this one reported 21/21 identical on its first try too. Counted per ITEM,
+    // so it costs nothing.
+    unsigned long _integerXformCalls = 0;
+
     void initPixelOccupationMap(); // Initialize map if needed
 
 public: // Made public for DisplayListRenderer
@@ -77,6 +84,10 @@ public: // Made public for DisplayListRenderer
     // the original float rasteriser, which is kept selectable and gated rather
     // than deleted -- see docs/measurements/2026-09-03-fixed-point-rasteriser.md.
     void setFixedPointEnabled(bool enable) { _fixedPointEnabled = enable; }
+
+    // Exact-integer forward transform for endpoints, centres and spans. OFF by
+    // default while it is being measured; see docs/measurements/.
+    void setIntegerTransformEnabled(bool enable) { _integerTransform = enable; }
     bool fixedPointEnabled() const { return _fixedPointEnabled; }
 
     void enablePixelOccupationMap(bool enable);
@@ -99,6 +110,7 @@ public: // Made public for DisplayListRenderer
     }
     unsigned int getOverdrawSkippedPixelsCount() const { return _overdrawSkippedPixels; }
     unsigned long getFixedPointPixels() const { return _fixedPointPixels; }
+    unsigned long getIntegerXformCalls() const { return _integerXformCalls; }
 
 
     // Transformation helpers using float math and matrices, now use DisplayListItem's state

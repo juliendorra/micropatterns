@@ -74,6 +74,12 @@ static const int32_t SIN_Q15[360] = {
 };
 
 
+int32_t mp_sin_q15(int deg) {
+    deg %= 360;
+    if (deg < 0) deg += 360;
+    return SIN_Q15[deg];
+}
+
 float mp_sin_deg(int deg) {
     deg %= 360;
     if (deg < 0) deg += 360;

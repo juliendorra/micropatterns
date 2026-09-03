@@ -588,7 +588,7 @@ int main(int argc, char** argv) {
         printf("PATH EQUIVALENCE: %s vs %s\n", A->name(), B->name());
         printf("(This is the \"All path gives same result\" gate, in C++.)\n\n");
         int pass = 0, fail = 0;
-        unsigned long fxA = 0, fxB = 0;
+        unsigned long fxA = 0, fxB = 0, ixA = 0, ixB = 0;
         for (const std::string& sp : listCorpus(o.corpus)) {
             std::string script;
             if (!readTextFile(sp, script)) continue;
@@ -600,6 +600,8 @@ int main(int argc, char** argv) {
                 if (!ra.ok || !rb.ok) { printf("  FAIL  %-34s render error\n", caseName.c_str()); fail++; continue; }
                 fxA += ra.counters.fixedPointPixels;
                 fxB += rb.counters.fixedPointPixels;
+                ixA += ra.counters.integerXformCalls;
+                ixB += rb.counters.integerXformCalls;
                 int fx, fy;
                 int nd = diffImages(ra.image, rb.image, nullptr, fx, fy);
                 if (nd == 0) { printf("  SAME  %-34s\n", caseName.c_str()); pass++; }
@@ -619,6 +621,7 @@ int main(int argc, char** argv) {
         // through a fixed-point loop, and a path that advertises fixed point
         // and reports zero fails here instead of passing.
         printf("fixed-point pixels: %s=%lu  %s=%lu\n", A->name(), fxA, B->name(), fxB);
+        printf("integer transforms: %s=%lu  %s=%lu\n", A->name(), ixA, B->name(), ixB);
         // Enforced in BOTH directions. A path named "*-float" must do no
         // fixed-point work; every other path must do some. The second half
         // catches a fast path that silently fell back -- the failure this gate
@@ -631,6 +634,25 @@ int main(int argc, char** argv) {
         // committed corpus does (artdeco_default, city, prims, bounds); a
         // corpus of nothing but lines and outlines would trip this legitimately.
         auto isFloatPath = [](const char* n) { return std::string(n).find("float") != std::string::npos; };
+        // Same rule for the exact-integer transform: a path named "*-int" that
+        // transformed nothing that way is not being compared, it is being
+        // impersonated by the path it is supposed to differ from.
+        auto isIntPath = [](const char* n) { return std::string(n).find("-int") != std::string::npos; };
+        struct ICheck { const char* nm; unsigned long ix; };
+        const ICheck ichecks[2] = { { A->name(), ixA }, { B->name(), ixB } };
+        for (const ICheck& c : ichecks) {
+            if (isIntPath(c.nm) && c.ix == 0) {
+                printf("\nFAIL: path \"%s\" advertises an integer transform and performed none.\n"
+                       "      Every comparison above is vacuous.\n", c.nm);
+                return 1;
+            }
+            if (!isIntPath(c.nm) && c.ix != 0) {
+                printf("\nFAIL: path \"%s\" performed %lu integer transforms but does not advertise them.\n"
+                       "      It is not the float-transform reference it claims to be.\n", c.nm, c.ix);
+                return 1;
+            }
+        }
+
         struct Check { const char* nm; unsigned long fx; };
         const Check checks[2] = { { A->name(), fxA }, { B->name(), fxB } };
         for (const Check& c : checks) {

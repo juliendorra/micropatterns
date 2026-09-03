@@ -1029,3 +1029,72 @@ Q16.16 inner loop, still far below float, and bit-identical across every
 toolchain -- which the current float path is not, having been measured
 disagreeing with itself by 21 px between `-Os` WASM and `-O2` native. See
 `analysis/is-q16-16-integer-math.md`.
+
+---
+
+## 2026-09-04 -- The exact-integer transform: right prediction, wrong bug
+
+Follow-up to the Q16.16 rasteriser. Removes the last floats from the FORWARD
+path -- line and rect endpoints, circle centres, and the filled-circle span
+including its `sqrtf` -- as render path `displaylist-int`.
+
+**Byte-identical output, and +0.0% to +0.9% on whole scripts.** Full numbers in
+`measurements/2026-09-04-exact-integer-transform.md`.
+
+### 1. The prediction that was wrong yesterday was right today
+
+Yesterday's argument -- an FPU makes integer arithmetic no cheaper, so fixed
+point cannot win -- was wrong about the Q16.16 fills, which won 15-42% by not
+multiplying at all. It is exactly right about this change, which does the SAME
+arithmetic in integers and duly costs 0-2.6%.
+
+> Substituting a representation buys nothing. Removing work buys everything.
+
+Both experiments were needed to say that with numbers rather than opinions, and
+neither on its own would have been convincing.
+
+### 2. Two obvious optimisations that did nothing
+
+Recorded because both looked certain.
+
+`mp_isqrt64` started as Newton's method, which divides once per iteration, and
+64-bit division on Xtensa is a libgcc call -- the exact dependency this work
+exists to remove. Replacing it with a restoring binary square root (shifts and
+compares, no division) moved `op_fill_circle` from +2.4% to +2.5%. **Nothing.**
+The root was never the cost. Kept anyway, because it is the version that does
+not call libgcc.
+
+A 32-bit fast path in the point transform, guarded so it provably cannot
+overflow, also changed nothing measurable. Kept for the same reason.
+
+### 3. The thing that DID help was a bug I had written an hour earlier
+
+`op_rect_outline` was +4.1%, and I had already told the user the cost "scales
+with the number of int64 multiplies". It did -- but not for the reason claimed.
+The integer branch in `drawRect` had been inserted AFTER the four float
+`transformPoint` calls, so the integer path computed every corner **twice**, once
+in float and once in integers, and threw the float answers away. `drawCircle`
+and `fillCircle` had the same shape.
+
+Guarding the float work took it from +4.1% to +2.0%. Half the regression was
+self-inflicted.
+
+**Why no gate caught it:** doing the work twice produces the same answer, so
+equivalence was perfect throughout. The counters added yesterday prove the fast
+path RAN; nothing proves the slow path *stopped*. A "this path should not have
+executed the other path's code" check is the missing gate, and the cross-check
+that stood in for it here was arithmetic: `op_fill_circle` did not move at all,
+which is only consistent with its one duplicated centre being irrelevant against
+200 scanlines.
+
+### 4. What this does not yet buy
+
+Float is not gone. The display-list bounds pass, the `fillRect`/`drawAsset` AABB
+corners and the inverse matrix are all still float, so the binary still links
+soft-float and the actual reason to do this -- an FPU-less target like an
+ESP32-C3 or RP2040 -- is not yet cashed in. One step of several.
+
+The filled-circle span could drop both its 64-bit multiply and its root by
+stepping the half-width the way Bresenham draws a circle. Not built: the
+whole-script effect is 0.0%, and the risk lives in bounds arithmetic, which is
+where both of yesterday's real bugs were.

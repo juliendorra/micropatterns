@@ -54,11 +54,13 @@ public:
     // displaylist-float` can still measure the distance between the two --
     // the practice commit d427b02 established.
     void setFixedPointEnabled(bool on) { _fixedPointEnabled = on; }
+    void setIntegerTransformEnabled(bool on) { _integerTransformEnabled = on; }
 
     // How many pixels the last render emitted through a fixed-point inner loop.
     // Zero from a path that claims to be fixed-point means it never ran; see
     // micropatterns_drawing.h for why this is a gate and not a statistic.
     unsigned long getFixedPointPixels() const { return _drawing.getFixedPointPixels(); }
+    unsigned long getIntegerXformCalls() const { return _drawing.getIntegerXformCalls(); }
     // Pixels the drawing layer skipped because the pixel-occupation map said
     // they were already covered. Already tracked by MicroPatternsDrawing and
     // already logged by render(); this getter just exposes it to callers
@@ -85,6 +87,7 @@ private:
     bool _occlusionEnabled = true;
     bool _occupancyMapEnabled = true;
     bool _fixedPointEnabled = true;
+    bool _integerTransformEnabled = false;
     bool _usedOccupancyMapLastRender = false;
 
     std::function<bool()> _interrupt_check_cb;
