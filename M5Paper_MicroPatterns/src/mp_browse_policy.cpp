@@ -77,6 +77,21 @@ MpBrowseAction MpBrowsePolicy::poll(uint32_t now, bool anyButtonDown, uint32_t p
     // Periodic re-render, never while a selection is waiting: it would repaint
     // the outgoing script over the title the user is reading, and then render
     // the chosen one straight after.
+    //
+    // Nor while a button is DOWN. A press has two edges and a browse is only
+    // reported on the second one, so between them there is a window in which
+    // the user has plainly started something and browsing() is still false.
+    // The periodic re-render used to slip into exactly that window: press next
+    // on the last script, watch the OUTGOING one repaint, and only then get the
+    // title and the render you asked for. It is the same fault as the line
+    // above and it needed its own guard, because the first thing the caller can
+    // tell us about a press is not the press -- it is the release.
+    //
+    // A contact stuck down therefore holds the periodic re-render off for as
+    // long as it is stuck. That is deliberate and harmless: nothing is waiting
+    // on it, unlike the settled render that rule 3 has to cap.
+    if (anyButtonDown) return MpBrowseAction::Nothing;
+
     if (!_autoRerunSuspended && _cfg.autoRerunMs > 0 &&
         (int32_t)(now - _lastRenderAt) >= (int32_t)_cfg.autoRerunMs) {
         return MpBrowseAction::Render;

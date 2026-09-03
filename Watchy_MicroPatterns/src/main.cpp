@@ -587,7 +587,14 @@ static void serviceBrowse()
 {
     if (g_scripts.empty()) return;
     const bool down = sampleButtons();
+    const bool wasBrowsing = g_browse.browsing();
     if (g_browse.poll(millis(), down, g_pressCount) == MpBrowseAction::Render) {
+        // Say which of the two reasons this render is, because they look
+        // identical on the panel and only one of them is the user's doing.
+        // Folding the periodic re-render into the policy took its log line with
+        // it, and that is precisely what made it invisible when it started
+        // firing between a press and its release.
+        if (!wasBrowsing) log_i("Auto re-render after %lus idle", AUTO_RERUN_INTERVAL_MS / 1000);
         // The title, when there was one, is already on the panel.
         showScript(g_browse.current(), false);
     }

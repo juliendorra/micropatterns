@@ -96,6 +96,31 @@ static void test_auto_rerun_never_preempts_a_title()
     CHECK(g.p.current() == 1, "and it is the chosen one, not the outgoing one");
 }
 
+// 2b. ...and it must also yield to a press that has not been released yet.
+//     A browse is only reported on the release edge, so between the two edges
+//     the user has visibly started something while browsing() is still false.
+//     Reported from the bench as: press next on the last script, get no title,
+//     then watch the OUTGOING script re-render, then finally the chosen one.
+static void test_auto_rerun_yields_to_a_button_still_down()
+{
+    printf("periodic re-render yields to a button that is still down\n");
+    Fixture f;
+    f.advance(83000);
+    CHECK(f.poll(/*down=*/true) == MpBrowseAction::Nothing,
+          "overdue, but a finger is on the button");
+    CHECK(f.poll(true) == MpBrowseAction::Nothing, "still down, still nothing");
+
+    // The real sequence: the press is released, becomes a browse, and the only
+    // thing that renders is the script the user chose.
+    CHECK(f.press(+1) == MpBrowseAction::ShowTitle, "the release becomes a browse");
+    f.p.titleDrawn(f.now);
+    f.advance(200);
+    CHECK(f.poll() == MpBrowseAction::Nothing, "the title is still settling");
+    f.advance(250);
+    CHECK(f.poll() == MpBrowseAction::Render, "and then it renders");
+    CHECK(f.p.current() == 1, "the chosen script, never the outgoing one");
+}
+
 // 3. A held button extends the window, because that is what makes paging feel
 //    like paging -- but not forever. A contact that never reads low used to
 //    hold the device on a title indefinitely, with the press indicator lit,
@@ -234,6 +259,7 @@ int main()
     printf("\nBrowse and refresh policy\n\n");
     test_settle_starts_when_the_title_is_up();
     test_auto_rerun_never_preempts_a_title();
+    test_auto_rerun_yields_to_a_button_still_down();
     test_held_button_cannot_freeze_the_device();
     test_abort_needs_a_new_press_not_a_held_one();
     test_abandoned_render_does_not_reset_the_clock();
