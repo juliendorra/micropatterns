@@ -286,9 +286,18 @@ static int g_updatesSinceFull = WATCHY_DEGHOST_INTERVAL;  // force full on first
 
 // Selects the window mode for the next page loop. Returns true if this update
 // will be a full (flashing) refresh.
-static bool beginPanelUpdate(bool forceFull)
+//
+// `allowDeghost` false means "not on this frame". The de-ghost is 2.6s of
+// black/white flashing, and where it lands decides how the device FEELS. It
+// used to be able to land on a browse title, so roughly one press in six
+// answered with a long flash instead of a name -- the single largest source of
+// the "not predictable" feel while paging. The budget is not forgiven, only
+// deferred: the counter keeps climbing and the next content render pays it,
+// which is the frame the user is already waiting on.
+static bool beginPanelUpdate(bool forceFull, bool allowDeghost = true)
 {
-    const bool full = forceFull || (g_updatesSinceFull >= WATCHY_DEGHOST_INTERVAL);
+    const bool full = forceFull ||
+                      (allowDeghost && g_updatesSinceFull >= WATCHY_DEGHOST_INTERVAL);
     if (full) {
         g_display.setFullWindow();
         g_updatesSinceFull = 0;
@@ -627,11 +636,18 @@ static void drawCornerIndicator(Corner c, bool filled)
     int x = (c == CORNER_TL || c == CORNER_BL) ? 0 : W - S;
     int y = (c == CORNER_TL || c == CORNER_TR) ? 0 : H - S;
 
-    // Counts toward the de-ghost budget: this is a fast waveform on real pixels
-    // and it ghosts like any other. Not routed through beginPanelUpdate()
-    // because that would promote an indicator to a full-screen flash when the
-    // budget happens to expire on a button press.
-    g_updatesSinceFull++;
+    // Deliberately does NOT charge the de-ghost budget, and is not routed
+    // through beginPanelUpdate() (which would promote a 26x26 acknowledgement
+    // into a full-screen flash whenever the budget happened to expire on a
+    // button press).
+    //
+    // It used to charge two units per press, one for the fill and one for the
+    // clear. That is a third of a 24-update budget spent on 1.7% of the panel,
+    // and measured over a browsing session it was half of all the budget
+    // consumed -- pulling the flashing refresh in to every fifth or sixth
+    // press. The residue it does leave is in one corner and cannot outlive the
+    // next full-screen frame, which every path that draws an indicator is
+    // about to perform anyway.
     g_display.setPartialWindow(x, y, S, S);
     g_display.firstPage();
     do {
@@ -648,7 +664,9 @@ static void drawCornerIndicator(Corner c, bool filled)
 static void showScriptName(const char* name)
 {
     const int W = g_display.width();
-    beginPanelUpdate(false);   // fast partial: announcing a switch must not flash
+    // Never flashes: a title is transient and is the worst possible frame to
+    // spend 2.6s of de-ghosting on. The debt carries to the next render.
+    beginPanelUpdate(false, /*allowDeghost=*/false);
     g_display.firstPage();
     do {
         g_display.fillScreen(GxEPD_WHITE);
