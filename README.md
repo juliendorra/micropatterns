@@ -22,7 +22,7 @@ It includes:
 Micropatterns allows you to define simple rules and use environment variables (time, counter) to generate evolving abstract or representational pixel art. Its key features include:
 
 *   **Simplicity:** Easy-to-understand keywords and syntax.
-*   **Integer Math:** Optimized for resource-constrained devices.
+*   **Integer Math:** No floating point in the language, and none left in the renderer's scanline loops either. Optimized for resource-constrained devices.
 *   **State Machine:** Drawing state (color, transforms, fill pattern) is set sequentially.
 *   **E-ink Friendly:** Focus on monochrome output and pattern fills.
 *   **Generative:** Uses time (`$HOUR`, `$MINUTE`, `$SECOND`) and a `$COUNTER` for variation.
@@ -51,7 +51,15 @@ Micropatterns is a mini-language designed for creating generative pixel art, pri
     *   `$COUNTER` (Increments each run, starts at 0)
     *   `$WIDTH` (Display width, e.g., 200)
    *   `$HEIGHT` (Display height, e.g., 200)
-2.  **Integer Math:** All coordinates, parameters, and calculations use integers. Division truncates towards zero.
+2.  **Integer Math:** All coordinates, parameters, and calculations use integers. Division truncates towards zero. A script cannot produce, store or observe a fractional value.
+
+    This is a statement about the **language**, and it is worth being precise about what it does and does not cover, because the two are easy to conflate:
+
+    *   **The language is integer.** Every operand, every `LET`, every parameter.
+    *   **The renderer's arithmetic is largely integer too**, since 2026-09-03: rotation is a 360-entry table of exact integers, the cumulative angle is an integer, and the scanline loops that fill shapes and patterns are `int32` add and shift -- no `sinf`, no per-pixel float multiply, no float-to-int conversion. Float has not vanished entirely: `LINE` and `CIRCLE` transform their endpoints in float before handing off to integer Bresenham, `FILL_PIXEL` transforms each pixel because each one is its own display-list item, and a filled circle computes one `sqrtf` per scanline. All of those are per-item or per-row, not per-pixel.
+    *   **The quantities the renderer computes are still fractional, because the geometry is.** "Which pattern cell does the centre of screen pixel (37, 40) fall in, under a rotation of 23 degrees?" has a fractional answer no matter how the language is specified. The renderer represents those fractions as scaled integers (Q16.16) rather than as floats.
+
+    So "integer math" is a promise about what you can write, not a claim that the renderer never encounters a fraction. See `docs/analysis/is-q16-16-integer-math.md`, which also shows that a *fully* exact integer renderer is possible here — the sine table makes every per-pixel step an exact rational — and what it would cost.
 3.  **State Machine:** Commands like `COLOR`, `TRANSLATE`, `ROTATE`, `SCALE`, `FILL` modify the drawing state for subsequent commands.
 4.  **Case Sensitivity:**
    *   Keywords (e.g., `COLOR`, `PIXEL`, `DEFINE`, `PATTERN`, `FILL`, `DRAW`) and parameter names (e.g., `X=`, `NAME=`) are **case-insensitive**.
@@ -184,7 +192,7 @@ does on every script sync — see
    ```micropatterns
    ROTATE DEGREES=d
    ```
-   *   Applies an additional rotation of `d` degrees *cumulatively* to the current transformation state, around the current origin. `d` is an integer (0-359, wraps around). Because the operand can only ever be a whole number of degrees, the sine is a lookup in a 360-entry Q15 table covering the entire input domain -- one entry per degree, nothing interpolated -- rather than a call to `sinf`. The cumulative rotation is carried as an integer angle and the matrix rebuilt from it, so repeated `ROTATE` cannot accumulate error. The matrix the table feeds is still float.
+   *   Applies an additional rotation of `d` degrees *cumulatively* to the current transformation state, around the current origin. `d` is an integer (0-359, wraps around). Because the operand can only ever be a whole number of degrees, the sine is a lookup in a 360-entry table covering the entire input domain -- one entry per degree, nothing interpolated -- rather than a call to `sinf`, and the cumulative rotation is carried as an integer angle so repeated `ROTATE` cannot accumulate error. See `docs/measurements/2026-09-03-sine-table.md`.
 
 *   **Scale:**
    ```micropatterns
