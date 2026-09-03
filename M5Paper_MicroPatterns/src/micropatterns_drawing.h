@@ -51,11 +51,34 @@ public:
     int occStride() const { return _occStride; }
 private:
     bool _usePixelOccupationMap;
+    bool _fixedPointEnabled = true;
     unsigned int _overdrawSkippedPixels; // For stats
+
+    // Pixels emitted through a fixed-point inner loop this render.
+    //
+    // This exists to make the equivalence gate falsifiable. When the Q16.16
+    // path was first compared against the float path it reported 21/21
+    // identical -- which is also exactly what a fixed path that silently never
+    // executed would report. Proving otherwise took deliberately corrupting the
+    // fixed loops to watch the comparison fail. A gate that cannot fail is not
+    // a gate, and "go and sabotage it" is not a procedure anyone will repeat.
+    //
+    // So the renderer now says how much work the fast path actually did, and
+    // `compare-paths` refuses to pass a fixed path that did none. Accumulated
+    // per SPAN, never per pixel, so it costs nothing in the loop it measures.
+    unsigned long _fixedPointPixels = 0;
 
     void initPixelOccupationMap(); // Initialize map if needed
 
 public: // Made public for DisplayListRenderer
+    // Selects the Q16.16 fixed-point inner loops and the screen-space circle
+    // span. ON by default since 2026-09-03: measured 15-42% faster per
+    // operation on a Watchy, with its own golden set. Setting it false selects
+    // the original float rasteriser, which is kept selectable and gated rather
+    // than deleted -- see docs/measurements/2026-09-03-fixed-point-rasteriser.md.
+    void setFixedPointEnabled(bool enable) { _fixedPointEnabled = enable; }
+    bool fixedPointEnabled() const { return _fixedPointEnabled; }
+
     void enablePixelOccupationMap(bool enable);
     void resetPixelOccupationMap(); // Clears the map
     // Defined inline: rawPixel() calls both per pixel, and out-of-line these were
@@ -75,6 +98,7 @@ public: // Made public for DisplayListRenderer
         _pixelOccupationMap[(size_t)sy * _occStride + (sx >> 3)] |= (uint8_t)(1u << (sx & 7));
     }
     unsigned int getOverdrawSkippedPixelsCount() const { return _overdrawSkippedPixels; }
+    unsigned long getFixedPointPixels() const { return _fixedPointPixels; }
 
 
     // Transformation helpers using float math and matrices, now use DisplayListItem's state

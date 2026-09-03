@@ -588,6 +588,7 @@ int main(int argc, char** argv) {
         printf("PATH EQUIVALENCE: %s vs %s\n", A->name(), B->name());
         printf("(This is the \"All path gives same result\" gate, in C++.)\n\n");
         int pass = 0, fail = 0;
+        unsigned long fxA = 0, fxB = 0;
         for (const std::string& sp : listCorpus(o.corpus)) {
             std::string script;
             if (!readTextFile(sp, script)) continue;
@@ -597,6 +598,8 @@ int main(int argc, char** argv) {
                 B->run(script, o.width, o.height, kSeeds[si].seed, rb);
                 std::string caseName = baseNoExt(sp) + "__" + kSeeds[si].tag;
                 if (!ra.ok || !rb.ok) { printf("  FAIL  %-34s render error\n", caseName.c_str()); fail++; continue; }
+                fxA += ra.counters.fixedPointPixels;
+                fxB += rb.counters.fixedPointPixels;
                 int fx, fy;
                 int nd = diffImages(ra.image, rb.image, nullptr, fx, fy);
                 if (nd == 0) { printf("  SAME  %-34s\n", caseName.c_str()); pass++; }
@@ -604,6 +607,45 @@ int main(int argc, char** argv) {
             }
         }
         printf("\n%d identical, %d differing\n", pass, fail);
+
+        // The gate on the gate.
+        //
+        // "N identical" is the answer a correct fast path gives AND the answer
+        // a fast path that never executed gives. The first time these two were
+        // compared it printed 21/21 identical, and establishing which of those
+        // two worlds we were in required deliberately corrupting the fixed
+        // loops until the comparison failed. Nobody will repeat that, so the
+        // renderer now reports how many pixels each path actually pushed
+        // through a fixed-point loop, and a path that advertises fixed point
+        // and reports zero fails here instead of passing.
+        printf("fixed-point pixels: %s=%lu  %s=%lu\n", A->name(), fxA, B->name(), fxB);
+        // Enforced in BOTH directions. A path named "*-float" must do no
+        // fixed-point work; every other path must do some. The second half
+        // catches a fast path that silently fell back -- the failure this gate
+        // was built for. The first half catches the reverse, a "float"
+        // reference that is quietly running the code it is supposed to be the
+        // reference FOR, which would make the comparison equally vacuous while
+        // looking even more convincing.
+        //
+        // Assumes the corpus contains at least one patterned fill or DRAW. The
+        // committed corpus does (artdeco_default, city, prims, bounds); a
+        // corpus of nothing but lines and outlines would trip this legitimately.
+        auto isFloatPath = [](const char* n) { return std::string(n).find("float") != std::string::npos; };
+        struct Check { const char* nm; unsigned long fx; };
+        const Check checks[2] = { { A->name(), fxA }, { B->name(), fxB } };
+        for (const Check& c : checks) {
+            if (isFloatPath(c.nm) && c.fx != 0) {
+                printf("\nFAIL: path \"%s\" is the float reference but executed %lu fixed-point pixels.\n"
+                       "      It is not a reference for anything. Comparison is vacuous.\n", c.nm, c.fx);
+                return 1;
+            }
+            if (!isFloatPath(c.nm) && c.fx == 0) {
+                printf("\nFAIL: path \"%s\" executed NO fixed-point pixels.\n"
+                       "      Either it silently fell back, or this corpus contains no\n"
+                       "      patterned fill and no DRAW. Comparison is vacuous either way.\n", c.nm);
+                return 1;
+            }
+        }
         return fail ? 1 : 0;
     }
 

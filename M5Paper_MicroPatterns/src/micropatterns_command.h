@@ -67,8 +67,21 @@ struct MicroPatternsState {
     // Absolute scale factor, applied BEFORE the matrix transformation.
     float scale = 1.0f;
 
-    // Affine transformation matrix representing cumulative TRANSLATE and ROTATE operations.
-    // Applied AFTER 'scale'.
+    // The transform is only ever built from TRANSLATE and ROTATE -- SCALE sets
+    // the separate integer 'scale' above and never touches it -- so it is always
+    // a RIGID transform, and (angleDeg, tx, ty) is its exact and complete state.
+    //
+    // Carrying the angle rather than accumulating rotation matrices is what
+    // keeps the Q15 table from drifting: composing R matrices multiplies a
+    // (1 +/- 6e-5) scale error once per ROTATE, which measured 6.6e-3 over a
+    // 109-rotation script. Adding whole degrees cannot drift at all.
+    // See docs/measurements/2026-09-03-sine-table.md.
+    int32_t angleDeg = 0;   // cumulative rotation, always normalised to [0,360)
+    float tx = 0.0f, ty = 0.0f;
+
+    // Derived from (angleDeg, tx, ty) on every transform command, and the only
+    // form the rasteriser reads. Kept as matrices so the per-pixel hot loop is
+    // untouched by any of the above.
     // Format: [m0, m1, m2, m3, m4, m5] => | m0 m2 m4 |
     //                                     | m1 m3 m5 |
     //                                     |  0  0  1 |
@@ -76,6 +89,7 @@ struct MicroPatternsState {
     float matrix[6];
 
     // Inverse of 'matrix'. Used for transforming screen coordinates back.
+    // A rigid matrix inverts by transposition, so this costs no division.
     float inverseMatrix[6];
 
     MicroPatternsState() : color(15), fillAsset(nullptr), scale(1.0f) {

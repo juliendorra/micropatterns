@@ -78,6 +78,14 @@ Micropatterns is a mini-language designed for creating generative pixel art, pri
 *   `$HEIGHT`: Display height in pixels
 *   *(Note: Access is case-insensitive, e.g., `$hour` works but resolves to the value of `$HOUR`)*
 
+`$HOUR`, `$MINUTE` and `$SECOND` are **local time on the device**. Its timezone
+is set from the editor's *Setup Your Device* block, which defaults to the
+timezone of the browser doing the setup and sends the zone's daylight-saving
+rules along with its offset. A device that has never been given one runs on
+UTC+1. The switch is applied whenever the device next syncs its clock, which it
+does on every script sync — see
+`docs/analysis/device-provisioning-design.md`.
+
 ### Variables
 
 *   **Declaration & Optional Initialization:**
@@ -176,7 +184,7 @@ Micropatterns is a mini-language designed for creating generative pixel art, pri
    ```micropatterns
    ROTATE DEGREES=d
    ```
-   *   Applies an additional rotation of `d` degrees *cumulatively* to the current transformation state, around the current origin. `d` is an integer (0-359, wraps around). Uses integer math internally (e.g., precomputed sin/cos tables).
+   *   Applies an additional rotation of `d` degrees *cumulatively* to the current transformation state, around the current origin. `d` is an integer (0-359, wraps around). Because the operand can only ever be a whole number of degrees, the sine is a lookup in a 360-entry Q15 table covering the entire input domain -- one entry per degree, nothing interpolated -- rather than a call to `sinf`. The cumulative rotation is carried as an integer angle and the matrix rebuilt from it, so repeated `ROTATE` cannot accumulate error. The matrix the table feeds is still float.
 
 *   **Scale:**
    ```micropatterns

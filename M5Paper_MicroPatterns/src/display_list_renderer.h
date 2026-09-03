@@ -47,6 +47,18 @@ public:
     // check what that costs -- the comment there claims "speed, not
     // correctness", and this is how that claim gets tested rather than trusted.
     void setOccupancyMapEnabled(bool on) { _occupancyMapEnabled = on; }
+
+    // Q16.16 fixed-point pattern-fill coordinates and the screen-space circle
+    // span. ON by default. Setting it false gives the original float
+    // rasteriser, kept selectable so `compare-paths displaylist
+    // displaylist-float` can still measure the distance between the two --
+    // the practice commit d427b02 established.
+    void setFixedPointEnabled(bool on) { _fixedPointEnabled = on; }
+
+    // How many pixels the last render emitted through a fixed-point inner loop.
+    // Zero from a path that claims to be fixed-point means it never ran; see
+    // micropatterns_drawing.h for why this is a gate and not a statistic.
+    unsigned long getFixedPointPixels() const { return _drawing.getFixedPointPixels(); }
     // Pixels the drawing layer skipped because the pixel-occupation map said
     // they were already covered. Already tracked by MicroPatternsDrawing and
     // already logged by render(); this getter just exposes it to callers
@@ -72,6 +84,7 @@ private:
     int _culledByOcclusion; // Items culled by occlusion buffer
     bool _occlusionEnabled = true;
     bool _occupancyMapEnabled = true;
+    bool _fixedPointEnabled = true;
     bool _usedOccupancyMapLastRender = false;
 
     std::function<bool()> _interrupt_check_cb;

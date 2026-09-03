@@ -85,11 +85,14 @@ public:
     // back before running -- the exact path a device takes when it renders a
     // program stored at sync time. It must be byte-identical to the direct
     // path; `compare-paths displaylist compiled` is what checks that.
-    explicit DisplayListPath(bool occlusion = true, bool occupancyMap = true, bool roundtrip = false)
+    explicit DisplayListPath(bool occlusion = true, bool occupancyMap = true, bool roundtrip = false,
+                             bool fixedPoint = true)
         : _occlusion(occlusion), _occupancyMap(occupancyMap), _roundtrip(roundtrip),
-          _name(roundtrip ? "compiled"
-                          : (!occupancyMap ? "displaylist-nomap"
-                                           : (occlusion ? "displaylist" : "displaylist-noocc"))) {}
+          _fixedPoint(fixedPoint),
+          _name(!fixedPoint ? "displaylist-float"
+                            : (roundtrip ? "compiled"
+                               : (!occupancyMap ? "displaylist-nomap"
+                                                : (occlusion ? "displaylist" : "displaylist-noocc")))) {}
 
     const char* name() const override { return _name; }
 
@@ -237,6 +240,7 @@ public:
 #endif
         renderer.setOcclusionEnabled(_occlusion);
         renderer.setOccupancyMapEnabled(_occupancyMap);
+        renderer.setFixedPointEnabled(_fixedPoint);
 #if MP_DEVICE_CONSTRAINTS
         mpDeviceSetPhase(MpAllocationPhase::Rasterize);
 #endif
@@ -254,6 +258,7 @@ public:
         out.counters.culledByOcclusion = renderer.getCulledByOcclusion();
         out.counters.overdrawSkippedPixels = renderer.getOverdrawSkippedPixels();
         out.counters.occupancyMapUsed = renderer.usedOccupancyMapLastRender();
+        out.counters.fixedPointPixels = renderer.getFixedPointPixels();
 
 #if MP_DEVICE_CONSTRAINTS
         // The gray browser output is not a device framebuffer. Allocate it from
@@ -408,6 +413,7 @@ private:
 #endif
         renderer.setOcclusionEnabled(_occlusion);
         renderer.setOccupancyMapEnabled(_occupancyMap);
+        renderer.setFixedPointEnabled(_fixedPoint);
 #if MP_DEVICE_CONSTRAINTS
         mpDeviceSetPhase(MpAllocationPhase::Rasterize);
 #endif
@@ -424,6 +430,7 @@ private:
         out.counters.culledByOcclusion = renderer.getCulledByOcclusion();
         out.counters.overdrawSkippedPixels = renderer.getOverdrawSkippedPixels();
         out.counters.occupancyMapUsed = renderer.usedOccupancyMapLastRender();
+        out.counters.fixedPointPixels = renderer.getFixedPointPixels();
 #if MP_DEVICE_CONSTRAINTS
         mpDeviceSetAllocationActive(false);
         mpDeviceSetPhase(MpAllocationPhase::Output);
@@ -447,6 +454,7 @@ private:
     bool _occlusion;
     bool _occupancyMap;
     bool _roundtrip;
+    bool _fixedPoint;
     const char* _name;
 };
 
@@ -470,9 +478,18 @@ std::unique_ptr<RenderPath> makeRenderPath(const std::string& name) {
     if (name == "displaylist-nomap") return std::unique_ptr<RenderPath>(new DisplayListPath(true, false));
     // The device path: compile, serialize, deserialize, run.
     if (name == "compiled") return std::unique_ptr<RenderPath>(new DisplayListPath(true, true, true));
+    // The original float rasteriser. Kept selectable, not deleted: it is the
+    // reference the fixed path is measured against, and this project's practice
+    // is that a superseded implementation stays runnable so the comparison can
+    // be re-made later. `compare-paths displaylist displaylist-float` isolates
+    // exactly one change.
+    if (name == "displaylist-float") return std::unique_ptr<RenderPath>(new DisplayListPath(true, true, false, false));
+    // Accepted as an alias so older commands and docs keep working; the default
+    // path IS the fixed one now.
+    if (name == "displaylist-fixed") return std::unique_ptr<RenderPath>(new DisplayListPath(true, true, false, true));
     return nullptr;
 }
 
 std::vector<std::string> availableRenderPaths() {
-    return {"displaylist", "displaylist-noocc", "displaylist-nomap", "compiled"};
+    return {"displaylist", "displaylist-float", "displaylist-noocc", "displaylist-nomap", "compiled"};
 }

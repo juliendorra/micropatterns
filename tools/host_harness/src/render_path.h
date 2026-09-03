@@ -49,6 +49,10 @@ struct RenderCounters {
     int culledByOcclusion = 0;
     unsigned int overdrawSkippedPixels = 0; // pixels skipped by the occupancy map
     bool occupancyMapUsed = false;
+    // Pixels emitted through a fixed-point inner loop. A path advertising
+    // fixed point that reports 0 here did not actually run it -- see
+    // compare-paths, which treats that as a failure rather than a pass.
+    unsigned long fixedPointPixels = 0;
     // Honest label: this is "pixels whose final value differs from white",
     // derived by scanning the canvas. It is NOT a count of rawPixel() calls --
     // the drawing layer does not track that. Use it as a coverage proxy only.

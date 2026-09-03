@@ -134,14 +134,13 @@ ScreenBounds DisplayListRenderer::calculateScreenBounds(const DisplayListItem& i
         int lr = item.radius();
         if (lr > 0) {
             transformItemPoint(lcx, lcy, s_center_x_for_circle, s_center_y_for_circle);
-            float s_edge_on_x_axis_x, s_edge_on_x_axis_y;
-            transformItemPoint(lcx + lr, lcy, s_edge_on_x_axis_x, s_edge_on_x_axis_y);
-            float s_edge_on_y_axis_x, s_edge_on_y_axis_y;
-            transformItemPoint(lcx, lcy + lr, s_edge_on_y_axis_x, s_edge_on_y_axis_y);
-            
-            float radius_proj_x = std::hypot(s_edge_on_x_axis_x - s_center_x_for_circle, s_edge_on_x_axis_y - s_center_y_for_circle);
-            float radius_proj_y = std::hypot(s_edge_on_y_axis_x - s_center_x_for_circle, s_edge_on_y_axis_y - s_center_y_for_circle);
-            effective_radius_for_circle = std::max({radius_proj_x, radius_proj_y, 1.0f});
+
+            // Was two transformItemPoint calls plus two std::hypot to measure
+            // the transformed radius. The transform matrix is rigid -- SCALE
+            // lives in the separate scale factor and never enters it -- so its
+            // columns are unit vectors and both hypots returned scale*lr to
+            // within 1.5e-5. This is the same exact answer without the roots.
+            effective_radius_for_circle = std::max(static_cast<float>(lr) * item.xf->scale, 1.0f);
 
             unclippedVisualMinX = s_center_x_for_circle - effective_radius_for_circle;
             unclippedVisualMaxX = s_center_x_for_circle + effective_radius_for_circle;
@@ -156,6 +155,25 @@ ScreenBounds DisplayListRenderer::calculateScreenBounds(const DisplayListItem& i
         bounds.markingBounds = {0,0,0,0};
         return bounds;
     }
+
+    // A LINE has no area, so an axis-aligned one has an AABB of exactly zero
+    // thickness. After the floor/ceil below that made minY == maxY, which the
+    // "clipped away to nothing" test then read as off-screen and culled -- so
+    // every horizontal or vertical LINE drew NOTHING. Measured on a 400px line:
+    // ROTATE 0, 90 and 180 rendered 0 pixels; ROTATE 1, 89 and 91 rendered all
+    // 401. rawLine paints a one-pixel-thick run of pixels, so a degenerate
+    // dimension gets the half pixel on each side that the rasteriser will
+    // actually touch. Widening is safe for occlusion: marking reads the exact
+    // occupancy bitmap, and these bounds only delimit the region it scans.
+    auto ensureOnePixelThick = [](float& lo, float& hi) {
+        if (hi - lo < 1.0f) {
+            const float mid = 0.5f * (lo + hi);
+            lo = mid - 0.5f;
+            hi = mid + 0.5f;
+        }
+    };
+    ensureOnePixelThick(unclippedVisualMinX, unclippedVisualMaxX);
+    ensureOnePixelThick(unclippedVisualMinY, unclippedVisualMaxY);
 
     bounds.isOffScreen = (unclippedVisualMaxX <= 0 || unclippedVisualMinX >= _canvasWidth ||
                            unclippedVisualMaxY <= 0 || unclippedVisualMinY >= _canvasHeight);
@@ -226,6 +244,7 @@ void DisplayListRenderer::render(const std::vector<DisplayListItem>& displayList
     _culledByOcclusion = 0;
     
     _drawing.enablePixelOccupationMap(_occupancyMapEnabled); // Enable for this render pass
+    _drawing.setFixedPointEnabled(_fixedPointEnabled);
     _occlusionBuffer.reset(); // Reset occlusion buffer state
     _drawing.clearCanvas();   // Clear canvas to white (this will also call _drawing.resetPixelOccupationMap())
 

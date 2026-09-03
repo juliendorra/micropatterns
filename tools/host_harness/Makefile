@@ -59,7 +59,7 @@ OBJS         := $(CORE_OBJS) $(HARNESS_OBJS)
 
 BIN := $(BUILD)/mpharness
 
-.PHONY: all clean verify bench bake list profile policy
+.PHONY: all clean verify bench bake list profile policy verify-float bake-float compare-float
 
 all: $(BIN) $(BUILD)/mppolicy
 
@@ -82,6 +82,28 @@ list: $(BIN)
 
 verify: $(BIN) policy
 	$(BIN) verify --corpus corpus --golden golden
+
+# The superseded FLOAT rasteriser keeps its own goldens, in golden-float/. It is
+# not byte-identical to the default fixed path and cannot be -- Q16.16 quantises
+# a coordinate to 1/65536, so wherever a float value sits closer than that to an
+# integer the two floors disagree. One shared golden set would force a choice
+# between declaring one of the two renderers broken and leaving the other
+# ungated. Two sets pin both independently, which is what keeps the float path a
+# usable reference rather than dead code.
+verify-float: $(BIN)
+	$(BIN) verify --corpus corpus --golden golden-float --path displaylist-float
+
+bake-float: $(BIN)
+	$(BIN) bake --corpus corpus --golden golden-float --path displaylist-float
+
+# Reports HOW MUCH the two renderers differ. It exits non-zero whenever they
+# differ at all -- which they DO, by 34 px on artdeco_default -- so this is a
+# report to read, not a gate to keep green. Deliberately NOT in `ci`.
+# It also fails if the fast path did no fixed-point work, or if the float
+# reference did any: either makes the comparison vacuous, which is a real
+# failure rather than a difference.
+compare-float: $(BIN)
+	$(BIN) compare-paths displaylist displaylist-float --corpus corpus --golden golden
 
 # The browse and refresh policy, off-device. Pure logic with an injected clock,
 # so the timing rules that used to be tuned against a panel by hand are pinned
@@ -213,7 +235,7 @@ verify-emulator-wasm: wasm wasm-constrained
 
 # Required pre-deploy gate. The longer generated lifetime soak remains a
 # scheduled/manual CI job; these checks are deterministic and run on every push.
-ci: verify audit-sweep sanitize verify-strict verify-source-parity \
+ci: verify verify-float audit-sweep sanitize verify-strict verify-source-parity \
 	verify-wasm verify-language-wasm verify-device-diagnostics \
 	verify-wasm-constrained verify-emulator-wasm
 

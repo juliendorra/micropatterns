@@ -4,7 +4,7 @@
 #endif
 #include "micropatterns_drawing.h"
 #include "micropatterns_drawing.h"
-#include <cmath> // For round, floor, ceil, sinf, cosf, fabs, sqrtf
+#include <cmath> // For floor, ceil, fabs -- no trigonometry: ROTATE uses the table in matrix_utils.cpp
 #include <algorithm> // For std::min, std::max
 #include <cstring>   // For memcpy
 #include <cstdint>
@@ -40,6 +40,43 @@ inline int ifloor_i(float v) {
     int i = static_cast<int>(v);
     return i - (v < static_cast<float>(i));
 }
+
+
+// --- Q16.16 fixed point ----------------------------------------------------
+//
+// A pattern coordinate along a scanline is affine in x:  b(x+1) = b(x) + d,
+// with d constant for the whole row. In float that recurrence is not usable --
+// repeated addition drifts -- so the float loops below recompute im*x + c from
+// scratch at every pixel: a multiply, two adds, a reciprocal multiply and a
+// float->int conversion, per axis. In Q16.16 the recurrence IS usable, because
+// integer addition is exact, and `>> 16` is an exact floor for negatives too,
+// so the conversion disappears with it. Two adds and two shifts replace all of
+// that.
+//
+// This is the one place where fixed point is not merely "integer instead of
+// float" but a different and cheaper algorithm. It is also why the argument
+// "the ESP32 has an FPU so fixed point cannot win" does not settle the
+// question: the win on offer is not a faster multiply, it is not multiplying.
+//
+// RANGE. Q16.16 in an int32 spans +/-32768. Pattern coordinates are screen
+// coordinates pushed through the inverse transform and divided by the integer
+// SCALE, so in practice they sit within a few thousand -- but a script may
+// TRANSLATE by any int32, which puts the visible span arbitrarily far from the
+// logical origin. Every scanline therefore range-checks BOTH ends of its span
+// before committing and falls back to the float loop when they do not fit.
+// Silent wraparound would show up as a wrong pattern phase rather than a
+// crash, which is precisely the kind of bug that survives a golden gate on a
+// corpus that never translates that far.
+static const int   MP_FX_SHIFT = 16;
+static const float MP_FX_ONE   = 65536.0f;
+static const float MP_FX_LIMIT = 32000.0f;   // margin under 32768
+
+inline bool fxFits(float v) { return v > -MP_FX_LIMIT && v < MP_FX_LIMIT; }
+
+// lrintf, not a cast: the start value is a pixel centre, and truncation toward
+// zero would bias it by up to one ulp on the negative side of the origin only
+// -- an asymmetry that would show as a one-pixel pattern seam at x = 0.
+inline int32_t fxFrom(float v) { return (int32_t)lrintf(v * MP_FX_ONE); }
 
 // --- Span narrowing -------------------------------------------------------
 //
@@ -171,6 +208,7 @@ void MicroPatternsDrawing::resetPixelOccupationMap() {
         std::fill(_pixelOccupationMap.begin(), _pixelOccupationMap.end(), 0);
     }
     _overdrawSkippedPixels = 0;
+    _fixedPointPixels = 0;
 }
 
 void MicroPatternsDrawing::clearCanvas() {
@@ -188,6 +226,18 @@ void MicroPatternsDrawing::transformPoint(float logical_x, float logical_y, cons
     float scaled_lx = logical_x * item.xf->scale;
     float scaled_ly = logical_y * item.xf->scale;
     matrix_apply_to_point(item.xf->matrix, scaled_lx, scaled_ly, screen_x, screen_y);
+}
+
+// Screen-space radius of a logical radius under the item's transform.
+//
+// The transform matrix is RIGID -- built only from TRANSLATE and ROTATE, since
+// SCALE lives in xf->scale and never enters the matrix -- so its columns are
+// unit vectors and a transformed radius keeps its length. The screen radius is
+// therefore exactly lr * scale: no sqrt, no hypot, and no sampling. A circle
+// under a rigid transform plus a uniform scale is still a circle, which is what
+// makes the exact answer this short.
+static inline float screenRadiusOf(int lr, const DisplayListItem& item) {
+    return static_cast<float>(lr) * item.xf->scale;
 }
 
 void MicroPatternsDrawing::screenToLogicalBase(float screen_x, float screen_y, const DisplayListItem& item, float& base_logical_x, float& base_logical_y) {
@@ -549,7 +599,26 @@ void MicroPatternsDrawing::fillRect(const DisplayListItem& item) {
             if ((long)py * patW + patW <= (long)patSize) patRow = patData + (size_t)py * patW;
         }
 
+        // The x-only recurrence, when the pattern ROW is already fixed.
+        const float invSf = (sf != 0.0f) ? (useRcp ? rcp : 1.0f / sf) : 1.0f;
+        const float bx0 = (im0 * (static_cast<float>(x0) + 0.5f) + m2y + im4) * invSf;
+        const float dbx = im0 * invSf;
+        const int   span = x1 - x0;
+
         if (patRow) {
+            if (_fixedPointEnabled &&
+                fxFits(bx0) && fxFits(bx0 + dbx * static_cast<float>(span - 1))) {
+                _fixedPointPixels += (unsigned long)span;
+                int32_t bx = fxFrom(bx0);
+                const int32_t dx = fxFrom(dbx);
+                for (int sx_iter = x0; sx_iter < x1; ++sx_iter) {
+                    int px = (int)(bx >> MP_FX_SHIFT) % patW;
+                    if (px < 0) px += patW;
+                    emitPixel(sx_iter, sy_iter, patRow[px] == 1 ? patOn : patOff, occRow, skipped);
+                    bx += dx;
+                }
+                continue;
+            }
             for (int sx_iter = x0; sx_iter < x1; ++sx_iter) {
                 float blx = im0 * (static_cast<float>(sx_iter) + 0.5f) + m2y + im4;
                 if (sf != 0.0f) blx = useRcp ? blx * rcp : blx / sf;
@@ -558,6 +627,31 @@ void MicroPatternsDrawing::fillRect(const DisplayListItem& item) {
                 emitPixel(sx_iter, sy_iter, patRow[px] == 1 ? patOn : patOff, occRow, skipped);
             }
             continue;
+        }
+
+        // Both axes vary: the rotated case, where the row hoist is impossible
+        // and the float path pays its full per-pixel cost twice over.
+        if (_fixedPointEnabled && patW > 0 && patH > 0 && patSize >= patW * patH) {
+            const float by0 = (im1 * (static_cast<float>(x0) + 0.5f) + m3y + im5) * invSf;
+            const float dby = im1 * invSf;
+            if (fxFits(bx0) && fxFits(by0) &&
+                fxFits(bx0 + dbx * static_cast<float>(span - 1)) &&
+                fxFits(by0 + dby * static_cast<float>(span - 1))) {
+                _fixedPointPixels += (unsigned long)span;
+                int32_t bx = fxFrom(bx0), by = fxFrom(by0);
+                const int32_t dx = fxFrom(dbx), dy = fxFrom(dby);
+                for (int sx_iter = x0; sx_iter < x1; ++sx_iter) {
+                    int px = (int)(bx >> MP_FX_SHIFT) % patW;
+                    if (px < 0) px += patW;
+                    int py = (int)(by >> MP_FX_SHIFT) % patH;
+                    if (py < 0) py += patH;
+                    emitPixel(sx_iter, sy_iter,
+                              patData[(size_t)py * patW + px] == 1 ? patOn : patOff,
+                              occRow, skipped);
+                    bx += dx; by += dy;
+                }
+                continue;
+            }
         }
 
         for (int sx_iter = x0; sx_iter < x1; ++sx_iter) {
@@ -585,9 +679,9 @@ void MicroPatternsDrawing::drawCircle(const DisplayListItem& item) {
     float scx_f, scy_f;
     transformPoint(static_cast<float>(lcx), static_cast<float>(lcy), item, scx_f, scy_f);
      
-    float mat_scale_x = sqrtf(item.xf->matrix[0]*item.xf->matrix[0] + item.xf->matrix[1]*item.xf->matrix[1]);
-    float mat_scale_y = sqrtf(item.xf->matrix[2]*item.xf->matrix[2] + item.xf->matrix[3]*item.xf->matrix[3]);
-    float screen_radius_approx = static_cast<float>(lr) * item.xf->scale * std::max(mat_scale_x, mat_scale_y);
+    // Was two sqrtf of the matrix column norms. Those columns are unit vectors
+    // -- the matrix is rigid -- so both roots computed 1.0 to within 1.5e-5.
+    float screen_radius_approx = screenRadiusOf(lr, item);
      
     int scx = static_cast<int>(round(scx_f));
     int scy = static_cast<int>(round(scy_f));
@@ -621,28 +715,27 @@ void MicroPatternsDrawing::fillCircle(const DisplayListItem& item) {
     if (lr <= 0) return;
 
     float logical_radius = static_cast<float>(lr);
-    float s_pts_x[8], s_pts_y[8];
-    transformPoint(static_cast<float>(lcx), static_cast<float>(lcy - logical_radius), item, s_pts_x[0], s_pts_y[0]);
-    transformPoint(static_cast<float>(lcx + logical_radius), static_cast<float>(lcy), item, s_pts_x[1], s_pts_y[1]);
-    transformPoint(static_cast<float>(lcx), static_cast<float>(lcy + logical_radius), item, s_pts_x[2], s_pts_y[2]);
-    transformPoint(static_cast<float>(lcx - logical_radius), static_cast<float>(lcy), item, s_pts_x[3], s_pts_y[3]);
-    float diag_offset = logical_radius * 0.7071f;
-    transformPoint(static_cast<float>(lcx + diag_offset), static_cast<float>(lcy - diag_offset), item, s_pts_x[4], s_pts_y[4]);
-    transformPoint(static_cast<float>(lcx + diag_offset), static_cast<float>(lcy + diag_offset), item, s_pts_x[5], s_pts_y[5]);
-    transformPoint(static_cast<float>(lcx - diag_offset), static_cast<float>(lcy + diag_offset), item, s_pts_x[6], s_pts_y[6]);
-    transformPoint(static_cast<float>(lcx - diag_offset), static_cast<float>(lcy - diag_offset), item, s_pts_x[7], s_pts_y[7]);
 
-    float min_sx_f = s_pts_x[0], max_sx_f = s_pts_x[0];
-    float min_sy_f = s_pts_y[0], max_sy_f = s_pts_y[0];
-    for(int i=1; i<8; ++i) {
-        min_sx_f = std::min(min_sx_f, s_pts_x[i]); max_sx_f = std::max(max_sx_f, s_pts_x[i]);
-        min_sy_f = std::min(min_sy_f, s_pts_y[i]); max_sy_f = std::max(max_sy_f, s_pts_y[i]);
-    }
+    // The bounding box is the centre plus the screen radius, on all four sides.
+    //
+    // This used to transform EIGHT points on the circle -- four cardinal, four
+    // diagonal via a 0.7071f offset -- and take their min/max. That is the AABB
+    // of an inscribed OCTAGON, not of the circle, and under rotation it
+    // undershoots by r*(1 - cos 22.5deg) = 7.6% of the radius. Measured on a
+    // radius-200 disk: correct at ROTATE 0 (400 px wide, 125,676 ink px) and
+    // clipped to 372 px / 120,132 px at ROTATE 22, losing 4.4% of its area and
+    // rendering as a disk with eight flat sides. drawCircle and the display-list
+    // bounds both already computed the extent the exact way; only this one
+    // sampled. The inside test below was always the exact disk test, so the
+    // whole bug lived in these bounds.
+    float scx_f, scy_f;
+    transformPoint(static_cast<float>(lcx), static_cast<float>(lcy), item, scx_f, scy_f);
+    const float screen_radius = screenRadiusOf(lr, item);
 
-    int min_sx = static_cast<int>(floor(min_sx_f));
-    int max_sx = static_cast<int>(ceil(max_sx_f));
-    int min_sy = static_cast<int>(floor(min_sy_f));
-    int max_sy = static_cast<int>(ceil(max_sy_f));
+    int min_sx = static_cast<int>(floor(scx_f - screen_radius));
+    int max_sx = static_cast<int>(ceil(scx_f + screen_radius));
+    int min_sy = static_cast<int>(floor(scy_f - screen_radius));
+    int max_sy = static_cast<int>(ceil(scy_f + screen_radius));
     
     min_sx = std::max(0, min_sx);
     min_sy = std::max(0, min_sy);
@@ -696,6 +789,88 @@ void MicroPatternsDrawing::fillCircle(const DisplayListItem& item) {
             const float v = im1 * (static_cast<float>(x) + 0.5f) + m3y + im5;
             return (sf == 0.0f) ? v : (useRcp ? v * rcp : v / sf);
         };
+
+        // --- The disk test, done in SCREEN space and hoisted out of the loop --
+        //
+        // The float path below inverse-transforms every pixel in the span for
+        // the sole purpose of asking "is this inside the circle?", then throws
+        // the coordinates away unless the fill is patterned. It does not have
+        // to. The transform is rigid and the scale uniform, so a circle maps to
+        // a CIRCLE: |base - centre| <= r is exactly |screen - Centre| <= r*sf,
+        // and that can be answered in screen space with no transform at all.
+        //
+        // Better still, it can be answered per SCANLINE instead of per pixel. A
+        // horizontal line across a circle enters and leaves exactly once, so a
+        // row's inside-pixels are one contiguous run whose half-width is
+        // sqrt(R^2 - dy^2) -- one square root per row, against a transform,
+        // two multiplies and a compare per pixel. The old span narrowing goes
+        // too: it bisected to a CONSERVATIVE span (|dx| <= r and |dy| <= r,
+        // necessary but not sufficient) and still tested every pixel inside it.
+        // This span is exact, so nothing inside it needs testing.
+        if (_fixedPointEnabled) {
+            const float dyc = (static_cast<float>(sy_iter) + 0.5f) - scy_f;
+            const float rr = screen_radius * screen_radius - dyc * dyc;
+            if (rr <= 0.0f) continue;
+            const float hw = sqrtf(rr);
+            // Pixel centres, so the bounds are on sx + 0.5.
+            int fx0 = (int)ceilf(scx_f - hw - 0.5f);
+            int fx1 = (int)floorf(scx_f + hw - 0.5f) + 1;
+            if (fx0 < min_sx) fx0 = min_sx;
+            if (fx1 > max_sx) fx1 = max_sx;
+            if (fx0 >= fx1) continue;
+
+            uint8_t* occRowF = occ ? occ + (size_t)sy_iter * _occStride : nullptr;
+
+            if (!patterned) {
+                _fixedPointPixels += (unsigned long)(fx1 - fx0);
+                for (int sx_iter = fx0; sx_iter < fx1; ++sx_iter) {
+                    emitPixel(sx_iter, sy_iter, flatColor, occRowF, skipped);
+                }
+                continue;
+            }
+
+            const int patW = fa->width, patH = fa->height;
+            const int patSize = (int)fa->data.size();
+            const uint8_t* patData = fa->data.data();
+            const uint8_t patOn  = (item.color == DRAWING_COLOR_WHITE) ? DRAWING_COLOR_WHITE : DRAWING_COLOR_BLACK;
+            const uint8_t patOff = (item.color == DRAWING_COLOR_WHITE) ? DRAWING_COLOR_BLACK : DRAWING_COLOR_WHITE;
+            if (patW > 0 && patH > 0 && patSize >= patW * patH) {
+                const float invSf = (sf != 0.0f) ? (useRcp ? rcp : 1.0f / sf) : 1.0f;
+                const float cbx0 = (im0 * (static_cast<float>(fx0) + 0.5f) + m2y + im4) * invSf;
+                const float cby0 = (im1 * (static_cast<float>(fx0) + 0.5f) + m3y + im5) * invSf;
+                const float cdbx = im0 * invSf, cdby = im1 * invSf;
+                const int cspan = fx1 - fx0;
+                if (fxFits(cbx0) && fxFits(cby0) &&
+                    fxFits(cbx0 + cdbx * static_cast<float>(cspan - 1)) &&
+                    fxFits(cby0 + cdby * static_cast<float>(cspan - 1))) {
+                    _fixedPointPixels += (unsigned long)cspan;
+                    int32_t bxq = fxFrom(cbx0), byq = fxFrom(cby0);
+                    const int32_t dbxq = fxFrom(cdbx), dbyq = fxFrom(cdby);
+                    for (int sx_iter = fx0; sx_iter < fx1; ++sx_iter) {
+                        int px = (int)(bxq >> MP_FX_SHIFT) % patW; if (px < 0) px += patW;
+                        int py = (int)(byq >> MP_FX_SHIFT) % patH; if (py < 0) py += patH;
+                        emitPixel(sx_iter, sy_iter,
+                                  patData[(size_t)py * patW + px] == 1 ? patOn : patOff,
+                                  occRowF, skipped);
+                        bxq += dbxq; byq += dbyq;
+                    }
+                    continue;
+                }
+            }
+            // Pattern unusable or out of Q16.16 range: keep the exact span, fall
+            // back to the float lookup inside it.
+            for (int sx_iter = fx0; sx_iter < fx1; ++sx_iter) {
+                const float fx = static_cast<float>(sx_iter) + 0.5f;
+                float bx = im0 * fx + m2y + im4;
+                float by = im1 * fx + m3y + im5;
+                if (sf != 0.0f) {
+                    if (useRcp) { bx *= rcp; by *= rcp; }
+                    else        { bx /= sf;  by /= sf;  }
+                }
+                emitPixel(sx_iter, sy_iter, fillColorFromBase(bx, by, item), occRowF, skipped);
+            }
+            continue;
+        }
 
         int x0 = min_sx, x1 = max_sx;
         narrowSpan(blx, flcx - logical_radius - 1.0f, flcx + logical_radius + 1.0f, x0, x1);
@@ -809,7 +984,28 @@ void MicroPatternsDrawing::drawAsset(const DisplayListItem& item, const MicroPat
             if (iy >= 0 && (long)iy * aw + aw <= (long)adata_size) assetRow = adata + (size_t)iy * aw;
         }
 
+        // Same Q16.16 recurrence as fillRect. Asset-local coordinates, so the
+        // origin is folded into the start value and never subtracted per pixel.
+        const float invSf = (sf != 0.0f) ? (useRcp ? rcp : 1.0f / sf) : 1.0f;
+        const float ax0 = (im0 * (static_cast<float>(x0) + 0.5f) + m2y + im4) * invSf - forigin_x;
+        const float dax = im0 * invSf;
+        const int   span = x1 - x0;
+
         if (assetRow) {
+            if (_fixedPointEnabled &&
+                fxFits(ax0) && fxFits(ax0 + dax * static_cast<float>(span - 1))) {
+                _fixedPointPixels += (unsigned long)span;
+                int32_t axq = fxFrom(ax0);
+                const int32_t daxq = fxFrom(dax);
+                for (int sx_iter = x0; sx_iter < x1; ++sx_iter) {
+                    const int ix = (int)(axq >> MP_FX_SHIFT);
+                    if (ix >= 0 && ix < aw && assetRow[ix] == 1) {
+                        emitPixel(sx_iter, sy_iter, color, occRow, skipped);
+                    }
+                    axq += daxq;
+                }
+                continue;
+            }
             for (int sx_iter = x0; sx_iter < x1; ++sx_iter) {
                 float blx = im0 * (static_cast<float>(sx_iter) + 0.5f) + m2y + im4;
                 if (sf != 0.0f) blx = useRcp ? blx * rcp : blx / sf;
@@ -819,6 +1015,26 @@ void MicroPatternsDrawing::drawAsset(const DisplayListItem& item, const MicroPat
                 }
             }
             continue;
+        }
+
+        if (_fixedPointEnabled) {
+            const float ay0 = (im1 * (static_cast<float>(x0) + 0.5f) + m3y + im5) * invSf - forigin_y;
+            const float day = im1 * invSf;
+            if (fxFits(ax0) && fxFits(ay0) &&
+                fxFits(ax0 + dax * static_cast<float>(span - 1)) &&
+                fxFits(ay0 + day * static_cast<float>(span - 1))) {
+                _fixedPointPixels += (unsigned long)span;
+                int32_t axq = fxFrom(ax0), ayq = fxFrom(ay0);
+                const int32_t daxq = fxFrom(dax), dayq = fxFrom(day);
+                for (int sx_iter = x0; sx_iter < x1; ++sx_iter) {
+                    const int idx = (int)(ayq >> MP_FX_SHIFT) * aw + (int)(axq >> MP_FX_SHIFT);
+                    if (idx >= 0 && idx < adata_size && adata[idx] == 1) {
+                        emitPixel(sx_iter, sy_iter, color, occRow, skipped);
+                    }
+                    axq += daxq; ayq += dayq;
+                }
+                continue;
+            }
         }
 
         for (int sx_iter = x0; sx_iter < x1; ++sx_iter) {

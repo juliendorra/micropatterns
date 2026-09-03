@@ -1,7 +1,7 @@
 #ifndef MATRIX_UTILS_H
 #define MATRIX_UTILS_H
 
-#include <cmath> // For sinf, cosf, sqrtf
+#include <cmath> // For fabs, lroundf
 #include <algorithm> // For std::min, std::max
 
 // Represents a 2D affine transformation matrix:
@@ -14,14 +14,6 @@
 // Sets M to an identity matrix
 void matrix_identity(float M[6]);
 
-// Multiplies A * B and stores in R. R = A * B.
-// R can be the same as A or B.
-void matrix_multiply(float R[6], const float A[6], const float B[6]);
-
-// Inverts M and stores in Inv. Returns false if not invertible.
-// Inv can be the same as M.
-bool matrix_invert(float Inv[6], const float M[6]);
-
 // Applies matrix M to point (x,y) -> (outx, outy)
 // Defined inline in the header on purpose: this is called once (often twice) per
 // rasterized pixel. With the firmware built without LTO, an out-of-line definition
@@ -33,13 +25,20 @@ inline void matrix_apply_to_point(const float M[6], float x, float y, float& out
     outy = M[1] * x + M[3] * y + M[5];
 }
 
-// Creates a translation matrix in M
-void matrix_make_translation(float M[6], float dx, float dy);
+// Sine of a whole number of degrees, from a 360-entry Q15 table rather than
+// sinf. Any integer is accepted; it is reduced modulo 360. See matrix_utils.cpp
+// for why 360 entries are the whole input domain rather than a sampling of it.
+float mp_sin_deg(int degrees);
 
-// Creates a rotation matrix in M (around 0,0) for angle in degrees
-void matrix_make_rotation(float M[6], float degrees);
-
-// Constant for converting degrees to radians
-const float DEG_TO_RAD_FLOAT = M_PI / 180.0f;
+// Builds BOTH the rigid transform for (degrees, tx, ty) and its inverse.
+//
+// There is no general matrix_multiply / matrix_invert pair here any more, and
+// that is the point. MicroPatterns' transform is only ever translations and
+// rotations, so the caller keeps (degrees, tx, ty) -- the exact state of a rigid
+// transform -- and rebuilds from it rather than composing matrices, which is
+// what stops the Q15 rotation table drifting under cumulative ROTATE. The
+// inverse comes from the transpose and a closed-form determinant, so there is
+// no 2x2 minor to compute and no singular case that can fail.
+void matrix_set_rigid(float M[6], float Inv[6], int degrees, float tx, float ty);
 
 #endif // MATRIX_UTILS_H

@@ -278,8 +278,16 @@ void MicroPatternsRuntime::generateDisplayList() {
                 }
                 ++pc;
                 continue;
+            // TRANSLATE and ROTATE update (angleDeg, tx, ty) -- the exact state of
+            // a rigid transform -- and rebuild both matrices from it. They do NOT
+            // compose matrices into the previous ones. Composing is what let the
+            // Q15 rotation table accumulate a scale error across a script; adding
+            // whole degrees cannot. See docs/measurements/2026-09-03-sine-table.md.
             case CMD_RESET_TRANSFORMS:
                 _currentState.scale = 1.0f;
+                _currentState.angleDeg = 0;
+                _currentState.tx = 0.0f;
+                _currentState.ty = 0.0f;
                 matrix_identity(_currentState.matrix);
                 matrix_identity(_currentState.inverseMatrix);
                 _xfDirty = true;
@@ -288,18 +296,28 @@ void MicroPatternsRuntime::generateDisplayList() {
             case CMD_TRANSLATE: {
                 const float dx = (float)resolve(in.op[0], in.line);
                 const float dy = (float)resolve(in.op[1], in.line);
-                float T_op[6]; matrix_make_translation(T_op, dx, dy);
-                matrix_multiply(_currentState.matrix, _currentState.matrix, T_op);
-                if (!matrix_invert(_currentState.inverseMatrix, _currentState.matrix)) { /* error */ }
+                // M' = M * T(d), so the offset moves by the CURRENT rotation
+                // applied to d. The angle is untouched.
+                const float s = mp_sin_deg(_currentState.angleDeg);
+                const float c = mp_sin_deg(_currentState.angleDeg + 90);
+                _currentState.tx += c * dx - s * dy;
+                _currentState.ty += s * dx + c * dy;
+                matrix_set_rigid(_currentState.matrix, _currentState.inverseMatrix,
+                                 _currentState.angleDeg, _currentState.tx, _currentState.ty);
                 _xfDirty = true;
                 ++pc;
                 continue;
             }
             case CMD_ROTATE: {
-                const float degrees = (float)resolve(in.op[0], in.line);
-                float R_op[6]; matrix_make_rotation(R_op, degrees);
-                matrix_multiply(_currentState.matrix, _currentState.matrix, R_op);
-                if (!matrix_invert(_currentState.inverseMatrix, _currentState.matrix)) { /* error */ }
+                // M' = M * R(d) = [R(angle + d) | t]: exact integer addition on
+                // the angle, offset unchanged. Reduce the operand first so a
+                // wild value from resolve() cannot overflow the sum.
+                const int32_t d = resolve(in.op[0], in.line) % 360;
+                int32_t a = (_currentState.angleDeg + d) % 360;
+                if (a < 0) a += 360;
+                _currentState.angleDeg = a;
+                matrix_set_rigid(_currentState.matrix, _currentState.inverseMatrix,
+                                 _currentState.angleDeg, _currentState.tx, _currentState.ty);
                 _xfDirty = true;
                 ++pc;
                 continue;
