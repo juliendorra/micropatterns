@@ -193,11 +193,16 @@ void DisplayManager::showMessage(const String &text, int y_offset, uint16_t colo
     _canvas.drawString(text, _canvasW / 2, y_offset);
     log_i("DisplayManager: Drawing message: \"%s\"", text.c_str());
 
-    if (xSemaphoreTake(_panelMutex, portMAX_DELAY) == pdTRUE)
-    {
-        _canvas.pushCanvas(0, 0, full_update ? UPDATE_MODE_GC16 : UPDATE_MODE_DU4);
-        xSemaphoreGive(_panelMutex);
-    }
+    // Goes through pushMainCanvasLocked rather than pushing here, because this
+    // path used to push a DU4 full-canvas frame WITHOUT counting it. Every title
+    // frame, every error banner shown this way, ghosted the panel for free: the
+    // budget only saw the banner and indicator pushes, so the periodic GC16
+    // de-ghost arrived later than SCRIPT_DEGHOST_INTERVAL intends, and on a
+    // device switching scripts by button it arrived much later. The Watchy has
+    // no equivalent hole -- its showScriptName() goes through beginPanelUpdate().
+    // pushMainCanvasLocked also gets the full_update case right: a whole-panel
+    // GC16 clears the residue, so it resets the counter instead of bumping it.
+    pushMainCanvasLocked(full_update ? UPDATE_MODE_GC16 : UPDATE_MODE_DU4);
 
     xSemaphoreGive(_canvasMutex);
 }

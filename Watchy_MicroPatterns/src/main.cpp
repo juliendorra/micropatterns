@@ -388,11 +388,18 @@ static bool renderScript(int index, ScriptExecState& state)
     // here, which is what used to fragment this heap. See mp_program.h.
     MpProgram program;
     String why;
+    // The reason as a value, not as prose. This used to test
+    // why.startsWith("Parse"), and the M5Paper had grown the same test on the
+    // same string in its own RenderTask -- two firmwares agreeing by spelling.
+    // They now switch on the one enum ScriptManager reports.
+    ScriptManager::LoadReason reason = ScriptManager::LoadReason::OK;
     unsigned long tLoad = millis();
-    if (!g_scriptManager->loadProgram(scr.fileId, program, &why)) {
+    if (!g_scriptManager->loadProgram(scr.fileId, program, &why, &reason)) {
         log_e("Could not load program for '%s' (fileId %s): %s",
               scr.humanId.c_str(), scr.fileId.c_str(), why.c_str());
-        showRenderError(scr.name.c_str(), why.startsWith("Parse") ? MP_MSG_PARSE_FAILED : MP_MSG_SCRIPT_MISSING);
+        showRenderError(scr.name.c_str(),
+                        reason == ScriptManager::LoadReason::COMPILE_FAILED ? MP_MSG_PARSE_FAILED
+                                                                            : MP_MSG_SCRIPT_MISSING);
         return false;
     }
     tLoad = millis() - tLoad;

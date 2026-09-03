@@ -78,10 +78,27 @@ struct RenderJobQueueItem {
     }
 };
 
+// Why a render came back unsuccessful.
+//
+// MainControlTask used to have only success/interrupted to go on, so it treated
+// every failure as worth retrying -- and a script whose content is missing or
+// whose source will not compile fails identically every time, so the retry
+// became an endless loop drawing two error banners per turn. The distinction
+// exists in RenderTask, which knows exactly why it could not get a program; it
+// just had nowhere to put it. error_message is prose for the log, not something
+// MainControlTask should be parsing to make a control decision.
+enum class RenderFailure : uint8_t {
+    NONE = 0,       // success, or interrupted by the user
+    TRANSIENT,      // display lock, storage busy: the next attempt may well work
+    SCRIPT_MISSING, // no source on the device for this fileId
+    COMPILE_FAILED  // the source is here and it does not parse
+};
+
 // Internal String-based version
 struct RenderResultData {
     bool success;
     bool interrupted;
+    RenderFailure failure = RenderFailure::NONE;
     String error_message;
     String script_id;
     ScriptExecState final_state;
@@ -91,6 +108,7 @@ struct RenderResultData {
 struct RenderResultQueueItem {
     bool success;
     bool interrupted;
+    RenderFailure failure = RenderFailure::NONE;
     char error_message[MAX_ERROR_MSG_LEN];
     char script_id[MAX_SCRIPT_ID_LEN];
     ScriptExecState final_state;
@@ -98,6 +116,7 @@ struct RenderResultQueueItem {
     void fromRenderResultData(const RenderResultData& rrd) {
         success = rrd.success;
         interrupted = rrd.interrupted;
+        failure = rrd.failure;
         strncpy(script_id, rrd.script_id.c_str(), MAX_SCRIPT_ID_LEN - 1);
         script_id[MAX_SCRIPT_ID_LEN - 1] = '\0';
         strncpy(error_message, rrd.error_message.c_str(), MAX_ERROR_MSG_LEN - 1);
@@ -109,6 +128,7 @@ struct RenderResultQueueItem {
         RenderResultData rrd;
         rrd.success = success;
         rrd.interrupted = interrupted;
+        rrd.failure = failure;
         rrd.script_id = String(script_id);
         rrd.error_message = String(error_message);
         rrd.final_state = final_state;

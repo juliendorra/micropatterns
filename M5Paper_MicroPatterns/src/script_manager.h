@@ -35,7 +35,22 @@ public:
     // content file), otherwise by compiling the source and storing the result
     // for next time. A render therefore parses at most once per source
     // change, and normally never.
-    bool loadProgram(const String &fileId, MpProgram &out, String *error = nullptr);
+    // Why a program could not be produced, as a value rather than as prose.
+    //
+    // Both firmwares have to decide whether a failure is worth retrying, and
+    // both were reading it back out of the human-readable `error` string with
+    // startsWith("Parse"). That works until someone rewords a message, and it
+    // is duplicated in two places that must agree. The reason is known exactly
+    // here; it just had nowhere to go.
+    enum class LoadReason : uint8_t {
+        OK = 0,
+        STORAGE_UNAVAILABLE, // not mounted, or the mutex was not free: try again
+        NO_SOURCE,           // nothing on flash for this fileId
+        COMPILE_FAILED,      // the source is here and it does not compile
+    };
+
+    bool loadProgram(const String &fileId, MpProgram &out, String *error = nullptr,
+                     LoadReason *reason = nullptr);
     // Compiles and stores if the stored program is missing or stale. Called
     // for every script at the end of a sync, after WiFi is down, so renders
     // find a fresh program waiting. `force` recompiles regardless.
@@ -78,9 +93,18 @@ public:
     bool selectNextScript(bool moveUp, String &outSelectedHumanId, String &outSelectedName);
 
     // Get Script for Execution
-    // Tries to load current script. If not found, tries first script. If none, uses default.
+    // Resolves requestedHumanId when one is given, otherwise the stored current
+    // script. If that is not in the list, tries the first script. If none, uses default.
     // Returns humanId, fileId (for content loading), and initialState. Content is loaded by RenderTask.
-    bool getScriptForExecution(String &outHumanId, String &outFileId, ScriptExecState &outInitialState);
+    //
+    // requestedHumanId exists because triggerScriptRender() took a script id and
+    // then ignored it: this call read /current_script.id regardless, and the
+    // argument only ever reached a log line. It was right by accident -- every
+    // caller happened to persist the id first -- and the first caller that did
+    // not would have rendered a different script than it asked for. Empty means
+    // "whatever is current", which is what the boot and post-sync paths want.
+    bool getScriptForExecution(String &outHumanId, String &outFileId, ScriptExecState &outInitialState,
+                               const String &requestedHumanId = String());
 
     // FileId generation and management
     String generateShortFileId(const String& humanId); // Public method, handles mutex
@@ -154,7 +178,8 @@ private:
     // Streams the content file through the CRC without loading it.
     bool sourceFingerprint_nolock(const String &fileId, uint32_t &outLen, uint32_t &outCrc);
     bool loadStoredProgram_nolock(const String &fileId, uint32_t srcLen, uint32_t srcCrc, MpProgram &out);
-    bool compileAndStoreProgram_nolock(const String &fileId, bool force, MpProgram *outProgram, String *error);
+    bool compileAndStoreProgram_nolock(const String &fileId, bool force, MpProgram *outProgram,
+                                       String *error, LoadReason *reason = nullptr);
 };
 
 #endif // SCRIPT_MANAGER_H

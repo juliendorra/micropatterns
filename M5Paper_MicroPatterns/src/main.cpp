@@ -242,7 +242,13 @@ static bool triggerScriptRender(const String& humanIdToRender, bool useAsIsState
 
     // getScriptForExecution now returns humanId, fileId, and initial_state.
     // Content will be loaded by RenderTask.
-    if (g_scriptManager->getScriptForExecution(jobData.script_id, fileId, scriptState)) { // No scriptContentForJob
+    // humanIdToRender is passed through, not just logged: this used to resolve
+    // whatever /current_script.id held, so the argument was decoration. It
+    // matched only because every caller writes the id to flash first (see
+    // selectNextScript / the serial console path); a caller that forgot would
+    // have rendered the wrong script with no sign of it in the logs, which say
+    // "resolved from" on the next line.
+    if (g_scriptManager->getScriptForExecution(jobData.script_id, fileId, scriptState, humanIdToRender)) { // No scriptContentForJob
         // Ensure jobData.script_id is the one we intended, or the one getScriptForExecution resolved to (e.g. default)
         // If humanIdToRender was valid, jobData.script_id should match it.
         // If humanIdToRender was invalid and getScriptForExecution gave default, jobData.script_id is default.
@@ -295,6 +301,13 @@ void MainControlTask_Function(void *pvParameters) {
     AppState currentState = AppState::IDLE;
     TickType_t lastActivityTime = xTaskGetTickCount();
     String currentLoadedScriptId = ""; // Keep track of what's supposedly loaded/rendered
+
+    // How many times in a row the SAME script has come back from RenderTask
+    // unsuccessful. The render-result handler below uses it to stop retrying a
+    // script that cannot be rendered at all; a success, or moving to another
+    // script, clears it so a later transient failure still gets its retry.
+    String lastFailedScriptId = "";
+    int consecutiveRenderFailures = 0;
 
     // Initial actions on boot/restart:
     // 1. Potentially sync time
@@ -555,6 +568,10 @@ void MainControlTask_Function(void *pvParameters) {
                       pendingHumanId.isEmpty() ? currentLoadedScriptId.c_str() : pendingHumanId.c_str());
                 if (currentState == AppState::RENDERING_SCRIPT) currentState = AppState::IDLE;
             } else if (renderResultItem.success) {
+                // A script that rendered is not a failing script any more: a
+                // later failure of it starts its retry budget from scratch.
+                lastFailedScriptId = "";
+                consecutiveRenderFailures = 0;
                 g_scriptManager->saveScriptExecutionState(received_script_id, renderResultItem.final_state);
                 if (currentState == AppState::RENDERING_SCRIPT) { // If we were rendering
                     currentState = AppState::IDLE;
@@ -571,39 +588,78 @@ void MainControlTask_Function(void *pvParameters) {
                     log_i("MainCtrl: Render interrupted for '%s'. State -> IDLE.", received_script_id.c_str());
                 }
             } else { // Render failed (not success, not interrupted)
-                // Two lines, matching the Watchy's error frame: what happened,
-                // then which script. One line would be up to 33 glyphs and this
-                // panel fits 30 at text size 3 (6x8 font x3 = 18px per glyph
-                // across 540px), so the ends were being clipped.
+                String scriptToRetry = "";
+                if (!received_script_id.isEmpty()) {
+                    scriptToRetry = received_script_id;
+                } else if (!currentLoadedScriptId.isEmpty()) {
+                    scriptToRetry = currentLoadedScriptId;
+                    log_i("MainCtrl: Render failed (unknown script_id in result); attributing it to current '%s'.", scriptToRetry.c_str());
+                } else {
+                    log_w("MainCtrl: Render failed, and no script ID available.");
+                    // scriptToRetry remains empty, triggerScriptRender handles "" as default
+                }
+
+                // Count consecutive failures PER SCRIPT, and stop after the
+                // second one.
+                //
+                // This branch used to re-queue unconditionally. For a script
+                // with no content on the device, or one that will never compile,
+                // RenderTask fails identically every time, so the device sat in
+                // a loop repainting two error banners forever -- burning the
+                // panel's fast-update budget and never letting the user read the
+                // error. The Watchy shows one error frame and stops; this now
+                // does the same, while still giving a genuinely transient
+                // failure (busy panel, full queue) the one retry it deserves.
+                if (scriptToRetry == lastFailedScriptId) {
+                    consecutiveRenderFailures++;
+                } else {
+                    lastFailedScriptId = scriptToRetry;
+                    consecutiveRenderFailures = 1;
+                }
+                const RenderFailure failureKind = renderResultItem.failure;
+                const bool permanentFailure = (failureKind == RenderFailure::SCRIPT_MISSING ||
+                                               failureKind == RenderFailure::COMPILE_FAILED);
+                const bool giveUp = permanentFailure || consecutiveRenderFailures >= 2;
+
+                // Three lines: what happened, which script, and -- when
+                // RenderTask could tell them apart -- why. MP_MSG_SCRIPT_MISSING
+                // and MP_MSG_PARSE_FAILED are the same two reasons the Watchy
+                // prints; they were previously only in the serial log here, so a
+                // user with no cable could not tell a missing script from a
+                // broken one. One line for all three would be up to 33 glyphs
+                // and this panel fits 30 at text size 3 (6x8 font x3 = 18px per
+                // glyph across 540px), so the ends were being clipped.
                 g_displayManager->showMessage(MP_MSG_RENDER_ERROR, 200, 15, false, false);
                 g_displayManager->showMessage(received_script_id, 250, 15, false, false);
+                if (failureKind == RenderFailure::SCRIPT_MISSING) {
+                    g_displayManager->showMessage(MP_MSG_SCRIPT_MISSING, 300, 15, false, false);
+                } else if (failureKind == RenderFailure::COMPILE_FAILED) {
+                    g_displayManager->showMessage(MP_MSG_PARSE_FAILED, 300, 15, false, false);
+                }
                 if (!received_error_message.isEmpty()) {
                     log_e("Render Error for '%s': %s", received_script_id.c_str(), received_error_message.c_str());
                 }
                 vTaskDelay(pdMS_TO_TICKS(100)); // Short delay for message visibility
 
-                String scriptToRetry = "";
-                if (!received_script_id.isEmpty()) {
-                    scriptToRetry = received_script_id;
-                    log_i("MainCtrl: Render failed for '%s'. Re-rendering with saved state.", scriptToRetry.c_str());
-                } else if (!currentLoadedScriptId.isEmpty()) {
-                    scriptToRetry = currentLoadedScriptId;
-                    log_i("MainCtrl: Render failed (unknown script_id in result). Re-rendering current '%s' with saved state.", scriptToRetry.c_str());
+                if (giveUp) {
+                    log_e("MainCtrl: Render failed for '%s' (%s, attempt %d). Not retrying; leaving the error on screen.",
+                          scriptToRetry.c_str(),
+                          permanentFailure ? "permanent" : "repeated",
+                          consecutiveRenderFailures);
+                    if (currentState == AppState::RENDERING_SCRIPT) currentState = AppState::IDLE;
                 } else {
-                    log_w("MainCtrl: Render failed, and no script ID available to re-render. Attempting default.");
-                    // scriptToRetry remains empty, triggerScriptRender handles "" as default
-                }
-                
-                bool retryQueued = triggerScriptRender(scriptToRetry, true, currentState, currentLoadedScriptId);
-                
-                if (!retryQueued) {
-                    // Retry was attempted but failed to queue. If we were in RENDERING_SCRIPT state from the failed job, transition to IDLE.
-                    if (currentState == AppState::RENDERING_SCRIPT) {
-                        currentState = AppState::IDLE;
-                        log_w("MainCtrl: Render failed for '%s', and retry also failed to queue. State -> IDLE.", scriptToRetry.c_str());
+                    log_i("MainCtrl: Render failed for '%s'. Re-rendering once with saved state.", scriptToRetry.c_str());
+                    bool retryQueued = triggerScriptRender(scriptToRetry, true, currentState, currentLoadedScriptId);
+
+                    if (!retryQueued) {
+                        // Retry was attempted but failed to queue. If we were in RENDERING_SCRIPT state from the failed job, transition to IDLE.
+                        if (currentState == AppState::RENDERING_SCRIPT) {
+                            currentState = AppState::IDLE;
+                            log_w("MainCtrl: Render failed for '%s', and retry also failed to queue. State -> IDLE.", scriptToRetry.c_str());
+                        }
                     }
+                    // If retryQueued is true, triggerScriptRender already set currentState = AppState::RENDERING_SCRIPT for the new job.
                 }
-                // If retryQueued is true, triggerScriptRender already set currentState = AppState::RENDERING_SCRIPT for the new job.
             }
         }
 
@@ -872,12 +928,14 @@ void RenderTask_Function(void *pvParameters) {
             // built-in default is compiled from its literal every time.
             MpProgram program;
             String programError;
+            ScriptManager::LoadReason programReason = ScriptManager::LoadReason::OK;
             bool haveProgram;
             if (jobDataForRenderCtrl.file_id == ScriptManager::DEFAULT_SCRIPT_ID) {
                 log_i("RenderTask: Using built-in default script for '%s'", jobDataForRenderCtrl.script_id.c_str());
                 haveProgram = ScriptManager::compileSource(ScriptManager::DEFAULT_SCRIPT_CONTENT, program, &programError);
+                if (!haveProgram) programReason = ScriptManager::LoadReason::COMPILE_FAILED;
             } else {
-                haveProgram = g_scriptManager->loadProgram(jobDataForRenderCtrl.file_id, program, &programError);
+                haveProgram = g_scriptManager->loadProgram(jobDataForRenderCtrl.file_id, program, &programError, &programReason);
             }
             if (!haveProgram) {
                 log_e("RenderTask: No program for fileId: %s (humanId: %s): %s", jobDataForRenderCtrl.file_id.c_str(), jobDataForRenderCtrl.script_id.c_str(), programError.c_str());
@@ -885,6 +943,19 @@ void RenderTask_Function(void *pvParameters) {
                 errorResultData.script_id = jobDataForRenderCtrl.script_id;
                 errorResultData.success = false;
                 errorResultData.interrupted = false;
+                // Say WHICH kind of failure this is, so MainControlTask can stop
+                // instead of re-queueing a job that will fail the same way.
+                // ScriptManager reports the reason as a value; the Watchy
+                // switches on the same enum, so the two firmwares cannot drift
+                // apart over a reworded message.
+                switch (programReason) {
+                    case ScriptManager::LoadReason::COMPILE_FAILED:
+                        errorResultData.failure = RenderFailure::COMPILE_FAILED; break;
+                    case ScriptManager::LoadReason::STORAGE_UNAVAILABLE:
+                        errorResultData.failure = RenderFailure::TRANSIENT; break;
+                    default:
+                        errorResultData.failure = RenderFailure::SCRIPT_MISSING; break;
+                }
                 errorResultData.error_message = programError.isEmpty() ? String("RenderTask: Failed to load script program.") : programError;
                 // final_state will be default
                 
@@ -1033,6 +1104,10 @@ void RenderTask_Function(void *pvParameters) {
                 resultData.script_id = jobDataForRenderCtrl.script_id; // Populate for error reporting
                 resultData.success = false;
                 resultData.interrupted = false; // Not interrupted by user, but by system issue
+                // A busy panel is the textbook transient failure: whoever holds
+                // the lock will let go, so the one retry MainControlTask allows
+                // is exactly the right response here.
+                resultData.failure = RenderFailure::TRANSIENT;
                 resultData.error_message = "Failed to acquire display lock for rendering.";
                 resultData.final_state = jobDataForRenderCtrl.initial_state; // Preserve initial state on this type of error
             }

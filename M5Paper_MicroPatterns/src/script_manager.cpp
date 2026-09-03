@@ -1209,7 +1209,8 @@ bool ScriptManager::selectNextScript(bool moveUp, String &outSelectedHumanId, St
     return false;
 }
 
-bool ScriptManager::getScriptForExecution(String &outHumanId, String &outFileId, ScriptExecState &outInitialState)
+bool ScriptManager::getScriptForExecution(String &outHumanId, String &outFileId, ScriptExecState &outInitialState,
+                                          const String &requestedHumanId)
 {
     log_i("getScriptForExecution: Starting script selection process");
     outHumanId = "";
@@ -1217,10 +1218,19 @@ bool ScriptManager::getScriptForExecution(String &outHumanId, String &outFileId,
     outInitialState = ScriptExecState();
 
     if (xSemaphoreTake(_spiffsMutex, pdMS_TO_TICKS(2000)) == pdTRUE) { // Increased timeout
-        String humanIdToLoad;
-        bool idFound = getCurrentScriptId_nolock(humanIdToLoad);
-        log_d("getScriptForExecution: getCurrentScriptId_nolock returned: found=%s, id='%s'",
-              idFound ? "true" : "false", idFound ? humanIdToLoad.c_str() : "null");
+        // An explicit request wins over the stored id; everything downstream --
+        // the list lookup, the fall back to the first script, the default --
+        // then behaves exactly as it did, because it only ever looked at this
+        // one variable.
+        String humanIdToLoad = requestedHumanId;
+        bool idFound = !humanIdToLoad.isEmpty();
+        if (idFound) {
+            log_i("getScriptForExecution: caller asked for '%s'.", humanIdToLoad.c_str());
+        } else {
+            idFound = getCurrentScriptId_nolock(humanIdToLoad);
+            log_d("getScriptForExecution: getCurrentScriptId_nolock returned: found=%s, id='%s'",
+                  idFound ? "true" : "false", idFound ? humanIdToLoad.c_str() : "null");
+        }
 
         JsonDocument listDoc; // Use default allocator
         bool listLoaded = loadScriptList_nolock(listDoc);
@@ -1746,12 +1756,15 @@ bool ScriptManager::compileSource(const String &source, MpProgram &out, String *
     return true;
 }
 
-bool ScriptManager::compileAndStoreProgram_nolock(const String &fileId, bool force, MpProgram *outProgram, String *error)
+bool ScriptManager::compileAndStoreProgram_nolock(const String &fileId, bool force, MpProgram *outProgram,
+                                                  String *error, LoadReason *reason)
 {
+    if (reason) *reason = LoadReason::OK;
     uint32_t srcLen = 0, srcCrc = 0;
     if (!sourceFingerprint_nolock(fileId, srcLen, srcCrc))
     {
         if (error) *error = "No source for " + fileId;
+        if (reason) *reason = LoadReason::NO_SOURCE;
         return false;
     }
     if (!force)
@@ -1765,12 +1778,16 @@ bool ScriptManager::compileAndStoreProgram_nolock(const String &fileId, bool for
     if (!loadScriptContent_nolock(fileId, source) || source.isEmpty())
     {
         if (error) *error = "Could not read source for " + fileId;
+        if (reason) *reason = LoadReason::NO_SOURCE;
         return false;
     }
     mp_wdt_reset();
     MpProgram scratch;
     MpProgram &program = outProgram ? *outProgram : scratch;
-    if (!compileSource(source, program, error)) return false;
+    if (!compileSource(source, program, error)) {
+        if (reason) *reason = LoadReason::COMPILE_FAILED;
+        return false;
+    }
     mp_program_fingerprint(program, (const uint8_t *)source.c_str(), source.length());
     source = String(); // the program is built; give the source back before serializing
     mp_wdt_reset();
@@ -1779,6 +1796,7 @@ bool ScriptManager::compileAndStoreProgram_nolock(const String &fileId, bool for
     if (!mp_program_serialize(program, bytes))
     {
         if (error) *error = "Could not serialize program for " + fileId;
+        if (reason) *reason = LoadReason::COMPILE_FAILED;
         return false;
     }
     const bool stored = writeFileAtomic_nolock(compiledPath(fileId), bytes.data(), bytes.size());
@@ -1789,19 +1807,22 @@ bool ScriptManager::compileAndStoreProgram_nolock(const String &fileId, bool for
     return true;
 }
 
-bool ScriptManager::loadProgram(const String &fileId, MpProgram &out, String *error)
+bool ScriptManager::loadProgram(const String &fileId, MpProgram &out, String *error, LoadReason *reason)
 {
+    if (reason) *reason = LoadReason::OK;
     if (!_storageOk)
     {
         if (error) *error = "Storage unavailable";
+        if (reason) *reason = LoadReason::STORAGE_UNAVAILABLE;
         return false;
     }
     if (xSemaphoreTake(_spiffsMutex, portMAX_DELAY) != pdTRUE)
     {
         if (error) *error = "Storage busy";
+        if (reason) *reason = LoadReason::STORAGE_UNAVAILABLE;
         return false;
     }
-    const bool ok = compileAndStoreProgram_nolock(fileId, /*force=*/false, &out, error);
+    const bool ok = compileAndStoreProgram_nolock(fileId, /*force=*/false, &out, error, reason);
     xSemaphoreGive(_spiffsMutex);
     return ok;
 }
