@@ -813,13 +813,39 @@ void MicroPatternsDrawing::fillRect(const DisplayListItem& item) {
                     uint8_t ink[kMaxSpanBytes];
                     const int b0 = (x0) >> 3, nb = (((x1) - 1) >> 3) - b0 + 1;
                     memset(ink, 0, (size_t)nb);
-                    for (int sx_iter = x0; sx_iter < x1; ++sx_iter) {
+                    // Skip bytes the occupancy map has already painted in full: every ink bit
+                    // computed for one would be masked off in the emit, so not computing it
+                    // is exact. Doing that per byte costs a compare and a loop setup per byte,
+                    // which measured +10..24% on rows with NOTHING to skip -- so first a
+                    // one-pass scan decides whether this row has any such byte at all, and
+                    // rows without one run the plain walk untouched. art_deco_4 paints 3.75x
+                    // its pixels and gains 20% from the skip; grid paints each pixel once and
+                    // must not pay for it.
+                    bool rowHasFull = false;
+                    if (occRow) { for (int b = b0; b < b0 + nb; ++b) if (occRow[b] == 0xFFu) { rowHasFull = true; break; } }
+                    if (rowHasFull) {
+                        for (int b = b0; b < b0 + nb; ++b) {
+                            const int cs = (b == b0) ? (x0) : (b << 3);
+                            const int ce = (b == b0 + nb - 1) ? (x1) : ((b + 1) << 3);
+                            if (occRow[b] == 0xFFu) { bx += dx * (ce - cs); by += dy * (ce - cs); continue; }
+                            for (int sx_iter = cs; sx_iter < ce; ++sx_iter) {
+                                int px = (int)(bx >> MP_FX_SHIFT) % patW;
+                                if (px < 0) px += patW;
+                                int py = (int)(by >> MP_FX_SHIFT) % patH;
+                                if (py < 0) py += patH;
+                                if (patData[(size_t)py * patW + px] == 1) ink[(sx_iter >> 3) - b0] |= (uint8_t)(0x80u >> (sx_iter & 7));
+                                bx += dx; by += dy;
+                            }
+                        }
+                    } else {
+                        for (int sx_iter = (x0); sx_iter < (x1); ++sx_iter) {
                         int px = (int)(bx >> MP_FX_SHIFT) % patW;
                         if (px < 0) px += patW;
                         int py = (int)(by >> MP_FX_SHIFT) % patH;
                         if (py < 0) py += patH;
                         if (patData[(size_t)py * patW + px] == 1) ink[(sx_iter >> 3) - b0] |= (uint8_t)(0x80u >> (sx_iter & 7));
                         bx += dx; by += dy;
+                        }
                     }
                     emitPatternSpan(sy_iter, x0, x1, ink, patOn, patOff, occRow, skipped);
                 } else {
@@ -1095,11 +1121,35 @@ void MicroPatternsDrawing::fillCircle(const DisplayListItem& item) {
                         uint8_t ink[kMaxSpanBytes];
                         const int b0 = (fx0) >> 3, nb = (((fx1) - 1) >> 3) - b0 + 1;
                         memset(ink, 0, (size_t)nb);
-                        for (int sx_iter = fx0; sx_iter < fx1; ++sx_iter) {
+                        // Skip bytes the occupancy map has already painted in full: every ink bit
+                        // computed for one would be masked off in the emit, so not computing it
+                        // is exact. Doing that per byte costs a compare and a loop setup per byte,
+                        // which measured +10..24% on rows with NOTHING to skip -- so first a
+                        // one-pass scan decides whether this row has any such byte at all, and
+                        // rows without one run the plain walk untouched. art_deco_4 paints 3.75x
+                        // its pixels and gains 20% from the skip; grid paints each pixel once and
+                        // must not pay for it.
+                        bool rowHasFull = false;
+                        if (occRowF) { for (int b = b0; b < b0 + nb; ++b) if (occRowF[b] == 0xFFu) { rowHasFull = true; break; } }
+                        if (rowHasFull) {
+                            for (int b = b0; b < b0 + nb; ++b) {
+                                const int cs = (b == b0) ? (fx0) : (b << 3);
+                                const int ce = (b == b0 + nb - 1) ? (fx1) : ((b + 1) << 3);
+                                if (occRowF[b] == 0xFFu) { bxq += dbxq * (ce - cs); byq += dbyq * (ce - cs); continue; }
+                                for (int sx_iter = cs; sx_iter < ce; ++sx_iter) {
+                                    int px = (int)(bxq >> MP_FX_SHIFT) % patW; if (px < 0) px += patW;
+                                    int py = (int)(byq >> MP_FX_SHIFT) % patH; if (py < 0) py += patH;
+                                    if (patData[(size_t)py * patW + px] == 1) ink[(sx_iter >> 3) - b0] |= (uint8_t)(0x80u >> (sx_iter & 7));
+                                    bxq += dbxq; byq += dbyq;
+                                }
+                            }
+                        } else {
+                            for (int sx_iter = (fx0); sx_iter < (fx1); ++sx_iter) {
                             int px = (int)(bxq >> MP_FX_SHIFT) % patW; if (px < 0) px += patW;
                             int py = (int)(byq >> MP_FX_SHIFT) % patH; if (py < 0) py += patH;
                             if (patData[(size_t)py * patW + px] == 1) ink[(sx_iter >> 3) - b0] |= (uint8_t)(0x80u >> (sx_iter & 7));
                             bxq += dbxq; byq += dbyq;
+                            }
                         }
                         emitPatternSpan(sy_iter, fx0, fx1, ink, patOn, patOff, occRowF, skipped);
                     } else {
@@ -1340,12 +1390,37 @@ void MicroPatternsDrawing::drawAsset(const DisplayListItem& item, const MicroPat
                     uint8_t cover[kMaxSpanBytes];
                     const int b0 = (x0) >> 3, nb = (((x1) - 1) >> 3) - b0 + 1;
                     memset(cover, 0, (size_t)nb);
-                    for (int sx_iter = x0; sx_iter < x1; ++sx_iter) {
+                    // Skip bytes the occupancy map has already painted in full: every ink bit
+                    // computed for one would be masked off in the emit, so not computing it
+                    // is exact. Doing that per byte costs a compare and a loop setup per byte,
+                    // which measured +10..24% on rows with NOTHING to skip -- so first a
+                    // one-pass scan decides whether this row has any such byte at all, and
+                    // rows without one run the plain walk untouched. art_deco_4 paints 3.75x
+                    // its pixels and gains 20% from the skip; grid paints each pixel once and
+                    // must not pay for it.
+                    bool rowHasFull = false;
+                    if (occRow) { for (int b = b0; b < b0 + nb; ++b) if (occRow[b] == 0xFFu) { rowHasFull = true; break; } }
+                    if (rowHasFull) {
+                        for (int b = b0; b < b0 + nb; ++b) {
+                            const int cs = (b == b0) ? (x0) : (b << 3);
+                            const int ce = (b == b0 + nb - 1) ? (x1) : ((b + 1) << 3);
+                            if (occRow[b] == 0xFFu) { axq += daxq * (ce - cs); ayq += dayq * (ce - cs); continue; }
+                            for (int sx_iter = cs; sx_iter < ce; ++sx_iter) {
+                                const int idx = (int)(ayq >> MP_FX_SHIFT) * aw + (int)(axq >> MP_FX_SHIFT);
+                                if (idx >= 0 && idx < adata_size && adata[idx] == 1) {
+                                    cover[(sx_iter >> 3) - b0] |= (uint8_t)(0x80u >> (sx_iter & 7));
+                                }
+                                axq += daxq; ayq += dayq;
+                            }
+                        }
+                    } else {
+                        for (int sx_iter = (x0); sx_iter < (x1); ++sx_iter) {
                         const int idx = (int)(ayq >> MP_FX_SHIFT) * aw + (int)(axq >> MP_FX_SHIFT);
                         if (idx >= 0 && idx < adata_size && adata[idx] == 1) {
                             cover[(sx_iter >> 3) - b0] |= (uint8_t)(0x80u >> (sx_iter & 7));
                         }
                         axq += daxq; ayq += dayq;
+                        }
                     }
                     emitMaskSpan(sy_iter, x0, x1, cover, color, occRow, skipped);
                 } else {

@@ -195,3 +195,29 @@ Flat, and the reason is obvious afterwards: an UNROTATED asset's bounding box is
 the asset. There were no out-of-range pixels to skip. The excess exists only for
 rotated assets, which use the 2D loop this step did not touch. Kept, because it
 is cheaper and exact; recorded as flat because it was.
+
+## Step 6 — skip bytes the occupancy map has already painted
+
+In the three 2D loops (rotated FILL_RECT, FILL_CIRCLE, rotated DRAW) every ink
+bit computed for a pixel the map already holds is masked off in the emit. So:
+walk the span a byte at a time and, when the occupancy byte is `0xFF`, advance
+the accumulators by eight steps and compute nothing. Exact by construction.
+
+**First version regressed the scripts it could not help.** Per-byte chunking
+costs a compare and a loop setup per byte whether or not there is anything to
+skip: `op_fill_circle_pattern_rot` +24%, `grid` +10%, `eyes` +5% — rows with no
+occupied byte paying for a skip that never fires. Not committed.
+
+Second version adds a one-pass scan per span; rows with no `0xFF` byte run the
+plain walk untouched. Byte-identical on both corpora.
+
+| | before | byte-skip v2 | |
+|---|---|---|---|
+| `art_deco_4` | 110.46 | **87.03** | **−21%** — paints 3.75x its pixels |
+| `disconnected` | 31.29 | 27.65 | −12% |
+| `seascape_4` | 77.60 | 75.56 | −3% |
+| `op_fill_circle_pattern_rot` | 12.81 | 12.82 | flat |
+| `grid` | 18.71 | 18.47 | flat |
+| `eyes`, `confetti` | | | +2% after normalising a ~1% warmer run |
+
+Against the float renderer of two days ago, `art_deco_4` is now **520 → 87 ms**.

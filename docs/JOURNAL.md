@@ -1285,3 +1285,16 @@ fill; reconnected -20%. Byte-identical, both corpora, counter-gated.
 
 Power-of-two would shrink 5 bytes to 1 in a loop that is already mostly memcpy.
 Not worth eleven of twelve scripts. Language unchanged.
+
+### 12. Byte-skip: right idea, wrong first shape
+
+The occupancy map masks off ink bits after they are computed. On art_deco_4,
+which paints 3.75x its pixels, that is ~40% of the 2D walk thrown away. Skipping
+fully-occupied bytes gave -21% there -- and +10..24% on every script with NO
+overlap, because per-byte chunking costs whether or not it skips. Not committed
+in that form. A one-pass scan per span so that rows with nothing to skip run the
+untouched walk brought the probes back to flat and kept the win. Pixels
+identical throughout. art_deco_4: 520 ms two days ago, 87 ms now.
+
+The DRAW row clip before it was exact and flat: an unrotated asset's box IS the
+asset, so there was nothing to clip. Kept, recorded as flat.
