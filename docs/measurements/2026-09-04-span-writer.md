@@ -179,3 +179,19 @@ to pay for itself. Byte-identical on both corpora; tiled rows 3,150 / 1,620.
 This is the answer to "would forcing power-of-two patterns help": the period
 trick does not need it. 20x20 gives a 5-byte period; 8x8 gives 1. The language
 stays as it is.
+
+## Step 5 — clip the DRAW row to the asset's in-range run: exact, and flat
+
+`ix` advances by a constant, so `0 <= ix < aw` holds on one contiguous run whose
+ends solve in closed form from the same integer arithmetic as the walk. Applied
+to the unrotated (row-hoisted) DRAW loop. Byte-identical; 21,012 rows clipped.
+
+| | tiled | clipped | |
+|---|---|---|---|
+| `op_draw_asset` | 11.00 | 10.68 | −3% |
+| `seascape_4` | 76.23 | 77.60 | noise |
+
+Flat, and the reason is obvious afterwards: an UNROTATED asset's bounding box is
+the asset. There were no out-of-range pixels to skip. The excess exists only for
+rotated assets, which use the 2D loop this step did not touch. Kept, because it
+is cheaper and exact; recorded as flat because it was.

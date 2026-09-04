@@ -212,6 +212,7 @@ void MicroPatternsDrawing::resetPixelOccupationMap() {
     _integerXformCalls = 0;
     _spanRows = 0;
     _tiledRows = 0;
+    _clippedRows = 0;
 }
 
 void MicroPatternsDrawing::clearCanvas() {
@@ -1267,12 +1268,39 @@ void MicroPatternsDrawing::drawAsset(const DisplayListItem& item, const MicroPat
                     uint8_t cover[kMaxSpanBytes];
                     const int b0 = (x0) >> 3, nb = (((x1) - 1) >> 3) - b0 + 1;
                     memset(cover, 0, (size_t)nb);
-                    for (int sx_iter = x0; sx_iter < x1; ++sx_iter) {
-                        const int ix = (int)(axq >> MP_FX_SHIFT);
-                        if (ix >= 0 && ix < aw && assetRow[ix] == 1) {
-                            cover[(sx_iter >> 3) - b0] |= (uint8_t)(0x80u >> (sx_iter & 7));
+                    // CLIP, don't test. ix advances by a constant, so "0 <= ix < aw" is
+                    // true on ONE contiguous run of pixels. Its ends solve in closed form
+                    // from the same integer arithmetic the walk uses -- the walk is exact,
+                    // so this is exact -- and the pixels outside it are never visited.
+                    // A rotated asset's box is up to twice its area; every pixel of the
+                    // excess used to cost a shift, two compares and a branch to reject.
+                    {
+                        const int span = x1 - x0;
+                        const int64_t a0 = axq, d = daxq, top = ((int64_t)aw << MP_FX_SHIFT);
+                        int64_t k0 = 0, k1 = (int64_t)span - 1;      // inclusive run in k
+                        if (d > 0) {
+                            if (a0 < 0)     k0 = (-a0 + d - 1) / d;                 // first k with a >= 0
+                            k1 = (top - 1 - a0) >= 0 ? (top - 1 - a0) / d : -1;    // last k with a < top
+                        } else if (d < 0) {
+                            const int64_t nd = -d;
+                            if (a0 >= top)  k0 = (a0 - top + nd) / nd;              // first k with a < top
+                            k1 = a0 >= 0 ? a0 / nd : -1;                            // last k with a >= 0
+                        } else if (a0 < 0 || a0 >= top) {
+                            k1 = -1;
                         }
-                        axq += daxq;
+                        if (k0 < 0) k0 = 0;
+                        if (k1 > span - 1) k1 = span - 1;
+                        if (k0 <= k1) {
+                            ++_clippedRows;
+                            int32_t a = (int32_t)(a0 + k0 * d);
+                            const int xs = x0 + (int)k0, xe = x0 + (int)k1 + 1;
+                            for (int sx_iter = xs; sx_iter < xe; ++sx_iter) {
+                                if (assetRow[(int)(a >> MP_FX_SHIFT)] == 1) {
+                                    cover[(sx_iter >> 3) - b0] |= (uint8_t)(0x80u >> (sx_iter & 7));
+                                }
+                                a += daxq;
+                            }
+                        }
                     }
                     emitMaskSpan(sy_iter, x0, x1, cover, color, occRow, skipped);
                 } else {

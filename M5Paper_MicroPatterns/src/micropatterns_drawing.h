@@ -119,6 +119,7 @@ public: // Made public for DisplayListRenderer
     unsigned long getIntegerXformCalls() const { return _integerXformCalls; }
     unsigned long getSpanRows() const { return _spanRows; }
     unsigned long getTiledRows() const { return _tiledRows; }
+    unsigned long getClippedRows() const { return _clippedRows; }
     void setSpanWriterEnabled(bool on) { _spanWriter = on; }
 
     // Paint [x0, x1) on row sy in ONE colour, a byte of pixels at a time.
@@ -165,6 +166,7 @@ public: // Made public for DisplayListRenderer
         return a;
     }
     unsigned long _tiledRows = 0;   // spans whose ink mask was tiled, not walked
+    unsigned long _clippedRows = 0; // DRAW rows walked only over the asset's in-range run
 
     // Same, with a caller-built cover mask (bit set = paint this pixel `color`,
     // clear = leave it). `cover` is indexed from byte x0>>3 and MSB-first. This

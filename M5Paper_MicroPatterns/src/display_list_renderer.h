@@ -58,6 +58,7 @@ public:
     void setSpanWriterEnabled(bool on) { _spanWriterEnabled = on; }
     unsigned long getSpanRows() const { return _drawing.getSpanRows(); }
     unsigned long getTiledRows() const { return _drawing.getTiledRows(); }
+    unsigned long getClippedRows() const { return _drawing.getClippedRows(); }
 
     // How many pixels the last render emitted through a fixed-point inner loop.
     // Zero from a path that claims to be fixed-point means it never ran; see
