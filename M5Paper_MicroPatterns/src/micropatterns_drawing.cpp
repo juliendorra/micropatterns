@@ -731,11 +731,26 @@ void MicroPatternsDrawing::fillRect(const DisplayListItem& item) {
                 _fixedPointPixels += (unsigned long)span;
                 int32_t bx = fxFrom(bx0);
                 const int32_t dx = fxFrom(dbx);
-                for (int sx_iter = x0; sx_iter < x1; ++sx_iter) {
-                    int px = (int)(bx >> MP_FX_SHIFT) % patW;
-                    if (px < 0) px += patW;
-                    emitPixel(sx_iter, sy_iter, patRow[px] == 1 ? patOn : patOff, occRow, skipped);
-                    bx += dx;
+                if (_spanWriter && ((((x1) - 1) >> 3) - ((x0) >> 3) + 1) <= kMaxSpanBytes) {
+                    // Span form of the loop below: same walk, but each pixel sets a
+                    // bit instead of calling emitPixel, and the row is written once.
+                    uint8_t ink[kMaxSpanBytes];
+                    const int b0 = (x0) >> 3, nb = (((x1) - 1) >> 3) - b0 + 1;
+                    memset(ink, 0, (size_t)nb);
+                    for (int sx_iter = x0; sx_iter < x1; ++sx_iter) {
+                        int px = (int)(bx >> MP_FX_SHIFT) % patW;
+                        if (px < 0) px += patW;
+                        if (patRow[px] == 1) ink[(sx_iter >> 3) - b0] |= (uint8_t)(0x80u >> (sx_iter & 7));
+                        bx += dx;
+                    }
+                    emitPatternSpan(sy_iter, x0, x1, ink, patOn, patOff, occRow, skipped);
+                } else {
+                    for (int sx_iter = x0; sx_iter < x1; ++sx_iter) {
+                        int px = (int)(bx >> MP_FX_SHIFT) % patW;
+                        if (px < 0) px += patW;
+                        emitPixel(sx_iter, sy_iter, patRow[px] == 1 ? patOn : patOff, occRow, skipped);
+                        bx += dx;
+                    }
                 }
                 continue;
             }
@@ -760,15 +775,32 @@ void MicroPatternsDrawing::fillRect(const DisplayListItem& item) {
                 _fixedPointPixels += (unsigned long)span;
                 int32_t bx = fxFrom(bx0), by = fxFrom(by0);
                 const int32_t dx = fxFrom(dbx), dy = fxFrom(dby);
-                for (int sx_iter = x0; sx_iter < x1; ++sx_iter) {
-                    int px = (int)(bx >> MP_FX_SHIFT) % patW;
-                    if (px < 0) px += patW;
-                    int py = (int)(by >> MP_FX_SHIFT) % patH;
-                    if (py < 0) py += patH;
-                    emitPixel(sx_iter, sy_iter,
-                              patData[(size_t)py * patW + px] == 1 ? patOn : patOff,
-                              occRow, skipped);
-                    bx += dx; by += dy;
+                if (_spanWriter && ((((x1) - 1) >> 3) - ((x0) >> 3) + 1) <= kMaxSpanBytes) {
+                    // Span form of the loop below: same walk, but each pixel sets a
+                    // bit instead of calling emitPixel, and the row is written once.
+                    uint8_t ink[kMaxSpanBytes];
+                    const int b0 = (x0) >> 3, nb = (((x1) - 1) >> 3) - b0 + 1;
+                    memset(ink, 0, (size_t)nb);
+                    for (int sx_iter = x0; sx_iter < x1; ++sx_iter) {
+                        int px = (int)(bx >> MP_FX_SHIFT) % patW;
+                        if (px < 0) px += patW;
+                        int py = (int)(by >> MP_FX_SHIFT) % patH;
+                        if (py < 0) py += patH;
+                        if (patData[(size_t)py * patW + px] == 1) ink[(sx_iter >> 3) - b0] |= (uint8_t)(0x80u >> (sx_iter & 7));
+                        bx += dx; by += dy;
+                    }
+                    emitPatternSpan(sy_iter, x0, x1, ink, patOn, patOff, occRow, skipped);
+                } else {
+                    for (int sx_iter = x0; sx_iter < x1; ++sx_iter) {
+                        int px = (int)(bx >> MP_FX_SHIFT) % patW;
+                        if (px < 0) px += patW;
+                        int py = (int)(by >> MP_FX_SHIFT) % patH;
+                        if (py < 0) py += patH;
+                        emitPixel(sx_iter, sy_iter,
+                                  patData[(size_t)py * patW + px] == 1 ? patOn : patOff,
+                                  occRow, skipped);
+                        bx += dx; by += dy;
+                    }
                 }
                 continue;
             }
@@ -1025,13 +1057,28 @@ void MicroPatternsDrawing::fillCircle(const DisplayListItem& item) {
                     _fixedPointPixels += (unsigned long)cspan;
                     int32_t bxq = fxFrom(cbx0), byq = fxFrom(cby0);
                     const int32_t dbxq = fxFrom(cdbx), dbyq = fxFrom(cdby);
-                    for (int sx_iter = fx0; sx_iter < fx1; ++sx_iter) {
-                        int px = (int)(bxq >> MP_FX_SHIFT) % patW; if (px < 0) px += patW;
-                        int py = (int)(byq >> MP_FX_SHIFT) % patH; if (py < 0) py += patH;
-                        emitPixel(sx_iter, sy_iter,
-                                  patData[(size_t)py * patW + px] == 1 ? patOn : patOff,
-                                  occRowF, skipped);
-                        bxq += dbxq; byq += dbyq;
+                    if (_spanWriter && ((((fx1) - 1) >> 3) - ((fx0) >> 3) + 1) <= kMaxSpanBytes) {
+                        // Span form of the loop below: same walk, but each pixel sets a
+                        // bit instead of calling emitPixel, and the row is written once.
+                        uint8_t ink[kMaxSpanBytes];
+                        const int b0 = (fx0) >> 3, nb = (((fx1) - 1) >> 3) - b0 + 1;
+                        memset(ink, 0, (size_t)nb);
+                        for (int sx_iter = fx0; sx_iter < fx1; ++sx_iter) {
+                            int px = (int)(bxq >> MP_FX_SHIFT) % patW; if (px < 0) px += patW;
+                            int py = (int)(byq >> MP_FX_SHIFT) % patH; if (py < 0) py += patH;
+                            if (patData[(size_t)py * patW + px] == 1) ink[(sx_iter >> 3) - b0] |= (uint8_t)(0x80u >> (sx_iter & 7));
+                            bxq += dbxq; byq += dbyq;
+                        }
+                        emitPatternSpan(sy_iter, fx0, fx1, ink, patOn, patOff, occRowF, skipped);
+                    } else {
+                        for (int sx_iter = fx0; sx_iter < fx1; ++sx_iter) {
+                            int px = (int)(bxq >> MP_FX_SHIFT) % patW; if (px < 0) px += patW;
+                            int py = (int)(byq >> MP_FX_SHIFT) % patH; if (py < 0) py += patH;
+                            emitPixel(sx_iter, sy_iter,
+                                      patData[(size_t)py * patW + px] == 1 ? patOn : patOff,
+                                      occRowF, skipped);
+                            bxq += dbxq; byq += dbyq;
+                        }
                     }
                     continue;
                 }
@@ -1183,12 +1230,28 @@ void MicroPatternsDrawing::drawAsset(const DisplayListItem& item, const MicroPat
                 _fixedPointPixels += (unsigned long)span;
                 int32_t axq = fxFrom(ax0);
                 const int32_t daxq = fxFrom(dax);
-                for (int sx_iter = x0; sx_iter < x1; ++sx_iter) {
-                    const int ix = (int)(axq >> MP_FX_SHIFT);
-                    if (ix >= 0 && ix < aw && assetRow[ix] == 1) {
-                        emitPixel(sx_iter, sy_iter, color, occRow, skipped);
+                if (_spanWriter && ((((x1) - 1) >> 3) - ((x0) >> 3) + 1) <= kMaxSpanBytes) {
+                    // Span form of the loop below: same walk, but each pixel sets a
+                    // bit instead of calling emitPixel, and the row is written once.
+                    uint8_t cover[kMaxSpanBytes];
+                    const int b0 = (x0) >> 3, nb = (((x1) - 1) >> 3) - b0 + 1;
+                    memset(cover, 0, (size_t)nb);
+                    for (int sx_iter = x0; sx_iter < x1; ++sx_iter) {
+                        const int ix = (int)(axq >> MP_FX_SHIFT);
+                        if (ix >= 0 && ix < aw && assetRow[ix] == 1) {
+                            cover[(sx_iter >> 3) - b0] |= (uint8_t)(0x80u >> (sx_iter & 7));
+                        }
+                        axq += daxq;
                     }
-                    axq += daxq;
+                    emitMaskSpan(sy_iter, x0, x1, cover, color, occRow, skipped);
+                } else {
+                    for (int sx_iter = x0; sx_iter < x1; ++sx_iter) {
+                        const int ix = (int)(axq >> MP_FX_SHIFT);
+                        if (ix >= 0 && ix < aw && assetRow[ix] == 1) {
+                            emitPixel(sx_iter, sy_iter, color, occRow, skipped);
+                        }
+                        axq += daxq;
+                    }
                 }
                 continue;
             }
@@ -1212,12 +1275,28 @@ void MicroPatternsDrawing::drawAsset(const DisplayListItem& item, const MicroPat
                 _fixedPointPixels += (unsigned long)span;
                 int32_t axq = fxFrom(ax0), ayq = fxFrom(ay0);
                 const int32_t daxq = fxFrom(dax), dayq = fxFrom(day);
-                for (int sx_iter = x0; sx_iter < x1; ++sx_iter) {
-                    const int idx = (int)(ayq >> MP_FX_SHIFT) * aw + (int)(axq >> MP_FX_SHIFT);
-                    if (idx >= 0 && idx < adata_size && adata[idx] == 1) {
-                        emitPixel(sx_iter, sy_iter, color, occRow, skipped);
+                if (_spanWriter && ((((x1) - 1) >> 3) - ((x0) >> 3) + 1) <= kMaxSpanBytes) {
+                    // Span form of the loop below: same walk, but each pixel sets a
+                    // bit instead of calling emitPixel, and the row is written once.
+                    uint8_t cover[kMaxSpanBytes];
+                    const int b0 = (x0) >> 3, nb = (((x1) - 1) >> 3) - b0 + 1;
+                    memset(cover, 0, (size_t)nb);
+                    for (int sx_iter = x0; sx_iter < x1; ++sx_iter) {
+                        const int idx = (int)(ayq >> MP_FX_SHIFT) * aw + (int)(axq >> MP_FX_SHIFT);
+                        if (idx >= 0 && idx < adata_size && adata[idx] == 1) {
+                            cover[(sx_iter >> 3) - b0] |= (uint8_t)(0x80u >> (sx_iter & 7));
+                        }
+                        axq += daxq; ayq += dayq;
                     }
-                    axq += daxq; ayq += dayq;
+                    emitMaskSpan(sy_iter, x0, x1, cover, color, occRow, skipped);
+                } else {
+                    for (int sx_iter = x0; sx_iter < x1; ++sx_iter) {
+                        const int idx = (int)(ayq >> MP_FX_SHIFT) * aw + (int)(axq >> MP_FX_SHIFT);
+                        if (idx >= 0 && idx < adata_size && adata[idx] == 1) {
+                            emitPixel(sx_iter, sy_iter, color, occRow, skipped);
+                        }
+                        axq += daxq; ayq += dayq;
+                    }
                 }
                 continue;
             }

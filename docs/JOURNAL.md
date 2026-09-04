@@ -1221,3 +1221,34 @@ Neither number means anything alone; the discrepancy does.
 
 Fourth instrument artifact this week. The rule is now explicit: when a
 measurement says something remarkable, check the instrument before believing it.
+
+### 9. Spans, not pixels: the week's largest win, found by profiling not guessing
+
+The profile said `op_fill_rect_solid` -- nothing but `emitPixel` across a span
+-- cost ~200 cycles per pixel. Reading `GxEPD2_BW::drawPixel` showed why: it
+re-derives rotation, mirror, window, page and stride for EVERY pixel, plus this
+renderer's own occupancy test, when all of that is constant along a scanline.
+
+Measured the occupancy map first rather than assume it: disabling it is 12-17%
+faster on single-primitive probes and **+62% slower on art_deco_4**. It stays.
+Which shaped the design -- the map and the framebuffer are both 1-bpp bitmaps,
+so flip the map to MSB-first and fold it in byte-wise: paint = mask & ~occ.
+
+Two A/B'd steps, both byte-identical to the default, both gated by a counter
+that refuses to pass a span path that wrote no spans:
+
+- Solid runs: `op_fill_rect_solid` 33.4 -> 8.2 ms (-75%), `op_fill_circle`
+  -77%, `confetti` -55%. Patterned scripts unmoved, by design.
+- Pattern runs and DRAW: `op_fill_rect_pattern` -60%, `grid` -55%,
+  `reconnected` -52%; every real script -18% to -59%, untouched probes +0.0%.
+
+Against the float renderer of two days ago, art_deco_4 is 518 -> 110 ms.
+
+Two design points worth keeping. The Watchy blit writes straight into the
+library buffer but PROBES its layout at every clear -- two pixels through the
+library's own drawPixel, check the exact bytes, restore -- rather than trusting
+private fields. And the host shim implements the blit for real, nibble-wise,
+because an equivalence gate that exercises a fallback proves nothing.
+
+Not flipped to default yet: the M5Paper's 4-bpp canvas has only the
+per-bit fallback and has not been measured on its own hardware.

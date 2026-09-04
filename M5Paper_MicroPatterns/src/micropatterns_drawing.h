@@ -1,6 +1,7 @@
 #ifndef MICROPATTERNS_DRAWING_H
 #define MICROPATTERNS_DRAWING_H
 
+#include <cstring>
 #include "mp_canvas.h" // MPCanvas: the 4-method platform canvas (M5EPD or Watchy)
 #include <esp_task_wdt.h> // For watchdog reset functions
 #include <functional> // For std::function
@@ -156,6 +157,50 @@ public: // Made public for DisplayListRenderer
         mp_canvas_fill_mask_row(_canvas, sy, b0, nb, cover, color);
     }
     static const int kMaxSpanBytes = 128;   // 1024 px; wider spans fall back
+
+    // Same, with a caller-built cover mask (bit set = paint this pixel `color`,
+    // clear = leave it). `cover` is indexed from byte x0>>3 and MSB-first. This
+    // is DRAW: an asset's set bits are painted, its clear bits are transparent.
+    inline void emitMaskSpan(int sy, int x0, int x1, uint8_t* cover, uint8_t color,
+                             uint8_t* occRow, unsigned int& skipped) {
+        const int b0 = x0 >> 3, nb = ((x1 - 1) >> 3) - b0 + 1;
+        if (occRow) {
+            for (int b = 0; b < nb; ++b) {
+                const uint8_t m = cover[b], o = occRow[b0 + b];
+                skipped += (unsigned int)__builtin_popcount((unsigned)(m & o));
+                occRow[b0 + b] = (uint8_t)(o | m);
+                cover[b] = (uint8_t)(m & ~o);
+            }
+        }
+        ++_spanRows;
+        mp_canvas_fill_mask_row(_canvas, sy, b0, nb, cover, color);
+    }
+
+    // Two colours: every pixel of [x0,x1) is painted, `on` where the ink bit
+    // is set and `off` where it is clear. This is a pattern fill. Two row
+    // blits rather than a new canvas primitive; the rows are at most 120 bytes.
+    inline void emitPatternSpan(int sy, int x0, int x1, const uint8_t* ink,
+                                uint8_t on, uint8_t off, uint8_t* occRow, unsigned int& skipped) {
+        const int b0 = x0 >> 3, b1 = (x1 - 1) >> 3, nb = b1 - b0 + 1;
+        uint8_t onM[kMaxSpanBytes], offM[kMaxSpanBytes];
+        for (int b = b0; b <= b1; ++b) {
+            uint8_t m = 0xFFu;
+            if (b == b0) m &= (uint8_t)(0xFFu >> (x0 & 7));
+            if (b == b1) m &= (uint8_t)(0xFFu << (7 - ((x1 - 1) & 7)));
+            if (occRow) {
+                const uint8_t o = occRow[b];
+                skipped += (unsigned int)__builtin_popcount((unsigned)(m & o));
+                occRow[b] = (uint8_t)(o | m);
+                m = (uint8_t)(m & ~o);
+            }
+            const uint8_t k = (uint8_t)(ink[b - b0] & m);
+            onM[b - b0]  = k;
+            offM[b - b0] = (uint8_t)(m & ~k);
+        }
+        ++_spanRows;
+        mp_canvas_fill_mask_row(_canvas, sy, b0, nb, onM,  on);
+        mp_canvas_fill_mask_row(_canvas, sy, b0, nb, offM, off);
+    }
 
 
     // Transformation helpers using float math and matrices, now use DisplayListItem's state
