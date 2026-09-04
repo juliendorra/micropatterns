@@ -723,9 +723,9 @@ void MicroPatternsDrawing::fillRect(const DisplayListItem& item) {
             const int32_t kx = (int32_t)(2 * C), ky = (int32_t)(-2 * S);
             auto gxi = [&](int x) { return gx0 + (int64_t)(kx * (x - min_sx)); };
             auto gyi = [&](int x) { return gy0 + (int64_t)(ky * (x - min_sx)); };
-            narrowSpan(gxi, (int64_t)lx * sI << 16, (int64_t)(lx + lw) * sI << 16, x0, x1);
+            narrowSpan(gxi, (int64_t)lx * sI * 65536, (int64_t)(lx + lw) * sI * 65536, x0, x1);
             if (x0 >= x1) continue;
-            narrowSpan(gyi, (int64_t)ly * sI << 16, (int64_t)(ly + lh) * sI << 16, x0, x1);
+            narrowSpan(gyi, (int64_t)ly * sI * 65536, (int64_t)(ly + lh) * sI * 65536, x0, x1);
             if (x0 >= x1) continue;
         } else {
             auto gx = [&](int x) { return im0 * (static_cast<float>(x) + 0.5f) + m2y + im4; };
@@ -1335,9 +1335,9 @@ void MicroPatternsDrawing::drawAsset(const DisplayListItem& item, const MicroPat
             const int32_t kx = (int32_t)(2 * C), ky = (int32_t)(-2 * S);
             auto axi = [&](int x) { return gx0 + (int64_t)(kx * (x - min_sx)); };   // affine, see fillRect
             auto ayi = [&](int x) { return gy0 + (int64_t)(ky * (x - min_sx)); };
-            narrowSpan(axi, (int64_t)lx_asset_origin * sI << 16, (int64_t)(lx_asset_origin + asset.width) * sI << 16, x0, x1);
+            narrowSpan(axi, (int64_t)lx_asset_origin * sI * 65536, (int64_t)(lx_asset_origin + asset.width) * sI * 65536, x0, x1);
             if (x0 >= x1) continue;
-            narrowSpan(ayi, (int64_t)ly_asset_origin * sI << 16, (int64_t)(ly_asset_origin + asset.height) * sI << 16, x0, x1);
+            narrowSpan(ayi, (int64_t)ly_asset_origin * sI * 65536, (int64_t)(ly_asset_origin + asset.height) * sI * 65536, x0, x1);
         } else {
             auto alx = [&](int x) {
                 const float v = im0 * (static_cast<float>(x) + 0.5f) + m2y + im4;

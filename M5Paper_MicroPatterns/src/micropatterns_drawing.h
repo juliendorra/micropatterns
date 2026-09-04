@@ -140,8 +140,10 @@ public: // Made public for DisplayListRenderer
         const int64_t ny64 = (-(int64_t)S * dxN + (int64_t)C * dyN) >> 14;
         const int64_t lim = (int64_t)1 << 30;
         if (nx64 <= -lim || nx64 >= lim || ny64 <= -lim || ny64 >= lim) return r;
-        const int32_t bx = (int32_t)nx64 / s - (originX << 16);
-        const int32_t by = (int32_t)ny64 / s - (originY << 16);
+        // multiply, not shift: the origin may be negative (DRAW X=-2), and a
+        // left shift of a negative value is undefined. Same instruction.
+        const int32_t bx = (int32_t)nx64 / s - originX * 65536;
+        const int32_t by = (int32_t)ny64 / s - originY * 65536;
         r.x0 = bx; r.y0 = by;
         r.dx = ( 2 * C) / s;
         r.dy = (-2 * S) / s;
