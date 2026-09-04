@@ -1178,3 +1178,46 @@ after all.
 The bench corpus now carries all three sets, and `gen_ops_corpus.py` picks up
 the newest device backup automatically, so this cannot silently go back to being
 synthetic-only.
+
+### 8. Profiling art_deco_4, and the instrument being wrong first
+
+Ran a per-operation profile of the twelve real scripts to stop aiming
+optimisations by intuition. Full numbers in
+`measurements/2026-09-04-art-deco-profile.md`.
+
+**FILL_RECT and DRAW are the renderer** -- between them the dominant cost of
+eleven of twelve scripts. LINE appears once at 3.6%; PIXEL, RECT and CIRCLE
+never appear at all. The ops/ probe corpus gives all ten operations equal
+billing and the real art does not.
+
+**art_deco_4 is 68.5% filled circles** -- 91 ms of its 133 ms, across 54 of
+them. That confirms the earlier guess that the two scripts regressing under the
+integer transform were the two with FILL_CIRCLE, which had been inferred from
+grepping the SOURCE rather than from what renders.
+
+It also shows that attribution was incomplete. 68.5% against a +2.6% per-op cost
+predicts +1.8%, not the +13.2% measured. The gap is circle SHAPE: op_fill_circle
+is one disk of radius 100 over 31,000 pixels; art_deco_4 draws 54 small ones. A
+big circle amortises per-row and per-item overhead and a small one does not --
+the op_fill_pixel lesson again, in a different costume.
+
+**And it killed the Bresenham span idea**, which is what it was run to decide.
+Circles being 68.5% of the script does not mean the SPAN is: 91 ms over ~150,000
+pixels is ~0.6 us per pixel, which is the per-pixel fill, not the few scanline
+setups around it. The earlier evidence already said so -- replacing sqrtf with an
+integer root made op_fill_circle SLOWER, twice, with two different algorithms.
+A cost that does not appear when removed is not a cost. The real target is
+emitPixel, the occupancy map and the pattern lookup: untouched all week, and
+op_fill_rect_solid (33 ms, +0.0% through every change) has been pointing at it
+the whole time.
+
+**The instrument was wrong first.** The profile initially reported art_deco_4 as
+73% UNACCOUNTED -- which reads as a spectacular finding about time spent outside
+drawing. It was my accumulator array: kProfileTypes = 16, while CMD_CIRCLE is 16
+and CMD_FILL_CIRCLE is 17, so the bounds check silently dropped every circle, in
+the one script that is mostly circles. Caught by two counters that should have
+agreed and did not -- the renderer said rendered=67, the profiler had timed 13.
+Neither number means anything alone; the discrepancy does.
+
+Fourth instrument artifact this week. The rule is now explicit: when a
+measurement says something remarkable, check the instrument before believing it.

@@ -214,7 +214,24 @@ ScreenBounds DisplayListRenderer::calculateScreenBounds(const DisplayListItem& i
 }
 
 
+#if MP_PROFILE_ITEMS
+// One clock, whichever platform. Only compiled when profiling is asked for.
+#if defined(ARDUINO)
+#include <esp_timer.h>
+static inline int64_t mp_prof_now_us() { return esp_timer_get_time(); }
+#else
+#include <chrono>
+static inline int64_t mp_prof_now_us() {
+    using namespace std::chrono;
+    return duration_cast<microseconds>(steady_clock::now().time_since_epoch()).count();
+}
+#endif
+#endif
+
 void DisplayListRenderer::renderItem(const DisplayListItem& item) {
+#if MP_PROFILE_ITEMS
+    const int64_t _pt0 = mp_prof_now_us();
+#endif
     // The _drawing methods now take DisplayListItem directly
     switch (item.type) {
         case CMD_FILL_RECT:   _drawing.fillRect(item); break;
@@ -234,6 +251,13 @@ void DisplayListRenderer::renderItem(const DisplayListItem& item) {
         default:
             log_w("DisplayListRenderer (Line %d): Unknown item type %d", (int)item.sourceLine, (int)item.type);
     }
+#if MP_PROFILE_ITEMS
+    const int t = (int)item.type;
+    if (t >= 0 && t < kProfileTypes) {
+        profUs[t] += mp_prof_now_us() - _pt0;
+        profCount[t]++;
+    }
+#endif
 }
 
 void DisplayListRenderer::render(const std::vector<DisplayListItem>& displayList) {

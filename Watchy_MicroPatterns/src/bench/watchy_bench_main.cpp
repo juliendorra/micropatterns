@@ -46,6 +46,7 @@
 #include <SPI.h>
 #include <GxEPD2_BW.h>
 #include <esp_timer.h>
+#include <string.h>
 
 #include "../watchy_canvas.h"
 #include "micropatterns_parser.h"
@@ -86,6 +87,79 @@ static const int kHour = 12, kMinute = 34, kSecond = 56;
 // forward transform (line/rect endpoints, circle centres, filled-circle span).
 enum MPBenchPath { MPB_FLOAT = 0, MPB_FIXED = 1, MPB_INT = 2 };
 static const char* kPathName[3] = { "float", "fixed", "int" };
+
+#if MP_PROFILE_ITEMS
+// Where does ONE script's rasterisation actually go, per drawing operation?
+//
+// The per-op probes answer "what does this operation cost"; they cannot answer
+// "how much of it is in this script". This does, by timing every display-list
+// item and bucketing by type. The timestamps are not free -- two esp_timer
+// reads per item, cheap against a filled circle and not cheap against a PIXEL
+// -- so read the RESULT AS A DISTRIBUTION, and read the reported overhead
+// estimate before believing any row with a huge count and a small total.
+static const char* kCmdName(int t) {
+    switch (t) {
+        case CMD_FILL_RECT:   return "FILL_RECT";
+        case CMD_RECT:        return "RECT";
+        case CMD_FILL_CIRCLE: return "FILL_CIRCLE";
+        case CMD_CIRCLE:      return "CIRCLE";
+        case CMD_LINE:        return "LINE";
+        case CMD_PIXEL:       return "PIXEL";
+        case CMD_FILL_PIXEL:  return "FILL_PIXEL";
+        case CMD_DRAW:        return "DRAW";
+        default:              return "other";
+    }
+}
+
+static void profileOne(const MPBenchScript& s, int pathMode)
+{
+    const int W = g_display.width();
+    const int H = g_display.height();
+
+    MicroPatternsParser parser;
+    if (!parser.parse(String(s.src))) return;
+    MicroPatternsRuntime runtime(W, H, parser.getProgram());
+    runtime.setCounter(kCounter);
+    runtime.setTime(kHour, kMinute, kSecond);
+    runtime.generateDisplayList();
+    const std::vector<DisplayListItem>& dl = runtime.getDisplayList();
+
+    g_display.setFullWindow();
+    g_display.firstPage();
+
+    DisplayListRenderer renderer(&g_canvas, W, H);
+    renderer.setFixedPointEnabled(pathMode != MPB_FLOAT);
+    renderer.setIntegerTransformEnabled(pathMode == MPB_INT);
+    renderer.resetProfile();
+
+    const int64_t t0 = esp_timer_get_time();
+    renderer.render(dl);
+    const int64_t total_us = esp_timer_get_time() - t0;
+
+    // Cost of the instrumentation itself: the same two clock reads, timed.
+    int64_t items = 0;
+    for (int i = 0; i < DisplayListRenderer::kProfileTypes; ++i) items += renderer.profCount[i];
+    const int64_t o0 = esp_timer_get_time();
+    for (int64_t i = 0; i < items; ++i) { volatile int64_t a = esp_timer_get_time(); (void)a; }
+    const int64_t overhead_us = esp_timer_get_time() - o0;
+
+    // dl_items is what the CULLING pass walks; items is what actually drew.
+    // A big gap means the time is in bounds/culling, not in drawing.
+    Serial.printf("MPPROF|name=%s path=%s total_us=%lld items=%lld probe_overhead_us=%lld "
+                  "dl_items=%d rendered=%d offscreen=%d occluded=%d\n",
+                  s.name, kPathName[pathMode], (long long)total_us,
+                  (long long)items, (long long)overhead_us,
+                  renderer.getTotalItems(), renderer.getRenderedItems(),
+                  renderer.getCulledOffScreen(), renderer.getCulledByOcclusion());
+    for (int i = 0; i < DisplayListRenderer::kProfileTypes; ++i) {
+        if (renderer.profCount[i] == 0) continue;
+        Serial.printf("MPPROF|name=%s path=%s op=%s count=%ld us=%lld\n",
+                      s.name, kPathName[pathMode], kCmdName(i),
+                      (long)renderer.profCount[i], (long long)renderer.profUs[i]);
+    }
+    Serial.flush();
+}
+#endif
 
 static void benchOne(const MPBenchScript& s, int pathMode)
 {
@@ -174,9 +248,18 @@ void setup()
     Serial.flush();
 
     for (int i = 0; i < MPBENCH_SCRIPT_COUNT; ++i) {
+#if MP_PROFILE_ITEMS
+        // Profiling build: only the real art, only the default path. The probes
+        // already say what each operation costs; this says how much of each one
+        // a real script contains.
+        if (strcmp(kMPBenchScripts[i].kind, "real") == 0) {
+            profileOne(kMPBenchScripts[i], MPB_FIXED);
+        }
+#else
         benchOne(kMPBenchScripts[i], MPB_FLOAT);
         benchOne(kMPBenchScripts[i], MPB_FIXED);
         benchOne(kMPBenchScripts[i], MPB_INT);
+#endif
     }
 
     Serial.println("MPBENCH|end");

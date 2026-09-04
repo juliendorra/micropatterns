@@ -150,7 +150,11 @@ def main():
     p.add_argument("--timeout", type=float, default=300)
     p.add_argument("--compare", nargs=2)
     p.add_argument("--paths", help="float vs fixed within one results file")
+    p.add_argument("--profile", help="per-operation profile from a raw MPPROF capture")
     args = p.parse_args()
+    if args.profile:
+        report_profile(args.profile)
+        return
     if args.paths:
         compare_paths_same_run(args.paths); return
     if args.compare:
@@ -161,6 +165,38 @@ def main():
     if args.out:
         json.dump({"meta": meta, "agg": agg, "raw": records}, open(args.out, "w"), indent=1)
         print(f"\n{len(records)} samples -> {args.out}")
+
+def report_profile(raw_path):
+    """Per-operation breakdown of the real scripts, from an MPPROF capture.
+
+    Prints each script's rasterisation split by drawing operation. The share
+    column is what this exists for: the ops/ probes say what an operation costs,
+    and only this says how much of it a given script actually contains.
+    """
+    import re
+    tot, rows = {}, {}
+    for line in open(raw_path, errors="replace"):
+        if "MPPROF|" not in line:
+            continue
+        f = dict(kv.split("=", 1) for kv in line.split("MPPROF|", 1)[1].strip().split() if "=" in kv)
+        name = f.get("name")
+        if not name:
+            continue
+        if "total_us" in f:
+            tot[name] = (int(f["total_us"]), int(f.get("items", 0)), int(f.get("probe_overhead_us", 0)))
+        elif "op" in f:
+            rows.setdefault(name, []).append((f["op"], int(f["count"]), int(f["us"])))
+    if not tot:
+        print("no MPPROF lines found -- was this flashed with env:watchy2-profile?")
+        return
+    for name in sorted(tot, key=lambda n: -tot[n][0]):
+        total, items, overhead = tot[name]
+        print(f"\n{name}   total {total/1000:.2f} ms   {items} items   "
+              f"probe overhead ~{overhead/1000:.2f} ms ({overhead*100.0/max(total,1):.0f}%)")
+        print(f"  {'op':<12} {'count':>6} {'ms':>9} {'share':>7} {'us/item':>9}")
+        for op, count, us in sorted(rows.get(name, []), key=lambda r: -r[2]):
+            print(f"  {op:<12} {count:>6} {us/1000:>8.2f}m {us*100.0/max(total,1):>6.1f}% {us/max(count,1):>8.1f}")
+
 
 if __name__ == "__main__":
     main()

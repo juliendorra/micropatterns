@@ -61,6 +61,27 @@ public:
     // micropatterns_drawing.h for why this is a gate and not a statistic.
     unsigned long getFixedPointPixels() const { return _drawing.getFixedPointPixels(); }
     unsigned long getIntegerXformCalls() const { return _drawing.getIntegerXformCalls(); }
+
+#if MP_PROFILE_ITEMS
+    // Per-item-type wall clock, for answering "where does this script actually
+    // spend its time" instead of guessing. Compiled out entirely unless the
+    // build asks for it: it takes a timestamp around every item, which is
+    // cheap next to a filled circle and NOT cheap next to a PIXEL, so the
+    // numbers it produces are a distribution, not an absolute cost.
+    // Must cover the whole CommandType enum, which runs to CMD_NOOP = 24.
+    // It was 16, which silently dropped CMD_CIRCLE (16) and CMD_FILL_CIRCLE
+    // (17) -- so a circle-heavy script reported 73% of its time "unaccounted"
+    // and very nearly got a headline saying the time was outside drawing.
+    // The bug was in the instrument, as it usually is here.
+    static const int kProfileTypes = 32;
+    int64_t profUs[kProfileTypes] = {0};
+    int32_t profCount[kProfileTypes] = {0};
+    int64_t profOverheadUs = 0;
+    void resetProfile() {
+        for (int i = 0; i < kProfileTypes; ++i) { profUs[i] = 0; profCount[i] = 0; }
+        profOverheadUs = 0;
+    }
+#endif
     // Pixels the drawing layer skipped because the pixel-occupation map said
     // they were already covered. Already tracked by MicroPatternsDrawing and
     // already logged by render(); this getter just exposes it to callers
