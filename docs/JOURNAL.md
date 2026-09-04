@@ -1252,3 +1252,24 @@ because an equivalence gate that exercises a fallback proves nothing.
 
 Not flipped to default yet: the M5Paper's 4-bpp canvas has only the
 per-bit fallback and has not been measured on its own hardware.
+
+### 10. Two attempts at the per-pixel modulo, both slower, one also wrong
+
+With emitPixel gone the pattern loops' two `%` per pixel looked like the next
+cost. Power-of-two masking made art_deco_4 21% SLOWER -- and the reason was a
+fact I should have read first: this language's patterns are 20x20 almost
+everywhere (eleven of the twelve real scripts use the recommended maximum), so
+the mask never fires and the general case had two divisions instead of one.
+
+The older trick -- reduce once per span, wrap by compare-and-subtract per step,
+exact and byte-identical -- was ALSO slower: +21% on op_fill_circle_pattern_rot,
++13% on art_deco_4. Two independent removals of the division both losing is the
+finding: on this chip that divide is not the cost it was assumed to be. Both
+reverted; the reasoning that motivated them is recorded as overridden.
+
+The second attempt was wrong as well as slow. A regex edit wrapped bx but not
+by in the rotated rect loop; the ops corpus flagged 27,985 differing pixels
+while `verify` passed and the main corpus compared identical -- it has no
+rotated patterned FILL_RECT. `make compare-span` now runs on both corpora in
+ci. Fourth time this week a gate's silence turned out to mean "no case for
+that", not "correct".

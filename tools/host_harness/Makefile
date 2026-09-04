@@ -59,7 +59,7 @@ OBJS         := $(CORE_OBJS) $(HARNESS_OBJS)
 
 BIN := $(BUILD)/mpharness
 
-.PHONY: all clean verify bench bake list profile policy verify-float bake-float compare-float compare-int
+.PHONY: all clean verify bench bake list profile policy verify-float bake-float compare-float compare-int compare-span
 
 all: $(BIN) $(BUILD)/mppolicy
 
@@ -112,6 +112,15 @@ compare-float: $(BIN)
 # refuses to pass if the integer path performed no integer transforms.
 compare-int: $(BIN)
 	$(BIN) compare-paths displaylist displaylist-int --corpus corpus --golden golden
+
+# The span writer must stay byte-identical to the default, and it is checked on
+# BOTH corpora. The main corpus has no rotated patterned FILL_RECT, and a
+# 27,985-pixel divergence in exactly that case passed `verify` and compared
+# identical here before the ops corpus caught it. A gate is only as good as
+# the cases it contains.
+compare-span: $(BIN)
+	$(BIN) compare-paths displaylist displaylist-span --corpus corpus --golden golden
+	$(BIN) compare-paths displaylist displaylist-span --corpus ../device_bench/ops --golden golden
 
 # The browse and refresh policy, off-device. Pure logic with an injected clock,
 # so the timing rules that used to be tuned against a panel by hand are pinned
@@ -243,7 +252,7 @@ verify-emulator-wasm: wasm wasm-constrained
 
 # Required pre-deploy gate. The longer generated lifetime soak remains a
 # scheduled/manual CI job; these checks are deterministic and run on every push.
-ci: verify verify-float compare-int audit-sweep sanitize verify-strict verify-source-parity \
+ci: verify verify-float compare-int compare-span audit-sweep sanitize verify-strict verify-source-parity \
 	verify-wasm verify-language-wasm verify-device-diagnostics \
 	verify-wasm-constrained verify-emulator-wasm
 

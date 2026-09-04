@@ -101,3 +101,58 @@ per-pixel bounds test and table read still run for every pixel of the AABB.
 `art_deco_4` is 54 small patterned circles, and with `emitPixel` gone the per
 pixel work that remains is the Q16.16 step, two integer `%` and a bit set — so
 the modulo's share has grown. That is step 3.
+
+## Step 3a — power-of-two masking: a regression, reverted
+
+With `emitPixel` gone, the pattern loops' two integer `%` per pixel looked like
+the next cost. First attempt replaced them with `v & (n-1)` when `n` is a power
+of two and `((v % n) + n) % n` otherwise. Measured on the Watchy it was WORSE,
+and worse on the default path too, since the loops are shared:
+
+| | before | after | |
+|---|---|---|---|
+| `art_deco_4` (default) | 135.32 | 163.72 | **+21%** |
+| `art_deco_4` (span) | 110.35 | 143.53 | +30% |
+| `reconnected` (default) | 44.11 | 47.99 | +9% |
+| `op_fill_circle_pattern_rot` (span) | 12.81 | 14.80 | +16% |
+
+The fact that explains it, read from the twelve real scripts afterwards rather
+than before: **patterns are 20×20 almost everywhere.** Eleven of twelve use the
+recommended maximum; `grid` is 8×8 and the seascapes mix in 4×4. The mask never
+fires, and the general case had gone from one division to two.
+
+The regression is also a clean measurement of what the divisions cost: doubling
+them added 21% to `art_deco_4`, so removing them entirely is worth about that.
+
+The right trick is the older one. The coordinate advances by a constant
+`|d| <= 1 cell` per pixel, so reduce it once per span into `[0, patW<<16)` and
+keep it there with a compare-and-subtract per step. No division, and exact —
+subtracting whole multiples of the modulus leaves `floor(v) mod patW`
+unchanged. That is step 3b.
+
+## Step 3b — wrap by subtraction: also slower, also reverted
+
+Reduce the Q16.16 pattern coordinate once per span, then keep it in range with
+a compare-and-subtract per step instead of `%`. Exact, and byte-identical on
+the main corpus. On the Watchy:
+
+| | step 2 | step 3b | |
+|---|---|---|---|
+| `op_fill_circle_pattern_rot` (span) | 12.81 | 15.49 | **+21%** |
+| `op_fill_rect_pattern` (span) | 14.89 | 16.59 | +11% |
+| `art_deco_4` (span) | 110.35 | 124.78 | +13% |
+
+**Two different ways of removing the per-pixel division have now both lost.**
+That is the measurement, and it overrides the reasoning that motivated both:
+on this chip the integer divide in the pattern loop is not the cost it was
+assumed to be, and a compare-and-branch pair per axis costs more than it does.
+The 3a regression is better read as "adding a division and a test costs 21%"
+than as "a division costs 21%". Not pursued further; both attempts kept out.
+
+**And 3b was wrong as well as slow.** The ops corpus reported
+`op_fill_rect_pattern_rot` differing by 27,985 pixels: the edit had wrapped `bx`
+but not `by` in the rotated rect loop, so the pattern row index ran out of
+range. `verify` passed and the main corpus compared identical, because the main
+corpus contains no rotated patterned `FILL_RECT`. The ops corpus caught it.
+`make compare-span` now checks the span path on BOTH corpora and is part of
+`ci`; a gate is only as good as the cases in it.
