@@ -68,3 +68,31 @@ circle-heavy scripts, as it did before. Next step.
 the measurement: the collector dropped the new column and I read the no-map
 column as +62% for it. The int64 divisions were real regardless; `nx` and `ny`
 fit `int32` on any on-screen row, so the divide is one Xtensa instruction now.
+
+## Step 3b — the circle span in int32 at 1/16 pixel
+
+The exact integer span (Q15, int64 multiply, 31-iteration root per scanline)
+was the whole `+14%` on `art_deco_4`. Under the approximate flag it is now Q4
+int32: every quantity fits for radii up to 8000, the root is 16 iterations, and
+the endpoint can sit one pixel off the exact one where the true edge is within
+1/16 px of a pixel centre. Same trade as `D ≈ 2^30`; +~200 px on the real
+corpus at 960×540 (6,142 vs 5,944).
+
+| | span | full (exact span) | full (Q4 span) | |
+|---|---|---|---|---|
+| `op_fill_circle` | 5.77 | 6.40 | **5.76** | equal to the float `sqrtf` span |
+| `op_fill_circle_pattern_rot` | 12.58 | 13.38 | 12.35 | −2% |
+| `art_deco_4` | 86.23 | 100.02 | **81.34** | **−5.7%** vs span |
+| `seascape_2` | 30.62 | 33.31 | 29.81 | −3% |
+| `seascape_4` | 80.03 | 79.11 | 77.89 | −3% |
+| `thunderstorms` | 52.39 | 50.43 | 50.53 | −4% |
+| pattern and DRAW probes | | | | flat |
+
+`displaylist-full` is now flat-to-better than the span path on every script and
+every probe. Against the float renderer of two days ago, `art_deco_4` is
+**518 → 81 ms**.
+
+Still float in this path: `narrowSpan` (per-row bisection in `fillRect` and
+`drawAsset`), the display-list bounds pass (per item), `exactReciprocal`
+(per item, computed and unused by the integer branches), and
+`matrix_set_rigid`'s `1/det` (per transform command).

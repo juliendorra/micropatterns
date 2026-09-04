@@ -1066,7 +1066,24 @@ void MicroPatternsDrawing::fillCircle(const DisplayListItem& item) {
         // This span is exact, so nothing inside it needs testing.
         if (_fixedPointEnabled) {
             int fx0, fx1;
-            if (_integerTransform) {
+            if (_integerTransform && _integerDda && screen_radius_i < 8000) {
+                // APPROXIMATE integer span: 1/16 pixel, all int32. The exact
+                // Q15 form below needs an int64 multiply and a 31-iteration
+                // root per scanline, and on 54 small circles (art_deco_4) that
+                // cost 14%. At Q4 every quantity fits int32 -- R up to 8000 --
+                // and the root is 16 iterations. The span endpoint can land one
+                // pixel off the exact one where the true edge sits within 1/16
+                // px of a pixel centre; same precision trade as D ~= 2^30.
+                const int32_t cx4 = (int32_t)(scxNum >> 11), cy4 = (int32_t)(scyNum >> 11);   // Q15 -> Q4
+                const int32_t dy4 = (sy_iter << 4) + 8 - cy4;
+                const int32_t R4  = screen_radius_i << 4;
+                const int32_t rr4 = R4 * R4 - dy4 * dy4;
+                if (rr4 <= 0) continue;
+                const int32_t hw4 = mp_isqrt32(rr4);
+                const int32_t lo4 = cx4 - hw4 - 8, hi4 = cx4 + hw4 - 8;   // on sx*16
+                fx0 = -((-lo4) >> 4);
+                fx1 = (hi4 >> 4) + 1;
+            } else if (_integerTransform) {
                 // No float and no sqrtf. A pixel centre sx+0.5 is the whole
                 // number (2*sx+1) over 2, so in Q15 numerators it is
                 // sx*MP_Q15_ONE + MP_Q15_ONE/2. The radius and the centre are

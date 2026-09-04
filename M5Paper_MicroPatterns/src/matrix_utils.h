@@ -60,6 +60,19 @@ inline int32_t mp_q15_round(int64_t n) {
 // Used for a filled circle's per-scanline half-width, which is sqrt of an
 // exactly-representable whole number and therefore has no business calling
 // sqrtf. Newton from a shift-based seed; converges in a handful of iterations.
+// 32-bit restoring root, same shape. 16 iterations, no division.
+inline int32_t mp_isqrt32(int32_t v) {
+    if (v <= 0) return 0;
+    uint32_t x = (uint32_t)v, res = 0, bit = 1u << 30;
+    while (bit > x) bit >>= 2;
+    while (bit) {
+        if (x >= res + bit) { x -= res + bit; res = (res >> 1) + bit; }
+        else                {                 res =  res >> 1; }
+        bit >>= 2;
+    }
+    return (int32_t)res;
+}
+
 inline int64_t mp_isqrt64(int64_t v) {
     // Restoring binary square root: shifts, adds and compares only.
     //

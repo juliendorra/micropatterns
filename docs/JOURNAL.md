@@ -1324,3 +1324,12 @@ The first measurement said +62% and I nearly believed it. The collector's column
 filter had not been updated, the new path's samples were silently dropped from
 the report, and I read the no-map column in their place. Fifth instrument
 artifact of the week, and the first one that was purely my own tooling.
+
+### 15. The circle span in int32: full path now ahead of span everywhere
+
+The exact Q15 circle span -- int64 multiply and a 31-iteration root per row --
+was the entire +14% on art_deco_4. At Q4 in int32 (1/16 px, 16-iteration root)
+it costs exactly what the float sqrtf span did: op_fill_circle 5.76 vs 5.77.
+displaylist-full is now -3..-6% against the span path on every real script and
+flat on every probe. art_deco_4: 518 ms on Tuesday, 81 ms now. Precision spent:
+about 200 more pixels on the real corpus at 960x540, at circle edges.
