@@ -147,3 +147,51 @@ unused by the integer branches), `matrix_set_rigid`'s `1/det` (per transform
 command), `mp_sin_deg` for the float matrix (per command), and the float
 fallback loops themselves. All per-item or per-command; none per pixel or per
 row. They go when the float path is compiled out rather than selected.
+
+## Step 5 — float that was executed and discarded, and the PIXEL loop
+
+Asked "where are the floats in the pipeline, then?" after the flip, the honest
+map had two things wrong with the claim that everything between a display list
+and the pixels was integer:
+
+**Executed, not used.** In `fillRect`, `fillCircle` and `drawAsset` the float
+DDA setup — `invSf` (a float DIVISION when `SCALE` is not a power of two),
+`bx0`, `dbx`, the pattern-row hoist with its `v / sf` — was still computed
+every scanline and then lost the ternary to the integer setup. `exactReciprocal`
+did the same once per item. The compiler could not remove them because the
+float fallback branch reads them. They now run only when the integer setup
+declines the row. Pixel-identical to the pre-change default on all three corpora
+(21 / 30 / 36). Speed: flat — a float divide on the FPU was never the cost —
+which is exactly why no gate and no measurement had noticed.
+
+**`PIXEL` / `FILL_PIXEL` were still float per pixel.** Their inner loop walked
+the item's AABB with `im0*fx + m2y + im4` and a float range test — at `SCALE 5`
+that is 25 float tests per item. Treated all week as "one pixel per item",
+which is only true at `SCALE 1`. Now the same integer walk the fills use:
+scaled-logical Q16 from the exact transform, affine along the row, tested
+against `(lx*s) << 16` edges; the patterned form takes its base coordinate from
+`intDdaRow`. Three shapes were measured on `op_fill_pixel` (120 one-pixel
+items, the probe that isolates per-item cost):
+
+| shape | vs span |
+|---|---|
+| int64 accumulators | +10.4% |
+| int32 accumulators | +12.5% — so the loop width was never it |
+| item constants hoisted above the row loop | **+1.8%**, noise |
+
+The setup was the whole cost, on rows one pixel long. Fills flat throughout;
+pixel identity held on every corpus, including for `PIXEL`.
+
+## What is still float, precisely
+
+- **Display-list generation, per `TRANSLATE`/`ROTATE`/`RESET`**: the float
+  matrices in `TransformSnapshot` are still built (`mp_sin_deg`,
+  `matrix_set_rigid` with its `1/det`) alongside the exact integer state,
+  because the selectable float path reads them. ~100 per render.
+- **The float fallback branches** in every primitive, and the float bounds pass:
+  compiled in, never executed on the default path.
+- Nothing per pixel. Nothing per row.
+
+Removing the last two is a build-configuration change — compile the float path
+out rather than select it at run time — and it is what will finally make `nm`
+show `__divsf3` and `sqrtf` gone from the binary.

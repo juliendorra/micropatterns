@@ -1370,3 +1370,24 @@ per-bit fallback for the row blit and no measurement. And the first flip build
 failed on a lambda defined after its use; the stale binary then rebaked the
 goldens harmlessly -- identical to the old ones, which the vacuity printout
 showed (span rows: displaylist=0) before anything was trusted.
+
+### 18. "Every operation is integer" was not true yet, and the profiler could not have told me
+
+The user asked where the remaining floats were, and checking properly found two
+holes in the claim. The float DDA setup -- including a division when SCALE is
+not a power of two -- was still EXECUTED every scanline and then discarded in
+favour of the integer one; the compiler could not delete it because the float
+fallback reads it. And PIXEL/FILL_PIXEL still walked their box in float per
+pixel, which I had filed all week as "one pixel per item" -- true only at
+SCALE 1. Neither showed in any gate (same picture) or any measurement (an FPU
+divide is cheap). Both were only wrong against the goal.
+
+Both fixed, pixel-identical on all three corpora, flat on the device. The PIXEL
+conversion took three shapes to get flat: int64 +10%, int32 +12%, and finally
+hoisting the item constants out of the row loop -- the setup was the entire
+cost on one-pixel rows, the same lesson as every small-item case this week.
+
+What is still float, stated exactly: the float matrices built per transform
+command for the selectable float path, and the float fallback branches, compiled
+in and never run. Nothing per pixel, nothing per row. Compiling the float path
+out is the remaining step, and the nm check is its proof.

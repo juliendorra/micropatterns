@@ -476,15 +476,57 @@ void MicroPatternsDrawing::drawPixel(const DisplayListItem& item) {
     const int cw = _canvasWidth;
     unsigned int skipped = 0;
 
+    // Item-level constants of the integer PIXEL walk, once per item.
+    struct { int64_t C, S, dxN0, lim; int32_t kx, ky, ex0, ex1, ey0, ey1; bool edgesFit; } pxI;
+    {
+        const int64_t sI = item.xf->scaleInt;
+        pxI.C = item.xf->cosQ15; pxI.S = item.xf->sinQ15;
+        pxI.dxN0 = ((int64_t)min_sx << 15) + (1 << 14) - item.xf->txNum;
+        pxI.kx = (int32_t)(2 * pxI.C); pxI.ky = (int32_t)(-2 * pxI.S);
+        const int64_t ex0l = (int64_t)lx * sI * 65536, ex1l = (int64_t)(lx + 1) * sI * 65536;
+        const int64_t ey0l = (int64_t)ly * sI * 65536, ey1l = (int64_t)(ly + 1) * sI * 65536;
+        // The row start is checked per row; the span's advance is bounded here so
+        // the per-row check can be a single compare on the start value.
+        const int64_t spanAdv = (int64_t)(max_sx - min_sx) * 65536;
+        pxI.lim = ((int64_t)1 << 30) - spanAdv;
+        pxI.edgesFit = pxI.lim > 0 && ex0l > -((int64_t)1 << 30) && ex1l < ((int64_t)1 << 30) &&
+                       ey0l > -((int64_t)1 << 30) && ey1l < ((int64_t)1 << 30);
+        pxI.ex0 = (int32_t)ex0l; pxI.ex1 = (int32_t)ex1l; pxI.ey0 = (int32_t)ey0l; pxI.ey1 = (int32_t)ey1l;
+    }
+
     const uint8_t color = item.color;
     for (int sy_iter = min_sy; sy_iter < max_sy; ++sy_iter) {
         // Per-scanline interrupt poll, matching fillRect/fillCircle/drawAsset.
         // PIXEL's screen bbox grows with SCALE^2 and can cover the whole panel, so a
         // single item could otherwise run ~0.5-1s with no opportunity to abort.
         if (_interrupt_check_cb && _interrupt_check_cb()) { _overdrawSkippedPixels += skipped; return; }
+        uint8_t* occRow = occ ? occ + (size_t)sy_iter * _occStride : nullptr;
+        if (_integerDda) {
+            // The same walk the fills use: scaled logical coordinates in Q16
+            // from the exact integer transform, affine along the row with the
+            // integer slopes 2C and -2S, tested against the unit square's
+            // edges (lx*s, (lx+1)*s) << 16. No float, no division.
+            // Per ROW: only what depends on the row. Everything about the item --
+            // C, S, scale, the four edges, their fit -- is hoisted above the row
+            // loop (pxI). Computing it per row cost op_fill_pixel +12% on 120
+            // one-pixel items: the setup was the whole cost.
+            const int64_t dyN  = ((int64_t)sy_iter << 15) + (1 << 14) - item.xf->tyNum;
+            const int64_t nx64 = ( pxI.C * pxI.dxN0 + pxI.S * dyN) >> 14, ny64 = (-pxI.S * pxI.dxN0 + pxI.C * dyN) >> 14;
+            if (!pxI.edgesFit || nx64 <= -pxI.lim || nx64 >= pxI.lim || ny64 <= -pxI.lim || ny64 >= pxI.lim) goto pixel_float_row;
+            int32_t nx = (int32_t)nx64, ny = (int32_t)ny64;
+            const int32_t kx = pxI.kx, ky = pxI.ky;
+            const int32_t ex0 = pxI.ex0, ex1 = pxI.ex1, ey0 = pxI.ey0, ey1 = pxI.ey1;
+            for (int sx_iter = min_sx; sx_iter < max_sx; ++sx_iter) {
+                if (nx >= ex0 && nx < ex1 && ny >= ey0 && ny < ey1) {
+                    emitPixel(sx_iter, sy_iter, color, occRow, skipped);
+                }
+                nx += kx; ny += ky;
+            }
+            continue;
+        }
+        pixel_float_row:
         const float fy = static_cast<float>(sy_iter) + 0.5f;
         const float m2y = im2 * fy, m3y = im3 * fy;
-        uint8_t* occRow = occ ? occ + (size_t)sy_iter * _occStride : nullptr;
         for (int sx_iter = min_sx; sx_iter < max_sx; ++sx_iter) {
             const float fx = static_cast<float>(sx_iter) + 0.5f;
             const float slx = im0 * fx + m2y + im4;
@@ -538,14 +580,72 @@ void MicroPatternsDrawing::drawFilledPixel(const DisplayListItem& item) {
     const int cw = _canvasWidth;
     unsigned int skipped = 0;
 
+    // Item-level constants of the integer PIXEL walk, once per item.
+    struct { int64_t C, S, dxN0, lim; int32_t kx, ky, ex0, ex1, ey0, ey1; bool edgesFit; } pxI;
+    {
+        const int64_t sI = item.xf->scaleInt;
+        pxI.C = item.xf->cosQ15; pxI.S = item.xf->sinQ15;
+        pxI.dxN0 = ((int64_t)min_sx << 15) + (1 << 14) - item.xf->txNum;
+        pxI.kx = (int32_t)(2 * pxI.C); pxI.ky = (int32_t)(-2 * pxI.S);
+        const int64_t ex0l = (int64_t)lx * sI * 65536, ex1l = (int64_t)(lx + 1) * sI * 65536;
+        const int64_t ey0l = (int64_t)ly * sI * 65536, ey1l = (int64_t)(ly + 1) * sI * 65536;
+        // The row start is checked per row; the span's advance is bounded here so
+        // the per-row check can be a single compare on the start value.
+        const int64_t spanAdv = (int64_t)(max_sx - min_sx) * 65536;
+        pxI.lim = ((int64_t)1 << 30) - spanAdv;
+        pxI.edgesFit = pxI.lim > 0 && ex0l > -((int64_t)1 << 30) && ex1l < ((int64_t)1 << 30) &&
+                       ey0l > -((int64_t)1 << 30) && ey1l < ((int64_t)1 << 30);
+        pxI.ex0 = (int32_t)ex0l; pxI.ex1 = (int32_t)ex1l; pxI.ey0 = (int32_t)ey0l; pxI.ey1 = (int32_t)ey1l;
+    }
+
     for (int sy_iter = min_sy; sy_iter < max_sy; ++sy_iter) {
         // Per-scanline interrupt poll, matching fillRect/fillCircle/drawAsset.
         // PIXEL's screen bbox grows with SCALE^2 and can cover the whole panel, so a
         // single item could otherwise run ~0.5-1s with no opportunity to abort.
         if (_interrupt_check_cb && _interrupt_check_cb()) { _overdrawSkippedPixels += skipped; return; }
+        uint8_t* occRow = occ ? occ + (size_t)sy_iter * _occStride : nullptr;
+        if (_integerDda) {
+            // As drawPixel, plus the pattern lookup from the BASE coordinate
+            // (scaled / s), which intDdaRow supplies in Q16 with its own step
+            // -- the same values the pattern fills walk with.
+            // Per ROW: only what depends on the row. Everything about the item --
+            // C, S, scale, the four edges, their fit -- is hoisted above the row
+            // loop (pxI). Computing it per row cost op_fill_pixel +12% on 120
+            // one-pixel items: the setup was the whole cost.
+            const int64_t dyN  = ((int64_t)sy_iter << 15) + (1 << 14) - item.xf->tyNum;
+            const int64_t nx64 = ( pxI.C * pxI.dxN0 + pxI.S * dyN) >> 14, ny64 = (-pxI.S * pxI.dxN0 + pxI.C * dyN) >> 14;
+            if (!pxI.edgesFit || nx64 <= -pxI.lim || nx64 >= pxI.lim || ny64 <= -pxI.lim || ny64 >= pxI.lim) goto pixel_float_row;
+            int32_t nx = (int32_t)nx64, ny = (int32_t)ny64;
+            const int32_t kx = pxI.kx, ky = pxI.ky;
+            const int32_t ex0 = pxI.ex0, ex1 = pxI.ex1, ey0 = pxI.ey0, ey1 = pxI.ey1;
+            const IntDda pd = intDdaRow(*item.xf, min_sx, sy_iter, 0, 0);
+            int32_t bx = pd.ok ? pd.x0 : 0, by = pd.ok ? pd.y0 : 0;
+            const MicroPatternsAsset* fa = item.fillAsset;
+            const bool pat = pd.ok && fa && fa->width > 0 && fa->height > 0 && !fa->data.empty();
+            const int pw = pat ? fa->width : 1, ph = pat ? fa->height : 1;
+            const uint8_t onC  = (item.color == DRAWING_COLOR_WHITE) ? DRAWING_COLOR_WHITE : DRAWING_COLOR_BLACK;
+            const uint8_t offC = (item.color == DRAWING_COLOR_WHITE) ? DRAWING_COLOR_BLACK : DRAWING_COLOR_WHITE;
+            for (int sx_iter = min_sx; sx_iter < max_sx; ++sx_iter) {
+                if (nx >= ex0 && nx < ex1 && ny >= ey0 && ny < ey1) {
+                    uint8_t c = item.color;
+                    if (pat) {
+                        int px = (int)(bx >> MP_FX_SHIFT) % pw; if (px < 0) px += pw;
+                        int py = (int)(by >> MP_FX_SHIFT) % ph; if (py < 0) py += ph;
+                        const int idx = py * pw + px;
+                        c = (idx >= 0 && idx < (int)fa->data.size() && fa->data[idx] == 1) ? onC : offC;
+                    } else if (fa) {
+                        c = offC;   // fillColorFromBase's "default on error"
+                    }
+                    emitPixel(sx_iter, sy_iter, c, occRow, skipped);
+                }
+                nx += kx; ny += ky;
+                bx += pd.dx; by += pd.dy;
+            }
+            continue;
+        }
+        pixel_float_row:
         const float fy = static_cast<float>(sy_iter) + 0.5f;
         const float m2y = im2 * fy, m3y = im3 * fy;
-        uint8_t* occRow = occ ? occ + (size_t)sy_iter * _occStride : nullptr;
         for (int sx_iter = min_sx; sx_iter < max_sx; ++sx_iter) {
             const float fx = static_cast<float>(sx_iter) + 0.5f;
             const float slx = im0 * fx + m2y + im4;
@@ -678,7 +778,8 @@ void MicroPatternsDrawing::fillRect(const DisplayListItem& item) {
     }
 
     float rcp = 0.0f;
-    const bool useRcp = exactReciprocal(sf, rcp);
+    // A float division per item, read only by the float branches.
+    const bool useRcp = _integerDda ? false : exactReciprocal(sf, rcp);
 
     const uint8_t* patData = patterned ? fa->data.data() : nullptr;
     const int patW    = patterned ? fa->width : 0;
@@ -742,25 +843,36 @@ void MicroPatternsDrawing::fillRect(const DisplayListItem& item) {
             continue;
         }
 
+        IntDda idda; idda.ok = false;
+        if (_integerDda) idda = intDdaRow(*item.xf, x0, sy_iter, 0, 0);
+
         // Same hoist as drawAsset: with no x->y coupling the pattern row is
         // constant across the scanline, so its transform / unscale / floor /
         // modulo happen once per row instead of once per pixel.
         const uint8_t* patRow = nullptr;
         if (im1 == 0.0f && patW > 0) {
-            float v = im1 * (static_cast<float>(x0) + 0.5f) + m3y + im5;
-            if (sf != 0.0f) v = useRcp ? v * rcp : v / sf;
-            int py = ifloor_i(v) % patH;
+            int py;
+            if (idda.ok) {
+                // Row index from the integer setup: y0 is the scaled logical y
+                // in Q16 -- constant along an unrotated row.
+                py = (int)(idda.y0 >> MP_FX_SHIFT) % patH;
+            } else {
+                float v = im1 * (static_cast<float>(x0) + 0.5f) + m3y + im5;
+                if (sf != 0.0f) v = useRcp ? v * rcp : v / sf;
+                py = ifloor_i(v) % patH;
+            }
             if (py < 0) py += patH;
             if ((long)py * patW + patW <= (long)patSize) patRow = patData + (size_t)py * patW;
         }
 
         // The x-only recurrence, when the pattern ROW is already fixed.
-        const float invSf = (sf != 0.0f) ? (useRcp ? rcp : 1.0f / sf) : 1.0f;
-        const float bx0 = (im0 * (static_cast<float>(x0) + 0.5f) + m2y + im4) * invSf;
-        const float dbx = im0 * invSf;
         const int   span = x1 - x0;
-        IntDda idda; idda.ok = false;
-        if (_integerDda) idda = intDdaRow(*item.xf, x0, sy_iter, 0, 0);
+        // The float setup -- including a float DIVISION when SCALE is not a
+        // power of two -- is computed only when the integer setup did not
+        // take the row. It used to run every row and be thrown away.
+        const float invSf = idda.ok ? 1.0f : ((sf != 0.0f) ? (useRcp ? rcp : 1.0f / sf) : 1.0f);
+        const float bx0 = idda.ok ? 0.0f : (im0 * (static_cast<float>(x0) + 0.5f) + m2y + im4) * invSf;
+        const float dbx = idda.ok ? 0.0f : im0 * invSf;
 
         if (patRow) {
             if (_fixedPointEnabled &&
@@ -1049,7 +1161,8 @@ void MicroPatternsDrawing::fillCircle(const DisplayListItem& item) {
     }
 
     float rcp = 0.0f;
-    const bool useRcp = exactReciprocal(sf, rcp);
+    // A float division per item, read only by the float branches.
+    const bool useRcp = _integerDda ? false : exactReciprocal(sf, rcp);
 
     uint8_t* occ = occupancyBase();
     const int cw = _canvasWidth;
@@ -1158,13 +1271,13 @@ void MicroPatternsDrawing::fillCircle(const DisplayListItem& item) {
             const uint8_t patOn  = (item.color == DRAWING_COLOR_WHITE) ? DRAWING_COLOR_WHITE : DRAWING_COLOR_BLACK;
             const uint8_t patOff = (item.color == DRAWING_COLOR_WHITE) ? DRAWING_COLOR_BLACK : DRAWING_COLOR_WHITE;
             if (patW > 0 && patH > 0 && patSize >= patW * patH) {
-                const float invSf = (sf != 0.0f) ? (useRcp ? rcp : 1.0f / sf) : 1.0f;
-                const float cbx0 = (im0 * (static_cast<float>(fx0) + 0.5f) + m2y + im4) * invSf;
-                const float cby0 = (im1 * (static_cast<float>(fx0) + 0.5f) + m3y + im5) * invSf;
-                const float cdbx = im0 * invSf, cdby = im1 * invSf;
                 const int cspan = fx1 - fx0;
                 IntDda cidda; cidda.ok = false;
                 if (_integerDda) cidda = intDdaRow(*item.xf, fx0, sy_iter, 0, 0);
+                const float invSf = cidda.ok ? 1.0f : ((sf != 0.0f) ? (useRcp ? rcp : 1.0f / sf) : 1.0f);
+                const float cbx0 = cidda.ok ? 0.0f : (im0 * (static_cast<float>(fx0) + 0.5f) + m2y + im4) * invSf;
+                const float cby0 = cidda.ok ? 0.0f : (im1 * (static_cast<float>(fx0) + 0.5f) + m3y + im5) * invSf;
+                const float cdbx = cidda.ok ? 0.0f : im0 * invSf, cdby = cidda.ok ? 0.0f : im1 * invSf;
                 if (cidda.ok || (fxFits(cbx0) && fxFits(cby0) &&
                     fxFits(cbx0 + cdbx * static_cast<float>(cspan - 1)) &&
                     fxFits(cby0 + cdby * static_cast<float>(cspan - 1)))) {
@@ -1308,7 +1421,8 @@ void MicroPatternsDrawing::drawAsset(const DisplayListItem& item, const MicroPat
     const uint8_t color = item.color;
 
     float rcp = 0.0f;
-    const bool useRcp = exactReciprocal(sf, rcp);
+    // A float division per item, read only by the float branches.
+    const bool useRcp = _integerDda ? false : exactReciprocal(sf, rcp);
 
     uint8_t* occ = occupancyBase();
     const int cw = _canvasWidth;
@@ -1372,12 +1486,12 @@ void MicroPatternsDrawing::drawAsset(const DisplayListItem& item, const MicroPat
 
         // Same Q16.16 recurrence as fillRect. Asset-local coordinates, so the
         // origin is folded into the start value and never subtracted per pixel.
-        const float invSf = (sf != 0.0f) ? (useRcp ? rcp : 1.0f / sf) : 1.0f;
-        const float ax0 = (im0 * (static_cast<float>(x0) + 0.5f) + m2y + im4) * invSf - forigin_x;
-        const float dax = im0 * invSf;
         const int   span = x1 - x0;
         IntDda aidda; aidda.ok = false;
         if (_integerDda) aidda = intDdaRow(*item.xf, x0, sy_iter, lx_asset_origin, ly_asset_origin);
+        const float invSf = aidda.ok ? 1.0f : ((sf != 0.0f) ? (useRcp ? rcp : 1.0f / sf) : 1.0f);
+        const float ax0 = aidda.ok ? 0.0f : (im0 * (static_cast<float>(x0) + 0.5f) + m2y + im4) * invSf - forigin_x;
+        const float dax = aidda.ok ? 0.0f : im0 * invSf;
 
         if (assetRow) {
             if (_fixedPointEnabled &&
