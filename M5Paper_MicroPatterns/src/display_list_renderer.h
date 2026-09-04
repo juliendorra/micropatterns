@@ -56,6 +56,8 @@ public:
     void setFixedPointEnabled(bool on) { _fixedPointEnabled = on; }
     void setIntegerTransformEnabled(bool on) { _integerTransformEnabled = on; }
     void setSpanWriterEnabled(bool on) { _spanWriterEnabled = on; }
+    void setIntegerDdaEnabled(bool on) { _integerDdaEnabled = on; }
+    unsigned long getIntDdaRows() const { return _drawing.getIntDdaRows(); }
     unsigned long getSpanRows() const { return _drawing.getSpanRows(); }
     unsigned long getTiledRows() const { return _drawing.getTiledRows(); }
     unsigned long getClippedRows() const { return _drawing.getClippedRows(); }
@@ -114,6 +116,7 @@ private:
     bool _fixedPointEnabled = true;
     bool _integerTransformEnabled = false;
     bool _spanWriterEnabled = false;
+    bool _integerDdaEnabled = false;
     bool _usedOccupancyMapLastRender = false;
 
     std::function<bool()> _interrupt_check_cb;

@@ -54,6 +54,8 @@ private:
     bool _usePixelOccupationMap;
     bool _fixedPointEnabled = true;
     bool _integerTransform = false;
+    bool _integerDda = false;
+    unsigned long _intDdaRows = 0;   // scanlines whose Q16.16 walk was set up without floats
     unsigned int _overdrawSkippedPixels; // For stats
 
     // Pixels emitted through a fixed-point inner loop this render.
@@ -94,6 +96,53 @@ public: // Made public for DisplayListRenderer
     // Exact-integer forward transform for endpoints, centres and spans. OFF by
     // default while it is being measured; see docs/measurements/.
     void setIntegerTransformEnabled(bool enable) { _integerTransform = enable; }
+    void setIntegerDdaEnabled(bool enable) { _integerDda = enable; }
+    unsigned long getIntDdaRows() const { return _intDdaRows; }
+
+    // The Q16.16 walk's start and step from the exact integer transform,
+    // with NO float and NO division per pixel.
+    //
+    // The inverse of the rigid transform is the transpose over D = C^2 + S^2,
+    // and D is 2^30 to within 6e-5 -- a table (C,S) is orthonormal to one Q15
+    // ulp. Treating D AS 2^30 turns the division into a shift. That is a
+    // deliberate precision trade: 6e-5 relative on a pattern coordinate, which
+    // is a hundredth of a pixel at the far edge of a 960-wide canvas and does
+    // not compound (the angle accumulator rebuilds the matrix from an integer
+    // angle every time). This is generative art; the decision was to spend
+    // that. It moves a few boundary pixels against the float renderer, and
+    // golden/ is rebaked for it; golden-float/ still pins the float path.
+    //
+    // For screen pixel centre (x+0.5, y+0.5): base = R^T (screen - t) / s.
+    //   dxN = (x<<15) + (1<<14) - txNum      (Q15 numerators, exact)
+    //   base_x * 2^16 = (C*dxN + S*dyN) * 2^16 / (D * s)
+    //                 ~ (C*dxN + S*dyN) >> 14 / s
+    // and along a row the step is (C << 15) >> 14 / s = (2C)/s. One int32
+    // division per ROW per axis for the start, none per pixel.
+    struct IntDda { int32_t x0, y0, dx, dy; bool ok; };
+    inline IntDda intDdaRow(const TransformSnapshot& xf, int x, int y, int32_t originX, int32_t originY) const {
+        // No int64 DIVISION here. The first version divided nx, ny, 2C and 2S
+        // by s as int64 -- four libgcc calls per row -- and cost art_deco_4
+        // +62%, the same shape as the rotated-DRAW clip. nx and ny fit int32
+        // for any on-screen row (|C*dxN + S*dyN| < 2^41 before the >> 14), so
+        // the divide is one Xtensa instruction, and the step needs no divide
+        // at all beyond the same int32 one.
+        IntDda r; r.ok = false;
+        const int32_t C = xf.cosQ15, S = xf.sinQ15;
+        const int32_t s = xf.scaleInt > 0 ? xf.scaleInt : 1;
+        const int64_t dxN = ((int64_t)x << 15) + (1 << 14) - xf.txNum;
+        const int64_t dyN = ((int64_t)y << 15) + (1 << 14) - xf.tyNum;
+        const int64_t nx64 = ( (int64_t)C * dxN + (int64_t)S * dyN) >> 14;
+        const int64_t ny64 = (-(int64_t)S * dxN + (int64_t)C * dyN) >> 14;
+        const int64_t lim = (int64_t)1 << 30;
+        if (nx64 <= -lim || nx64 >= lim || ny64 <= -lim || ny64 >= lim) return r;
+        const int32_t bx = (int32_t)nx64 / s - (originX << 16);
+        const int32_t by = (int32_t)ny64 / s - (originY << 16);
+        r.x0 = bx; r.y0 = by;
+        r.dx = ( 2 * C) / s;
+        r.dy = (-2 * S) / s;
+        r.ok = true;
+        return r;
+    }
     bool fixedPointEnabled() const { return _fixedPointEnabled; }
 
     void enablePixelOccupationMap(bool enable);

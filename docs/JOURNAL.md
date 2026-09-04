@@ -1309,3 +1309,18 @@ small items, for the third time this week.
 Noticed while doing it: compare-paths had only ever seen the two synthetic
 corpora. The twelve scripts the device renders were timed all week and never
 once pixel-compared. They are a third corpus of the gate now.
+
+### 14. The walk set up without floats, and a column I misread
+
+displaylist-full: span writer + exact integer transform + the Q16.16 start and
+step derived from it with D ~= 2^30 -- the precision trade the user chose. It
+removes exactReciprocal and invSf, the float divisions, from the fill loops.
+Moves 5 px on art_deco_4 and 4 on seascape_4 at device size; sent the diff
+images rather than describing them. Flat to -4% on every real script except the
+two circle-heavy ones, where the exact int64 circle span the -int path already
+carried costs +14% and +8%. That is the next thing.
+
+The first measurement said +62% and I nearly believed it. The collector's column
+filter had not been updated, the new path's samples were silently dropped from
+the report, and I read the no-map column in their place. Fifth instrument
+artifact of the week, and the first one that was purely my own tooling.

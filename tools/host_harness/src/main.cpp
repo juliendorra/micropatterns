@@ -588,7 +588,7 @@ int main(int argc, char** argv) {
         printf("PATH EQUIVALENCE: %s vs %s\n", A->name(), B->name());
         printf("(This is the \"All path gives same result\" gate, in C++.)\n\n");
         int pass = 0, fail = 0;
-        unsigned long fxA = 0, fxB = 0, ixA = 0, ixB = 0, spA = 0, spB = 0, tlA = 0, tlB = 0, clA = 0, clB = 0;
+        unsigned long fxA = 0, fxB = 0, ixA = 0, ixB = 0, spA = 0, spB = 0, tlA = 0, tlB = 0, clA = 0, clB = 0, ddA = 0, ddB = 0;
         for (const std::string& sp : listCorpus(o.corpus)) {
             std::string script;
             if (!readTextFile(sp, script)) continue;
@@ -608,6 +608,8 @@ int main(int argc, char** argv) {
                 tlB += rb.counters.tiledRows;
                 clA += ra.counters.clippedRows;
                 clB += rb.counters.clippedRows;
+                ddA += ra.counters.intDdaRows;
+                ddB += rb.counters.intDdaRows;
                 int fx, fy;
                 int nd = diffImages(ra.image, rb.image, nullptr, fx, fy);
                 if (nd == 0) { printf("  SAME  %-34s\n", caseName.c_str()); pass++; }
@@ -631,8 +633,9 @@ int main(int argc, char** argv) {
         printf("span rows:          %s=%lu  %s=%lu\n", A->name(), spA, B->name(), spB);
         printf("tiled rows:         %s=%lu  %s=%lu\n", A->name(), tlA, B->name(), tlB);
         printf("clipped DRAW rows:  %s=%lu  %s=%lu\n", A->name(), clA, B->name(), clB);
+        printf("integer DDA rows:   %s=%lu  %s=%lu\n", A->name(), ddA, B->name(), ddB);
         {
-            auto isSpan = [](const char* n) { return std::string(n).find("-span") != std::string::npos; };
+            auto isSpan = [](const char* n) { return std::string(n).find("-span") != std::string::npos || std::string(n).find("-full") != std::string::npos; };
             struct SC { const char* nm; unsigned long sp; };
             const SC sc[2] = { { A->name(), spA }, { B->name(), spB } };
             for (const SC& c : sc) {
@@ -655,7 +658,7 @@ int main(int argc, char** argv) {
         // Same rule for the exact-integer transform: a path named "*-int" that
         // transformed nothing that way is not being compared, it is being
         // impersonated by the path it is supposed to differ from.
-        auto isIntPath = [](const char* n) { return std::string(n).find("-int") != std::string::npos; };
+        auto isIntPath = [](const char* n) { return std::string(n).find("-int") != std::string::npos || std::string(n).find("-full") != std::string::npos; };
         struct ICheck { const char* nm; unsigned long ix; };
         const ICheck ichecks[2] = { { A->name(), ixA }, { B->name(), ixB } };
         for (const ICheck& c : ichecks) {

@@ -109,7 +109,7 @@ def compare_paths_same_run(path):
     agg = json.load(open(path))["agg"]
     # Every path other than float/fixed is reported against FIXED, the default,
     # so a new experiment is one more column rather than a new report.
-    extras = [k for k in ("int", "nomap", "span")
+    extras = [k for k in ("int", "full", "nomap", "span")
               if any(n.endswith("@" + k) for n in agg)]
     hdr = f"{'script':26s} {'float':>9s} {'fixed':>9s} {'vs flt':>8s}"
     for k in extras: hdr += f" {k:>9s} {'vs fix':>8s}"

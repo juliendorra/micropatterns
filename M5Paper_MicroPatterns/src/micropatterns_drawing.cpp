@@ -211,6 +211,7 @@ void MicroPatternsDrawing::resetPixelOccupationMap() {
     _fixedPointPixels = 0;
     _integerXformCalls = 0;
     _spanRows = 0;
+    _intDdaRows = 0;
     _tiledRows = 0;
     _clippedRows = 0;
 }
@@ -726,13 +727,16 @@ void MicroPatternsDrawing::fillRect(const DisplayListItem& item) {
         const float bx0 = (im0 * (static_cast<float>(x0) + 0.5f) + m2y + im4) * invSf;
         const float dbx = im0 * invSf;
         const int   span = x1 - x0;
+        IntDda idda; idda.ok = false;
+        if (_integerDda) idda = intDdaRow(*item.xf, x0, sy_iter, 0, 0);
 
         if (patRow) {
             if (_fixedPointEnabled &&
-                fxFits(bx0) && fxFits(bx0 + dbx * static_cast<float>(span - 1))) {
+                (idda.ok || (fxFits(bx0) && fxFits(bx0 + dbx * static_cast<float>(span - 1))))) {
                 _fixedPointPixels += (unsigned long)span;
-                int32_t bx = fxFrom(bx0);
-                const int32_t dx = fxFrom(dbx);
+                if (idda.ok) ++_intDdaRows;
+                int32_t bx = idda.ok ? idda.x0 : fxFrom(bx0);
+                const int32_t dx = idda.ok ? idda.dx : fxFrom(dbx);
                 if (_spanWriter && ((((x1) - 1) >> 3) - ((x0) >> 3) + 1) <= kMaxSpanBytes) {
                     // Span form of the loop below: same walk, but each pixel sets a
                     // bit instead of calling emitPixel, and the row is written once.
@@ -801,12 +805,13 @@ void MicroPatternsDrawing::fillRect(const DisplayListItem& item) {
         if (_fixedPointEnabled && patW > 0 && patH > 0 && patSize >= patW * patH) {
             const float by0 = (im1 * (static_cast<float>(x0) + 0.5f) + m3y + im5) * invSf;
             const float dby = im1 * invSf;
-            if (fxFits(bx0) && fxFits(by0) &&
+            if (idda.ok || (fxFits(bx0) && fxFits(by0) &&
                 fxFits(bx0 + dbx * static_cast<float>(span - 1)) &&
-                fxFits(by0 + dby * static_cast<float>(span - 1))) {
+                fxFits(by0 + dby * static_cast<float>(span - 1)))) {
                 _fixedPointPixels += (unsigned long)span;
-                int32_t bx = fxFrom(bx0), by = fxFrom(by0);
-                const int32_t dx = fxFrom(dbx), dy = fxFrom(dby);
+                if (idda.ok) ++_intDdaRows;
+                int32_t bx = idda.ok ? idda.x0 : fxFrom(bx0), by = idda.ok ? idda.y0 : fxFrom(by0);
+                const int32_t dx = idda.ok ? idda.dx : fxFrom(dbx), dy = idda.ok ? idda.dy : fxFrom(dby);
                 if (_spanWriter && ((((x1) - 1) >> 3) - ((x0) >> 3) + 1) <= kMaxSpanBytes) {
                     // Span form of the loop below: same walk, but each pixel sets a
                     // bit instead of calling emitPixel, and the row is written once.
@@ -1109,12 +1114,15 @@ void MicroPatternsDrawing::fillCircle(const DisplayListItem& item) {
                 const float cby0 = (im1 * (static_cast<float>(fx0) + 0.5f) + m3y + im5) * invSf;
                 const float cdbx = im0 * invSf, cdby = im1 * invSf;
                 const int cspan = fx1 - fx0;
-                if (fxFits(cbx0) && fxFits(cby0) &&
+                IntDda cidda; cidda.ok = false;
+                if (_integerDda) cidda = intDdaRow(*item.xf, fx0, sy_iter, 0, 0);
+                if (cidda.ok || (fxFits(cbx0) && fxFits(cby0) &&
                     fxFits(cbx0 + cdbx * static_cast<float>(cspan - 1)) &&
-                    fxFits(cby0 + cdby * static_cast<float>(cspan - 1))) {
+                    fxFits(cby0 + cdby * static_cast<float>(cspan - 1)))) {
                     _fixedPointPixels += (unsigned long)cspan;
-                    int32_t bxq = fxFrom(cbx0), byq = fxFrom(cby0);
-                    const int32_t dbxq = fxFrom(cdbx), dbyq = fxFrom(cdby);
+                    if (cidda.ok) ++_intDdaRows;
+                    int32_t bxq = cidda.ok ? cidda.x0 : fxFrom(cbx0), byq = cidda.ok ? cidda.y0 : fxFrom(cby0);
+                    const int32_t dbxq = cidda.ok ? cidda.dx : fxFrom(cdbx), dbyq = cidda.ok ? cidda.dy : fxFrom(cdby);
                     if (_spanWriter && ((((fx1) - 1) >> 3) - ((fx0) >> 3) + 1) <= kMaxSpanBytes) {
                         // Span form of the loop below: same walk, but each pixel sets a
                         // bit instead of calling emitPixel, and the row is written once.
@@ -1305,13 +1313,16 @@ void MicroPatternsDrawing::drawAsset(const DisplayListItem& item, const MicroPat
         const float ax0 = (im0 * (static_cast<float>(x0) + 0.5f) + m2y + im4) * invSf - forigin_x;
         const float dax = im0 * invSf;
         const int   span = x1 - x0;
+        IntDda aidda; aidda.ok = false;
+        if (_integerDda) aidda = intDdaRow(*item.xf, x0, sy_iter, lx_asset_origin, ly_asset_origin);
 
         if (assetRow) {
             if (_fixedPointEnabled &&
-                fxFits(ax0) && fxFits(ax0 + dax * static_cast<float>(span - 1))) {
+                (aidda.ok || (fxFits(ax0) && fxFits(ax0 + dax * static_cast<float>(span - 1))))) {
                 _fixedPointPixels += (unsigned long)span;
-                int32_t axq = fxFrom(ax0);
-                const int32_t daxq = fxFrom(dax);
+                if (aidda.ok) ++_intDdaRows;
+                int32_t axq = aidda.ok ? aidda.x0 : fxFrom(ax0);
+                const int32_t daxq = aidda.ok ? aidda.dx : fxFrom(dax);
                 if (_spanWriter && ((((x1) - 1) >> 3) - ((x0) >> 3) + 1) <= kMaxSpanBytes) {
                     // Span form of the loop below: same walk, but each pixel sets a
                     // bit instead of calling emitPixel, and the row is written once.
@@ -1378,12 +1389,13 @@ void MicroPatternsDrawing::drawAsset(const DisplayListItem& item, const MicroPat
         if (_fixedPointEnabled) {
             const float ay0 = (im1 * (static_cast<float>(x0) + 0.5f) + m3y + im5) * invSf - forigin_y;
             const float day = im1 * invSf;
-            if (fxFits(ax0) && fxFits(ay0) &&
+            if (aidda.ok || (fxFits(ax0) && fxFits(ay0) &&
                 fxFits(ax0 + dax * static_cast<float>(span - 1)) &&
-                fxFits(ay0 + day * static_cast<float>(span - 1))) {
+                fxFits(ay0 + day * static_cast<float>(span - 1)))) {
                 _fixedPointPixels += (unsigned long)span;
-                int32_t axq = fxFrom(ax0), ayq = fxFrom(ay0);
-                const int32_t daxq = fxFrom(dax), dayq = fxFrom(day);
+                if (aidda.ok) ++_intDdaRows;
+                int32_t axq = aidda.ok ? aidda.x0 : fxFrom(ax0), ayq = aidda.ok ? aidda.y0 : fxFrom(ay0);
+                const int32_t daxq = aidda.ok ? aidda.dx : fxFrom(dax), dayq = aidda.ok ? aidda.dy : fxFrom(day);
                 if (_spanWriter && ((((x1) - 1) >> 3) - ((x0) >> 3) + 1) <= kMaxSpanBytes) {
                     // Span form of the loop below: same walk, but each pixel sets a
                     // bit instead of calling emitPixel, and the row is written once.

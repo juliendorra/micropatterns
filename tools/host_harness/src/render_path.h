@@ -59,6 +59,7 @@ struct RenderCounters {
     unsigned long spanRows = 0;
     unsigned long tiledRows = 0;
     unsigned long clippedRows = 0;
+    unsigned long intDdaRows = 0;
     // Honest label: this is "pixels whose final value differs from white",
     // derived by scanning the canvas. It is NOT a count of rawPixel() calls --
     // the drawing layer does not track that. Use it as a coverage proxy only.

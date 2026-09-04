@@ -86,10 +86,13 @@ public:
     // program stored at sync time. It must be byte-identical to the direct
     // path; `compare-paths displaylist compiled` is what checks that.
     explicit DisplayListPath(bool occlusion = true, bool occupancyMap = true, bool roundtrip = false,
-                             bool fixedPoint = true, bool integerXform = false, bool spanWriter = false)
+                             bool fixedPoint = true, bool integerXform = false, bool spanWriter = false,
+                             bool integerDda = false)
         : _occlusion(occlusion), _occupancyMap(occupancyMap), _roundtrip(roundtrip),
           _fixedPoint(fixedPoint), _integerXform(integerXform), _spanWriter(spanWriter),
-          _name(spanWriter ? "displaylist-span"
+          _integerDda(integerDda),
+          _name(integerDda ? "displaylist-full"
+                : spanWriter ? "displaylist-span"
                 : integerXform ? "displaylist-int"
                 : !fixedPoint ? "displaylist-float"
                             : (roundtrip ? "compiled"
@@ -245,6 +248,7 @@ public:
         renderer.setFixedPointEnabled(_fixedPoint);
         renderer.setIntegerTransformEnabled(_integerXform);
         renderer.setSpanWriterEnabled(_spanWriter);
+        renderer.setIntegerDdaEnabled(_integerDda);
 #if MP_DEVICE_CONSTRAINTS
         mpDeviceSetPhase(MpAllocationPhase::Rasterize);
 #endif
@@ -267,6 +271,7 @@ public:
         out.counters.spanRows = renderer.getSpanRows();
         out.counters.tiledRows = renderer.getTiledRows();
         out.counters.clippedRows = renderer.getClippedRows();
+        out.counters.intDdaRows = renderer.getIntDdaRows();
 
 #if MP_DEVICE_CONSTRAINTS
         // The gray browser output is not a device framebuffer. Allocate it from
@@ -424,6 +429,7 @@ private:
         renderer.setFixedPointEnabled(_fixedPoint);
         renderer.setIntegerTransformEnabled(_integerXform);
         renderer.setSpanWriterEnabled(_spanWriter);
+        renderer.setIntegerDdaEnabled(_integerDda);
 #if MP_DEVICE_CONSTRAINTS
         mpDeviceSetPhase(MpAllocationPhase::Rasterize);
 #endif
@@ -469,6 +475,7 @@ private:
     bool _fixedPoint;
     bool _integerXform;
     bool _spanWriter;
+    bool _integerDda;
     const char* _name;
 };
 
@@ -508,9 +515,13 @@ std::unique_ptr<RenderPath> makeRenderPath(const std::string& name) {
     // The default path plus byte-wise span writes for solid fills. Everything
     // else identical to "displaylist"; must stay byte-identical to it.
     if (name == "displaylist-span") return std::unique_ptr<RenderPath>(new DisplayListPath(true, true, false, true, false, true));
+    // Everything integer: span writer + exact integer transform + Q16.16 walk
+    // set up from it with D ~= 2^30. NOT byte-identical to the default by
+    // design (a deliberate 6e-5 precision trade); compare-paths reports how far.
+    if (name == "displaylist-full") return std::unique_ptr<RenderPath>(new DisplayListPath(true, true, false, true, true, true, true));
     return nullptr;
 }
 
 std::vector<std::string> availableRenderPaths() {
-    return {"displaylist", "displaylist-span", "displaylist-int", "displaylist-float", "displaylist-noocc", "displaylist-nomap", "compiled"};
+    return {"displaylist", "displaylist-span", "displaylist-full", "displaylist-int", "displaylist-float", "displaylist-noocc", "displaylist-nomap", "compiled"};
 }

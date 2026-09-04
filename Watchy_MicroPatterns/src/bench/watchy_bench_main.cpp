@@ -93,7 +93,7 @@ static const int kHour = 12, kMinute = 34, kSecond = 56;
 // occupancy map and the framebuffer combined eight pixels at a time instead
 // of one drawPixel call per pixel.
 enum MPBenchPath { MPB_FLOAT = 0, MPB_FIXED = 1, MPB_INT = 2, MPB_NOMAP = 3, MPB_SPAN = 4 };
-static const char* kPathName[5] = { "float", "fixed", "int", "nomap", "span" };
+static const char* kPathName[5] = { "float", "fixed", "full", "nomap", "span" };
 
 #if MP_PROFILE_ITEMS
 // Where does ONE script's rasterisation actually go, per drawing operation?
@@ -138,7 +138,8 @@ static void profileOne(const MPBenchScript& s, int pathMode)
     renderer.setFixedPointEnabled(pathMode != MPB_FLOAT);
     renderer.setIntegerTransformEnabled(pathMode == MPB_INT);
     renderer.setOccupancyMapEnabled(pathMode != MPB_NOMAP);
-    renderer.setSpanWriterEnabled(pathMode == MPB_SPAN);
+    renderer.setSpanWriterEnabled(pathMode == MPB_SPAN || pathMode == MPB_INT);
+    renderer.setIntegerDdaEnabled(pathMode == MPB_INT);
     renderer.resetProfile();
 
     const int64_t t0 = esp_timer_get_time();
@@ -216,7 +217,8 @@ static void benchOne(const MPBenchScript& s, int pathMode)
         renderer.setFixedPointEnabled(pathMode != MPB_FLOAT);
         renderer.setIntegerTransformEnabled(pathMode == MPB_INT);
         renderer.setOccupancyMapEnabled(pathMode != MPB_NOMAP);
-        renderer.setSpanWriterEnabled(pathMode == MPB_SPAN);
+        renderer.setSpanWriterEnabled(pathMode == MPB_SPAN || pathMode == MPB_INT);
+        renderer.setIntegerDdaEnabled(pathMode == MPB_INT);
         renderer.render(dl);
         const int64_t raster_us = esp_timer_get_time() - t0;
 
