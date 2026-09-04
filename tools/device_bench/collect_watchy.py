@@ -107,22 +107,28 @@ def compare_paths_same_run(path):
     """float vs fixed from ONE capture -- the paths alternated per rep inside a
     single firmware run, so no cross-flash variation can leak into the delta."""
     agg = json.load(open(path))["agg"]
-    print(f"{'script':26s} {'float':>9s} {'fixed':>9s} {'vs flt':>8s} {'int':>9s} {'vs fix':>8s}")
+    # Every path other than float/fixed is reported against FIXED, the default,
+    # so a new experiment is one more column rather than a new report.
+    extras = [k for k in ("int", "nomap", "span")
+              if any(n.endswith("@" + k) for n in agg)]
+    hdr = f"{'script':26s} {'float':>9s} {'fixed':>9s} {'vs flt':>8s}"
+    for k in extras: hdr += f" {k:>9s} {'vs fix':>8s}"
+    print(hdr)
     for kind in ("op", "script", "real"):
-        rows = [(n, agg[n], agg.get(n + "@fixed"), agg.get(n + "@int")) for n in sorted(agg)
+        rows = [(n, agg[n], agg.get(n + "@fixed")) for n in sorted(agg)
                 if "@" not in n and agg[n]["kind"] == kind and agg.get(n + "@fixed")]
         if not rows: continue
-        print(f"-- {kind} " + "-"*62)
-        for n, f, x, i in rows:
+        print(f"-- {kind} " + "-" * (len(hdr) - 6))
+        for n, f, x in rows:
             a = f["raster_us"]["min"]
             b = x["raster_us"]["min"]
-            db = (b - a) / a * 100 if a else 0
-            if i:
-                c = i["raster_us"]["min"]
-                dc = (c - b) / b * 100 if b else 0
-                print(f"{n:26s} {a/1000:>8.2f}m {b/1000:>8.2f}m {db:>+7.1f}% {c/1000:>8.2f}m {dc:>+7.1f}%")
-            else:
-                print(f"{n:26s} {a/1000:>8.2f}m {b/1000:>8.2f}m {db:>+7.1f}% {'-':>9s} {'-':>8s}")
+            line = f"{n:26s} {a/1000:>8.2f}m {b/1000:>8.2f}m {((b - a) / a * 100 if a else 0):>+7.1f}%"
+            for k in extras:
+                r = agg.get(n + "@" + k)
+                if not r: line += f" {'-':>9s} {'-':>8s}"; continue
+                c = r["raster_us"]["min"]
+                line += f" {c/1000:>8.2f}m {((c - b) / b * 100 if b else 0):>+7.1f}%"
+            print(line)
 
 def compare(a_path, b_path):
     A, B = json.load(open(a_path)), json.load(open(b_path))

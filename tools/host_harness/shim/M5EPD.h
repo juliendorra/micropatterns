@@ -27,6 +27,11 @@ typedef enum {
     UPDATE_MODE_NONE
 } m5epd_update_mode_t;
 
+#define MP_HOST_SHIM_HAS_FILL_MASK_ROW 1
+class M5EPD_Canvas;
+inline void mp_canvas_fill_mask_row(M5EPD_Canvas* c, int y, int byteX0, int nBytes,
+                                    const uint8_t* cover, uint32_t color);
+
 class M5EPD_Canvas {
 public:
     M5EPD_Canvas() : _w(0), _h(0) {}
@@ -65,6 +70,28 @@ public:
         return (uint16_t)((idx & 1) ? (b & 0x0F) : (b >> 4));
     }
 
+    // Row blit from a MSB-first bit mask; see mp_canvas.h. Nibble-wise, so the
+    // host exercises the real span path rather than a fallback -- the
+    // equivalence gate is only worth something if this is the code under test.
+    void fillMaskRow(int y, int byteX0, int nBytes, const uint8_t* cover, uint32_t color) {
+        if (y < 0 || y >= _h) return;
+        const uint8_t c = (uint8_t)(color & 0x0F);
+        for (int i = 0; i < nBytes; ++i) {
+            uint8_t m = cover[i];
+            if (!m) continue;
+            const int xb = (byteX0 + i) << 3;
+            for (int k = 0; k < 8; ++k) {
+                if (!(m & (0x80u >> k))) continue;
+                const int x = xb + k;
+                if (x >= _w) break;
+                size_t idx = (size_t)y * _w + (size_t)x;
+                uint8_t& b = _buf[idx >> 1];
+                if (idx & 1) b = (uint8_t)((b & 0xF0) | c);
+                else         b = (uint8_t)((b & 0x0F) | (c << 4));
+            }
+        }
+    }
+
     // --- host-only accessors (not part of the M5EPD API) -------------------
     const std::vector<uint8_t>& hostBuffer() const { return _buf; }
 
@@ -73,5 +100,11 @@ private:
     int32_t _h;
     std::vector<uint8_t> _buf; // packed 4bpp, two pixels per byte, high nibble first
 };
+
+
+inline void mp_canvas_fill_mask_row(M5EPD_Canvas* c, int y, int byteX0, int nBytes,
+                                    const uint8_t* cover, uint32_t color) {
+    c->fillMaskRow(y, byteX0, nBytes, cover, color);
+}
 
 #endif // HOST_SHIM_M5EPD_H

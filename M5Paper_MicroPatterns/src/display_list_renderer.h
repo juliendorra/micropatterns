@@ -55,6 +55,8 @@ public:
     // the practice commit d427b02 established.
     void setFixedPointEnabled(bool on) { _fixedPointEnabled = on; }
     void setIntegerTransformEnabled(bool on) { _integerTransformEnabled = on; }
+    void setSpanWriterEnabled(bool on) { _spanWriterEnabled = on; }
+    unsigned long getSpanRows() const { return _drawing.getSpanRows(); }
 
     // How many pixels the last render emitted through a fixed-point inner loop.
     // Zero from a path that claims to be fixed-point means it never ran; see
@@ -109,6 +111,7 @@ private:
     bool _occupancyMapEnabled = true;
     bool _fixedPointEnabled = true;
     bool _integerTransformEnabled = false;
+    bool _spanWriterEnabled = false;
     bool _usedOccupancyMapLastRender = false;
 
     std::function<bool()> _interrupt_check_cb;

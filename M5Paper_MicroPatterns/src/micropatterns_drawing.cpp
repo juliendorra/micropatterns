@@ -210,6 +210,7 @@ void MicroPatternsDrawing::resetPixelOccupationMap() {
     _overdrawSkippedPixels = 0;
     _fixedPointPixels = 0;
     _integerXformCalls = 0;
+    _spanRows = 0;
 }
 
 void MicroPatternsDrawing::clearCanvas() {
@@ -702,9 +703,7 @@ void MicroPatternsDrawing::fillRect(const DisplayListItem& item) {
 
         uint8_t* occRow = occ ? occ + (size_t)sy_iter * _occStride : nullptr;
         if (!patterned) {
-            for (int sx_iter = x0; sx_iter < x1; ++sx_iter) {
-                emitPixel(sx_iter, sy_iter, flatColor, occRow, skipped);
-            }
+            emitSolidSpan(sy_iter, x0, x1, flatColor, occRow, skipped);
             continue;
         }
 
@@ -1005,9 +1004,7 @@ void MicroPatternsDrawing::fillCircle(const DisplayListItem& item) {
 
             if (!patterned) {
                 _fixedPointPixels += (unsigned long)(fx1 - fx0);
-                for (int sx_iter = fx0; sx_iter < fx1; ++sx_iter) {
-                    emitPixel(sx_iter, sy_iter, flatColor, occRowF, skipped);
-                }
+                emitSolidSpan(sy_iter, fx0, fx1, flatColor, occRowF, skipped);
                 continue;
             }
 

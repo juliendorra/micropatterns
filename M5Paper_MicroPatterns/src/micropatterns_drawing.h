@@ -75,6 +75,11 @@ private:
     // so it costs nothing.
     unsigned long _integerXformCalls = 0;
 
+    // Scanline spans written eight pixels at a time instead of one. Same
+    // "prove it ran" gate as the two counters above.
+    unsigned long _spanRows = 0;
+    bool _spanWriter = false;
+
     void initPixelOccupationMap(); // Initialize map if needed
 
 public: // Made public for DisplayListRenderer
@@ -99,18 +104,58 @@ public: // Made public for DisplayListRenderer
             return false;
         }
         if (_pixelOccupationMap.empty()) return false;
-        return (_pixelOccupationMap[(size_t)sy * _occStride + (sx >> 3)] & (1u << (sx & 7))) != 0;
+        return (_pixelOccupationMap[(size_t)sy * _occStride + (sx >> 3)] & (0x80u >> (sx & 7))) != 0;
     }
     void markPixelOccupied(int sx, int sy) {
         if (!_usePixelOccupationMap || sx < 0 || sx >= _canvasWidth || sy < 0 || sy >= _canvasHeight) {
             return;
         }
         if (_pixelOccupationMap.empty()) return;
-        _pixelOccupationMap[(size_t)sy * _occStride + (sx >> 3)] |= (uint8_t)(1u << (sx & 7));
+        _pixelOccupationMap[(size_t)sy * _occStride + (sx >> 3)] |= (uint8_t)(0x80u >> (sx & 7));
     }
     unsigned int getOverdrawSkippedPixelsCount() const { return _overdrawSkippedPixels; }
     unsigned long getFixedPointPixels() const { return _fixedPointPixels; }
     unsigned long getIntegerXformCalls() const { return _integerXformCalls; }
+    unsigned long getSpanRows() const { return _spanRows; }
+    void setSpanWriterEnabled(bool on) { _spanWriter = on; }
+
+    // Paint [x0, x1) on row sy in ONE colour, a byte of pixels at a time.
+    //
+    // This is where the per-pixel cost actually was. Measured on a Watchy,
+    // op_fill_rect_solid -- no coordinates, no pattern, nothing but emitPixel
+    // across a span -- took 33 ms for 40,000 pixels: ~200 cycles to set one
+    // bit. Almost all of it was the library's drawPixel re-deriving rotation,
+    // window, page and stride for every pixel, plus this class's own
+    // occupancy test, when both answers are constant along the run.
+    //
+    // So: build the span as a bit mask, fold the occupancy map in byte-wise
+    // (paint = mask & ~occupied; occupied |= mask), and hand the canvas one
+    // row of bytes. The occupancy map is MSB-first for exactly this reason.
+    inline void emitSolidSpan(int sy, int x0, int x1, uint8_t color,
+                              uint8_t* occRow, unsigned int& skipped) {
+        if (x0 >= x1) return;
+        const int b0 = x0 >> 3, b1 = (x1 - 1) >> 3, nb = b1 - b0 + 1;
+        if (!_spanWriter || nb > kMaxSpanBytes) {
+            for (int sx = x0; sx < x1; ++sx) emitPixel(sx, sy, color, occRow, skipped);
+            return;
+        }
+        uint8_t cover[kMaxSpanBytes];
+        for (int b = b0; b <= b1; ++b) {
+            uint8_t m = 0xFFu;
+            if (b == b0) m &= (uint8_t)(0xFFu >> (x0 & 7));               // drop bits left of x0
+            if (b == b1) m &= (uint8_t)(0xFFu << (7 - ((x1 - 1) & 7)));   // drop bits right of x1-1
+            if (occRow) {
+                const uint8_t o = occRow[b];
+                skipped += (unsigned int)__builtin_popcount((unsigned)(m & o));
+                occRow[b] = (uint8_t)(o | m);
+                m = (uint8_t)(m & ~o);
+            }
+            cover[b - b0] = m;
+        }
+        ++_spanRows;
+        mp_canvas_fill_mask_row(_canvas, sy, b0, nb, cover, color);
+    }
+    static const int kMaxSpanBytes = 128;   // 1024 px; wider spans fall back
 
 
     // Transformation helpers using float math and matrices, now use DisplayListItem's state
@@ -154,7 +199,11 @@ public: // occupancy map accessors -- DisplayListRenderer reads these to mark
     inline void emitPixel(int sx, int sy, uint8_t color, uint8_t* occRow, unsigned int& skipped) {
         if (occRow) {
             uint8_t* slot = occRow + (sx >> 3);
-            const uint8_t mask = (uint8_t)(1u << (sx & 7));
+            // MSB-first: pixel x of a byte is bit (7 - x%8). This is the SAME
+            // order a 1-bpp framebuffer uses, on purpose, so a span's
+            // occupancy bytes and its framebuffer bytes can be combined with
+            // one AND -- see emitSolidSpan.
+            const uint8_t mask = (uint8_t)(0x80u >> (sx & 7));
             if (*slot & mask) { ++skipped; return; }
             *slot |= mask;
         }

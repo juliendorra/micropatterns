@@ -87,7 +87,7 @@ void OcclusionBuffer::updateFromPixelMap(int screenMinX, int screenMinY,
             for (int y = pxMinY; y < pxMaxY && allFilled; ++y) {
                 const uint8_t* rowBase = map + (size_t)y * stride;
                 for (int x = pxMinX; x < pxMaxX; ++x) {
-                    if ((rowBase[x >> 3] & (1u << (x & 7))) == 0) { allFilled = false; break; }
+                    if ((rowBase[x >> 3] & (0x80u >> (x & 7))) == 0) { allFilled = false; break; }   // MSB-first, see micropatterns_drawing.h
                 }
             }
             if (allFilled) cell = 1;

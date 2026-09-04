@@ -270,6 +270,7 @@ void DisplayListRenderer::render(const std::vector<DisplayListItem>& displayList
     _drawing.enablePixelOccupationMap(_occupancyMapEnabled); // Enable for this render pass
     _drawing.setFixedPointEnabled(_fixedPointEnabled);
     _drawing.setIntegerTransformEnabled(_integerTransformEnabled);
+    _drawing.setSpanWriterEnabled(_spanWriterEnabled);
     _occlusionBuffer.reset(); // Reset occlusion buffer state
     _drawing.clearCanvas();   // Clear canvas to white (this will also call _drawing.resetPixelOccupationMap())
 

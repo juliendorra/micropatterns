@@ -85,8 +85,15 @@ static const int kHour = 12, kMinute = 34, kSecond = 56;
 // drift remains across both of them equally.
 // 0 = float rasteriser, 1 = Q16.16 fills, 2 = Q16.16 fills + exact-integer
 // forward transform (line/rect endpoints, circle centres, filled-circle span).
-enum MPBenchPath { MPB_FLOAT = 0, MPB_FIXED = 1, MPB_INT = 2 };
-static const char* kPathName[3] = { "float", "fixed", "int" };
+// 3 = the default path with the pixel occupancy map OFF. Items then render
+// back-to-front with plain overwrite instead of front-to-back with a per-pixel
+// "already painted" test. Same image either way (that is a CI gate); this asks
+// whether the test costs more than the overdraw it saves, on the real art.
+// 4 = the default path plus byte-wise span writes for solid fills: the
+// occupancy map and the framebuffer combined eight pixels at a time instead
+// of one drawPixel call per pixel.
+enum MPBenchPath { MPB_FLOAT = 0, MPB_FIXED = 1, MPB_INT = 2, MPB_NOMAP = 3, MPB_SPAN = 4 };
+static const char* kPathName[5] = { "float", "fixed", "int", "nomap", "span" };
 
 #if MP_PROFILE_ITEMS
 // Where does ONE script's rasterisation actually go, per drawing operation?
@@ -130,6 +137,8 @@ static void profileOne(const MPBenchScript& s, int pathMode)
     DisplayListRenderer renderer(&g_canvas, W, H);
     renderer.setFixedPointEnabled(pathMode != MPB_FLOAT);
     renderer.setIntegerTransformEnabled(pathMode == MPB_INT);
+    renderer.setOccupancyMapEnabled(pathMode != MPB_NOMAP);
+    renderer.setSpanWriterEnabled(pathMode == MPB_SPAN);
     renderer.resetProfile();
 
     const int64_t t0 = esp_timer_get_time();
@@ -206,6 +215,8 @@ static void benchOne(const MPBenchScript& s, int pathMode)
         DisplayListRenderer renderer(&g_canvas, W, H);
         renderer.setFixedPointEnabled(pathMode != MPB_FLOAT);
         renderer.setIntegerTransformEnabled(pathMode == MPB_INT);
+        renderer.setOccupancyMapEnabled(pathMode != MPB_NOMAP);
+        renderer.setSpanWriterEnabled(pathMode == MPB_SPAN);
         renderer.render(dl);
         const int64_t raster_us = esp_timer_get_time() - t0;
 
@@ -259,6 +270,8 @@ void setup()
         benchOne(kMPBenchScripts[i], MPB_FLOAT);
         benchOne(kMPBenchScripts[i], MPB_FIXED);
         benchOne(kMPBenchScripts[i], MPB_INT);
+        benchOne(kMPBenchScripts[i], MPB_NOMAP);
+        benchOne(kMPBenchScripts[i], MPB_SPAN);
 #endif
     }
 

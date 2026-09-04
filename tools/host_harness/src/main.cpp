@@ -588,7 +588,7 @@ int main(int argc, char** argv) {
         printf("PATH EQUIVALENCE: %s vs %s\n", A->name(), B->name());
         printf("(This is the \"All path gives same result\" gate, in C++.)\n\n");
         int pass = 0, fail = 0;
-        unsigned long fxA = 0, fxB = 0, ixA = 0, ixB = 0;
+        unsigned long fxA = 0, fxB = 0, ixA = 0, ixB = 0, spA = 0, spB = 0;
         for (const std::string& sp : listCorpus(o.corpus)) {
             std::string script;
             if (!readTextFile(sp, script)) continue;
@@ -602,6 +602,8 @@ int main(int argc, char** argv) {
                 fxB += rb.counters.fixedPointPixels;
                 ixA += ra.counters.integerXformCalls;
                 ixB += rb.counters.integerXformCalls;
+                spA += ra.counters.spanRows;
+                spB += rb.counters.spanRows;
                 int fx, fy;
                 int nd = diffImages(ra.image, rb.image, nullptr, fx, fy);
                 if (nd == 0) { printf("  SAME  %-34s\n", caseName.c_str()); pass++; }
@@ -622,6 +624,16 @@ int main(int argc, char** argv) {
         // and reports zero fails here instead of passing.
         printf("fixed-point pixels: %s=%lu  %s=%lu\n", A->name(), fxA, B->name(), fxB);
         printf("integer transforms: %s=%lu  %s=%lu\n", A->name(), ixA, B->name(), ixB);
+        printf("span rows:          %s=%lu  %s=%lu\n", A->name(), spA, B->name(), spB);
+        {
+            auto isSpan = [](const char* n) { return std::string(n).find("-span") != std::string::npos; };
+            struct SC { const char* nm; unsigned long sp; };
+            const SC sc[2] = { { A->name(), spA }, { B->name(), spB } };
+            for (const SC& c : sc) {
+                if (isSpan(c.nm) && c.sp == 0) { printf("\nFAIL: path \"%s\" advertises span writes and performed none.\n", c.nm); return 1; }
+                if (!isSpan(c.nm) && c.sp != 0) { printf("\nFAIL: path \"%s\" performed %lu span writes but does not advertise them.\n", c.nm, c.sp); return 1; }
+            }
+        }
         // Enforced in BOTH directions. A path named "*-float" must do no
         // fixed-point work; every other path must do some. The second half
         // catches a fast path that silently fell back -- the failure this gate

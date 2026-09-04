@@ -86,10 +86,11 @@ public:
     // program stored at sync time. It must be byte-identical to the direct
     // path; `compare-paths displaylist compiled` is what checks that.
     explicit DisplayListPath(bool occlusion = true, bool occupancyMap = true, bool roundtrip = false,
-                             bool fixedPoint = true, bool integerXform = false)
+                             bool fixedPoint = true, bool integerXform = false, bool spanWriter = false)
         : _occlusion(occlusion), _occupancyMap(occupancyMap), _roundtrip(roundtrip),
-          _fixedPoint(fixedPoint), _integerXform(integerXform),
-          _name(integerXform ? "displaylist-int"
+          _fixedPoint(fixedPoint), _integerXform(integerXform), _spanWriter(spanWriter),
+          _name(spanWriter ? "displaylist-span"
+                : integerXform ? "displaylist-int"
                 : !fixedPoint ? "displaylist-float"
                             : (roundtrip ? "compiled"
                                : (!occupancyMap ? "displaylist-nomap"
@@ -243,6 +244,7 @@ public:
         renderer.setOccupancyMapEnabled(_occupancyMap);
         renderer.setFixedPointEnabled(_fixedPoint);
         renderer.setIntegerTransformEnabled(_integerXform);
+        renderer.setSpanWriterEnabled(_spanWriter);
 #if MP_DEVICE_CONSTRAINTS
         mpDeviceSetPhase(MpAllocationPhase::Rasterize);
 #endif
@@ -262,6 +264,7 @@ public:
         out.counters.occupancyMapUsed = renderer.usedOccupancyMapLastRender();
         out.counters.fixedPointPixels = renderer.getFixedPointPixels();
         out.counters.integerXformCalls = renderer.getIntegerXformCalls();
+        out.counters.spanRows = renderer.getSpanRows();
 
 #if MP_DEVICE_CONSTRAINTS
         // The gray browser output is not a device framebuffer. Allocate it from
@@ -418,6 +421,7 @@ private:
         renderer.setOccupancyMapEnabled(_occupancyMap);
         renderer.setFixedPointEnabled(_fixedPoint);
         renderer.setIntegerTransformEnabled(_integerXform);
+        renderer.setSpanWriterEnabled(_spanWriter);
 #if MP_DEVICE_CONSTRAINTS
         mpDeviceSetPhase(MpAllocationPhase::Rasterize);
 #endif
@@ -436,6 +440,7 @@ private:
         out.counters.occupancyMapUsed = renderer.usedOccupancyMapLastRender();
         out.counters.fixedPointPixels = renderer.getFixedPointPixels();
         out.counters.integerXformCalls = renderer.getIntegerXformCalls();
+        out.counters.spanRows = renderer.getSpanRows();
 #if MP_DEVICE_CONSTRAINTS
         mpDeviceSetAllocationActive(false);
         mpDeviceSetPhase(MpAllocationPhase::Output);
@@ -461,6 +466,7 @@ private:
     bool _roundtrip;
     bool _fixedPoint;
     bool _integerXform;
+    bool _spanWriter;
     const char* _name;
 };
 
@@ -497,9 +503,12 @@ std::unique_ptr<RenderPath> makeRenderPath(const std::string& name) {
     // endpoints, circle centres and the filled-circle span, with no float and
     // no sqrtf. Everything else identical to "displaylist".
     if (name == "displaylist-int") return std::unique_ptr<RenderPath>(new DisplayListPath(true, true, false, true, true));
+    // The default path plus byte-wise span writes for solid fills. Everything
+    // else identical to "displaylist"; must stay byte-identical to it.
+    if (name == "displaylist-span") return std::unique_ptr<RenderPath>(new DisplayListPath(true, true, false, true, false, true));
     return nullptr;
 }
 
 std::vector<std::string> availableRenderPaths() {
-    return {"displaylist", "displaylist-int", "displaylist-float", "displaylist-noocc", "displaylist-nomap", "compiled"};
+    return {"displaylist", "displaylist-span", "displaylist-int", "displaylist-float", "displaylist-noocc", "displaylist-nomap", "compiled"};
 }
