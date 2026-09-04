@@ -121,6 +121,7 @@ compare-int: $(BIN)
 compare-span: $(BIN)
 	$(BIN) compare-paths displaylist displaylist-span --corpus corpus --golden golden
 	$(BIN) compare-paths displaylist displaylist-span --corpus ../device_bench/ops --golden golden
+	$(BIN) compare-paths displaylist displaylist-span --corpus ../device_bench/real --golden golden
 
 # The browse and refresh policy, off-device. Pure logic with an injected clock,
 # so the timing rules that used to be tuned against a panel by hand are pinned

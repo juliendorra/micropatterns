@@ -1298,3 +1298,14 @@ identical throughout. art_deco_4: 520 ms two days ago, 87 ms now.
 
 The DRAW row clip before it was exact and flat: an unrotated asset's box IS the
 asset, so there was nothing to clip. Kept, recorded as flat.
+
+### 13. Rotated DRAW clip: flat, reverted -- and the real scripts finally pixel-gated
+
+Closed-form clipping of rotated DRAW rows made seascape_4 +11% with int64
+division (four libgcc calls per row against ~30-row stars), and flat with int32
+and a short-row bypass. Flat does not earn code; reverted. Per-row setup against
+small items, for the third time this week.
+
+Noticed while doing it: compare-paths had only ever seen the two synthetic
+corpora. The twelve scripts the device renders were timed all week and never
+once pixel-compared. They are a third corpus of the gate now.

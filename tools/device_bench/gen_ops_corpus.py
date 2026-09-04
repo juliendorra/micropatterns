@@ -48,6 +48,15 @@ def collect():
                 if os.path.exists(body):
                     ident = ''.join(c if c.isalnum() else '_' for c in entry['id'])
                     out.append(('real', ident, body))
+                    # Also lay the real scripts out as a corpus the host harness can
+                    # read (it globs *.mp), so the PIXEL gate runs on them too. The two
+                    # synthetic corpora had been the only thing compare-paths ever saw;
+                    # the twelve scripts the device actually renders were never
+                    # pixel-compared, only timed.
+                    real_dir = os.path.join(ROOT, 'tools', 'device_bench', 'real')
+                    os.makedirs(real_dir, exist_ok=True)
+                    with open(body, 'rb') as src, open(os.path.join(real_dir, ident + '.mp'), 'wb') as dst:
+                        dst.write(src.read())
     return out
 
 def main():

@@ -221,3 +221,16 @@ plain walk untouched. Byte-identical on both corpora.
 | `eyes`, `confetti` | | | +2% after normalising a ~1% warmer run |
 
 Against the float renderer of two days ago, `art_deco_4` is now **520 → 87 ms**.
+
+## Step 7 — clip rotated DRAW rows: flat, reverted
+
+Same closed-form clip as step 5, on the 2D loop, as the intersection of the `ix`
+and `iy` runs. First version used int64 division (a libgcc call, four per row)
+and made `seascape_4` **+11%**: its 117 stars are ~30 rows each, and per-row
+setup outweighed the few excess pixels removed. int32 arithmetic plus a 24-px
+short-row bypass brought it to `op_draw_asset` −3%, `seascape_4` +2%, all else
+noise. Flat is not better; reverted.
+
+What this step did leave behind: the pixel gate now also runs on the twelve
+real scripts (`tools/device_bench/real/`, laid out by `gen_ops_corpus.py`).
+Until now they had only ever been timed, never pixel-compared. 36/36 identical.
