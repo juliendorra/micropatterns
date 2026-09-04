@@ -118,6 +118,7 @@ public: // Made public for DisplayListRenderer
     unsigned long getFixedPointPixels() const { return _fixedPointPixels; }
     unsigned long getIntegerXformCalls() const { return _integerXformCalls; }
     unsigned long getSpanRows() const { return _spanRows; }
+    unsigned long getTiledRows() const { return _tiledRows; }
     void setSpanWriterEnabled(bool on) { _spanWriter = on; }
 
     // Paint [x0, x1) on row sy in ONE colour, a byte of pixels at a time.
@@ -157,6 +158,13 @@ public: // Made public for DisplayListRenderer
         mp_canvas_fill_mask_row(_canvas, sy, b0, nb, cover, color);
     }
     static const int kMaxSpanBytes = 128;   // 1024 px; wider spans fall back
+
+    static inline int32_t gcd32(int32_t a, int32_t b) {
+        if (a < 0) a = -a; if (b < 0) b = -b;
+        while (b) { const int32_t t = a % b; a = b; b = t; }
+        return a;
+    }
+    unsigned long _tiledRows = 0;   // spans whose ink mask was tiled, not walked
 
     // Same, with a caller-built cover mask (bit set = paint this pixel `color`,
     // clear = leave it). `cover` is indexed from byte x0>>3 and MSB-first. This

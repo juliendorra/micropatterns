@@ -57,6 +57,7 @@ struct RenderCounters {
     unsigned long integerXformCalls = 0;
     // Scanline rows written through the span writer. Same gate, same reason.
     unsigned long spanRows = 0;
+    unsigned long tiledRows = 0;
     // Honest label: this is "pixels whose final value differs from white",
     // derived by scanning the canvas. It is NOT a count of rawPixel() calls --
     // the drawing layer does not track that. Use it as a coverage proxy only.

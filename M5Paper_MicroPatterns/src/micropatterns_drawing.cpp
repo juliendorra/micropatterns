@@ -211,6 +211,7 @@ void MicroPatternsDrawing::resetPixelOccupationMap() {
     _fixedPointPixels = 0;
     _integerXformCalls = 0;
     _spanRows = 0;
+    _tiledRows = 0;
 }
 
 void MicroPatternsDrawing::clearCanvas() {
@@ -737,11 +738,41 @@ void MicroPatternsDrawing::fillRect(const DisplayListItem& item) {
                     uint8_t ink[kMaxSpanBytes];
                     const int b0 = (x0) >> 3, nb = (((x1) - 1) >> 3) - b0 + 1;
                     memset(ink, 0, (size_t)nb);
-                    for (int sx_iter = x0; sx_iter < x1; ++sx_iter) {
-                        int px = (int)(bx >> MP_FX_SHIFT) % patW;
-                        if (px < 0) px += patW;
-                        if (patRow[px] == 1) ink[(sx_iter >> 3) - b0] |= (uint8_t)(0x80u >> (sx_iter & 7));
-                        bx += dx;
+                    // TILE, don't walk. The Q16.16 walk is exact integer arithmetic, so the
+                    // ink sequence along this row repeats EXACTLY every P pixels, where P is
+                    // the smallest count whose total advance P*dx is a whole multiple of the
+                    // pattern width -- for any scale, not just powers of two; only the size of
+                    // P depends on it. The mask bytes therefore repeat every B = P/gcd(P,8)
+                    // bytes. Build B bytes by walking (from the byte boundary, so every bit of
+                    // those bytes is right; the cover mask trims [x0,x1) later), then copy.
+                    // For a 20-wide pattern at SCALE 1 that is 5 bytes built and the rest
+                    // memcpy'd, in place of a shift, a modulo, a table read and a bit-set per
+                    // pixel. Falls back to the walk when the period is too long to pay.
+                    {
+                        const int32_t mW = patW << MP_FX_SHIFT;
+                        const int32_t g  = dx ? gcd32(mW, dx) : mW;
+                        const int64_t P  = mW / g;                       // pixels
+                        const int64_t Bb = (P % 8 == 0) ? P / 8 : (P % 4 == 0) ? P / 4 : (P % 2 == 0) ? P / 2 : P;   // = P / gcd(P, 8), in bytes
+                        if (Bb <= kMaxSpanBytes && Bb * 2 <= nb) {
+                            const int xs  = b0 << 3;
+                            int32_t v = bx - (int32_t)(x0 - xs) * dx;
+                            const int lim = xs + (int)(Bb << 3);
+                            for (int x = xs; x < lim; ++x) {
+                                int px = (int)(v >> MP_FX_SHIFT) % patW;
+                                if (px < 0) px += patW;
+                                if (patRow[px] == 1) ink[(x >> 3) - b0] |= (uint8_t)(0x80u >> (x & 7));
+                                v += dx;
+                            }
+                            for (int j = (int)Bb; j < nb; ++j) ink[j] = ink[j - (int)Bb];
+                            ++_tiledRows;
+                        } else {
+                        for (int sx_iter = x0; sx_iter < x1; ++sx_iter) {
+                            int px = (int)(bx >> MP_FX_SHIFT) % patW;
+                            if (px < 0) px += patW;
+                            if (patRow[px] == 1) ink[(sx_iter >> 3) - b0] |= (uint8_t)(0x80u >> (sx_iter & 7));
+                            bx += dx;
+                        }
+                        }
                     }
                     emitPatternSpan(sy_iter, x0, x1, ink, patOn, patOff, occRow, skipped);
                 } else {

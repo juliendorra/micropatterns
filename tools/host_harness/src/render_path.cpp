@@ -265,6 +265,7 @@ public:
         out.counters.fixedPointPixels = renderer.getFixedPointPixels();
         out.counters.integerXformCalls = renderer.getIntegerXformCalls();
         out.counters.spanRows = renderer.getSpanRows();
+        out.counters.tiledRows = renderer.getTiledRows();
 
 #if MP_DEVICE_CONSTRAINTS
         // The gray browser output is not a device framebuffer. Allocate it from

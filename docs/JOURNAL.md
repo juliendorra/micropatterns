@@ -1273,3 +1273,15 @@ while `verify` passed and the main corpus compared identical -- it has no
 rotated patterned FILL_RECT. `make compare-span` now runs on both corpora in
 ci. Fourth time this week a gate's silence turned out to mean "no case for
 that", not "correct".
+
+### 11. Tile the pattern row: the 20x20 question answered without changing the language
+
+Asked whether forcing patterns to powers of two would speed things up. Instead:
+the Q16.16 walk is exact, so an unrotated row's ink sequence is EXACTLY periodic
+-- P = (patW<<16)/gcd(patW<<16,|dx|) pixels, any scale -- and its mask bytes
+repeat every P/gcd(P,8) bytes. Build 5 bytes for a 20-wide pattern at scale 1,
+memcpy the rest. op_fill_rect_pattern 14.89 -> 9.71 ms, within 1.5 ms of a solid
+fill; reconnected -20%. Byte-identical, both corpora, counter-gated.
+
+Power-of-two would shrink 5 bytes to 1 in a loop that is already mostly memcpy.
+Not worth eleven of twelve scripts. Language unchanged.

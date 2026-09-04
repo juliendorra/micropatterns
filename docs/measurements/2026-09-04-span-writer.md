@@ -156,3 +156,26 @@ range. `verify` passed and the main corpus compared identical, because the main
 corpus contains no rotated patterned `FILL_RECT`. The ops corpus caught it.
 `make compare-span` now checks the span path on BOTH corpora and is part of
 `ci`; a gate is only as good as the cases in it.
+
+## Step 4 — tile the unrotated pattern span instead of walking it
+
+The Q16.16 walk is exact integer arithmetic, so along an unrotated row the ink
+sequence repeats EXACTLY every `P = (patW<<16) / gcd(patW<<16, |dx|)` pixels —
+for any scale, not only powers of two; only the size of `P` depends on it. The
+mask bytes therefore repeat every `P / gcd(P, 8)` bytes. Build those by walking
+(from the byte boundary, so every bit of them is right; the cover mask trims
+`[x0,x1)` later), then copy. For a 20-wide pattern at `SCALE 1` that is 5 bytes
+built and the rest memcpy'd. Falls back to the walk when the period is too long
+to pay for itself. Byte-identical on both corpora; tiled rows 3,150 / 1,620.
+
+| | step 2 | tiled | |
+|---|---|---|---|
+| `op_fill_rect_pattern` | 14.89 | **9.71** | **−35%** (solid is 8.17) |
+| `reconnected` | 21.35 | 17.06 | −20% |
+| `seascape_2` | 33.88 | 30.85 | −9% |
+| `grid` | 17.96 | 18.73 | +4% — one 8x8 fill; unexplained, watch it |
+| rotated, circle and DRAW probes | | | unchanged |
+
+This is the answer to "would forcing power-of-two patterns help": the period
+trick does not need it. 20x20 gives a 5-byte period; 8x8 gives 1. The language
+stays as it is.
