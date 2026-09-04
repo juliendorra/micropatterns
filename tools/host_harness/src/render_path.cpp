@@ -86,18 +86,16 @@ public:
     // program stored at sync time. It must be byte-identical to the direct
     // path; `compare-paths displaylist compiled` is what checks that.
     explicit DisplayListPath(bool occlusion = true, bool occupancyMap = true, bool roundtrip = false,
-                             bool fixedPoint = true, bool integerXform = false, bool spanWriter = false,
-                             bool integerDda = false)
+                             bool fixedPoint = true, bool integerXform = true, bool spanWriter = true,
+                             bool integerDda = true, const char* nameOverride = nullptr)
         : _occlusion(occlusion), _occupancyMap(occupancyMap), _roundtrip(roundtrip),
           _fixedPoint(fixedPoint), _integerXform(integerXform), _spanWriter(spanWriter),
           _integerDda(integerDda),
-          _name(integerDda ? "displaylist-full"
-                : spanWriter ? "displaylist-span"
-                : integerXform ? "displaylist-int"
+          _name(nameOverride ? nameOverride
                 : !fixedPoint ? "displaylist-float"
-                            : (roundtrip ? "compiled"
-                               : (!occupancyMap ? "displaylist-nomap"
-                                                : (occlusion ? "displaylist" : "displaylist-noocc")))) {}
+                : roundtrip ? "compiled"
+                : !occupancyMap ? "displaylist-nomap"
+                : occlusion ? "displaylist" : "displaylist-noocc") {}
 
     const char* name() const override { return _name; }
 
@@ -493,35 +491,26 @@ void resetDeviceRenderSessionAfterFailure()
 #endif
 
 std::unique_ptr<RenderPath> makeRenderPath(const std::string& name) {
-    if (name == "displaylist") return std::unique_ptr<RenderPath>(new DisplayListPath(true));
+    // The default is the whole integer renderer: Q16.16 fills, byte-wise span
+    // writes, the exact integer transform, and the walk set up from it with
+    // D ~= 2^30. Since 2026-09-04.
+    if (name == "displaylist")       return std::unique_ptr<RenderPath>(new DisplayListPath());
     if (name == "displaylist-noocc") return std::unique_ptr<RenderPath>(new DisplayListPath(false));
-    // What a Watchy renders when it cannot allocate the occupancy map.
     if (name == "displaylist-nomap") return std::unique_ptr<RenderPath>(new DisplayListPath(true, false));
-    // The device path: compile, serialize, deserialize, run.
-    if (name == "compiled") return std::unique_ptr<RenderPath>(new DisplayListPath(true, true, true));
-    // The original float rasteriser. Kept selectable, not deleted: it is the
-    // reference the fixed path is measured against, and this project's practice
-    // is that a superseded implementation stays runnable so the comparison can
-    // be re-made later. `compare-paths displaylist displaylist-float` isolates
-    // exactly one change.
-    if (name == "displaylist-float") return std::unique_ptr<RenderPath>(new DisplayListPath(true, true, false, false));
-    // Accepted as an alias so older commands and docs keep working; the default
-    // path IS the fixed one now.
-    if (name == "displaylist-fixed") return std::unique_ptr<RenderPath>(new DisplayListPath(true, true, false, true));
-    // Q16.16 fills PLUS the exact-integer forward transform: line and rect
-    // endpoints, circle centres and the filled-circle span, with no float and
-    // no sqrtf. Everything else identical to "displaylist".
-    if (name == "displaylist-int") return std::unique_ptr<RenderPath>(new DisplayListPath(true, true, false, true, true));
-    // The default path plus byte-wise span writes for solid fills. Everything
-    // else identical to "displaylist"; must stay byte-identical to it.
-    if (name == "displaylist-span") return std::unique_ptr<RenderPath>(new DisplayListPath(true, true, false, true, false, true));
-    // Everything integer: span writer + exact integer transform + Q16.16 walk
-    // set up from it with D ~= 2^30. NOT byte-identical to the default by
-    // design (a deliberate 6e-5 precision trade); compare-paths reports how far.
-    if (name == "displaylist-full") return std::unique_ptr<RenderPath>(new DisplayListPath(true, true, false, true, true, true, true));
+    if (name == "compiled")          return std::unique_ptr<RenderPath>(new DisplayListPath(true, true, true));
+    // The float renderer of 2026-09-02, kept selectable and gated against its
+    // own goldens (golden-float/). A superseded implementation that still runs
+    // is a comparison that can be re-made rather than re-argued.
+    if (name == "displaylist-float") return std::unique_ptr<RenderPath>(new DisplayListPath(true, true, false, false, false, false, false));
+    // Historical partial configurations, by the names the measurement files
+    // use, so every table in docs/measurements can still be reproduced.
+    if (name == "displaylist-fixed") return std::unique_ptr<RenderPath>(new DisplayListPath(true, true, false, true, false, false, false, "displaylist-fixed"));
+    if (name == "displaylist-int")   return std::unique_ptr<RenderPath>(new DisplayListPath(true, true, false, true, true,  false, false, "displaylist-int"));
+    if (name == "displaylist-span")  return std::unique_ptr<RenderPath>(new DisplayListPath(true, true, false, true, false, true,  false, "displaylist-span"));
+    if (name == "displaylist-full")  return std::unique_ptr<RenderPath>(new DisplayListPath());   // alias of the default
     return nullptr;
 }
 
 std::vector<std::string> availableRenderPaths() {
-    return {"displaylist", "displaylist-span", "displaylist-full", "displaylist-int", "displaylist-float", "displaylist-noocc", "displaylist-nomap", "compiled"};
+    return {"displaylist", "displaylist-float", "displaylist-fixed", "displaylist-span", "displaylist-int", "displaylist-noocc", "displaylist-nomap", "compiled"};
 }

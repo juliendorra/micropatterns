@@ -114,9 +114,9 @@ private:
     bool _occlusionEnabled = true;
     bool _occupancyMapEnabled = true;
     bool _fixedPointEnabled = true;
-    bool _integerTransformEnabled = false;
-    bool _spanWriterEnabled = false;
-    bool _integerDdaEnabled = false;
+    bool _integerTransformEnabled = true;
+    bool _spanWriterEnabled = true;
+    bool _integerDdaEnabled = true;
     bool _usedOccupancyMapLastRender = false;
 
     std::function<bool()> _interrupt_check_cb;

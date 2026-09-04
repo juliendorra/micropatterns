@@ -1352,3 +1352,21 @@ operation between the display list and the pixels is integer. art_deco_4:
 op_fill_pixel's baseline read 6.23 ms instead of 2.04, on paths that run no new
 code. Noted as a likely instruction-cache layout effect from the binary growing;
 to be re-checked on the next flash rather than explained.
+
+### 17. The integer renderer becomes the default
+
+Flipped: fixed point, span writer, exact integer transform and the D ~= 2^30
+walk are all on by default. golden/ rebaked; golden-float/ untouched and still
+gating the float renderer of 2026-09-02. The historical partial configurations
+keep their names (-fixed, -span, -int) so every table in docs/measurements can
+be reproduced, and the byte-identity between -fixed and -span/-int still holds
+(21/21) -- it is just no longer a ci gate, since the default is their superset.
+compare-paths' vacuity rules now key on "-float" alone: the plain default must
+show fixed-point pixels, integer transforms AND span rows, or it fails.
+
+Two things it did not finish. The M5Paper was off the bus, so only the Watchy
+runs the new default so far; its 4-bpp canvas has a correct-by-construction
+per-bit fallback for the row blit and no measurement. And the first flip build
+failed on a lambda defined after its use; the stale binary then rebaked the
+goldens harmlessly -- identical to the old ones, which the vacuity printout
+showed (span rows: displaylist=0) before anything was trusted.

@@ -105,12 +105,16 @@ across platforms, not agreement with the renderer that shipped yesterday.
 
 ## Recommendation
 
-1. Q16.16 is now the default rasteriser — measured, gated, and 15–42% faster per
-   operation on real hardware. The float path stays selectable as
-   `displaylist-float` with its own goldens.
-2. Treat the exact integer DDA as the thing to build **if and when** either the
-   cross-toolchain reproducibility matters, or an FPU-less target appears. It is
-   a contained change: same loop shape, different accumulator.
+1. As of 2026-09-04 the default rasteriser is integer end to end: Q16.16 fills,
+   byte-wise span writes, the exact integer transform, and the walk set up from
+   it. The float path stays selectable as `displaylist-float` with its own
+   goldens. `art_deco_4` went from 518 ms to 74 ms on a Watchy across the week.
+2. The *exactly* rational DDA described above was built (`displaylist-int`) and
+   measured: byte-identical, and up to +13% on circle-heavy art from its int64
+   per-row cost. What shipped instead treats `D = C² + S²` as `2³⁰` — a 6e-5,
+   non-compounding approximation chosen deliberately for generative art — which
+   makes the setup a shift and the whole path faster than the float one. The
+   exact form remains selectable for a target that needs canonical output.
 3. Do not describe either as making the language integer-math. The language
    already was. What changed is that the renderer stopped needing an FPU to
    agree with it.

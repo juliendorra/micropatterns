@@ -618,6 +618,11 @@ int main(int argc, char** argv) {
         }
         printf("\n%d identical, %d differing\n", pass, fail);
 
+        // Path-name helpers for the vacuity rules below. The plain default performs
+        // everything; "-float" performs none of it; the historical partial
+        // configurations (-fixed, -span, -int) advertise only their own part.
+        auto isFloatN = [](const char* n) { return std::string(n).find("-float") != std::string::npos; };
+        auto isPartial = [](const char* n) { std::string s(n); return s.find("-fixed") != std::string::npos || s.find("-span") != std::string::npos || s.find("-int") != std::string::npos; };
         // The gate on the gate.
         //
         // "N identical" is the answer a correct fast path gives AND the answer
@@ -635,7 +640,7 @@ int main(int argc, char** argv) {
         printf("clipped DRAW rows:  %s=%lu  %s=%lu\n", A->name(), clA, B->name(), clB);
         printf("integer DDA rows:   %s=%lu  %s=%lu\n", A->name(), ddA, B->name(), ddB);
         {
-            auto isSpan = [](const char* n) { return std::string(n).find("-span") != std::string::npos || std::string(n).find("-full") != std::string::npos; };
+            auto isSpan = [&](const char* n) { return !isFloatN(n) && (!isPartial(n) || std::string(n).find("-span") != std::string::npos); };
             struct SC { const char* nm; unsigned long sp; };
             const SC sc[2] = { { A->name(), spA }, { B->name(), spB } };
             for (const SC& c : sc) {
@@ -654,11 +659,11 @@ int main(int argc, char** argv) {
         // Assumes the corpus contains at least one patterned fill or DRAW. The
         // committed corpus does (artdeco_default, city, prims, bounds); a
         // corpus of nothing but lines and outlines would trip this legitimately.
-        auto isFloatPath = [](const char* n) { return std::string(n).find("float") != std::string::npos; };
+        auto isFloatPath = [](const char* n) { return std::string(n).find("-float") != std::string::npos; };
         // Same rule for the exact-integer transform: a path named "*-int" that
         // transformed nothing that way is not being compared, it is being
         // impersonated by the path it is supposed to differ from.
-        auto isIntPath = [](const char* n) { return std::string(n).find("-int") != std::string::npos || std::string(n).find("-full") != std::string::npos; };
+        auto isIntPath = [&](const char* n) { return !isFloatN(n) && (!isPartial(n) || std::string(n).find("-int") != std::string::npos); };
         struct ICheck { const char* nm; unsigned long ix; };
         const ICheck ichecks[2] = { { A->name(), ixA }, { B->name(), ixB } };
         for (const ICheck& c : ichecks) {

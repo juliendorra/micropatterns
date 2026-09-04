@@ -53,8 +53,8 @@ public:
 private:
     bool _usePixelOccupationMap;
     bool _fixedPointEnabled = true;
-    bool _integerTransform = false;
-    bool _integerDda = false;
+    bool _integerTransform = true;
+    bool _integerDda = true;
     unsigned long _intDdaRows = 0;   // scanlines whose Q16.16 walk was set up without floats
     unsigned int _overdrawSkippedPixels; // For stats
 
@@ -81,7 +81,7 @@ private:
     // Scanline spans written eight pixels at a time instead of one. Same
     // "prove it ran" gate as the two counters above.
     unsigned long _spanRows = 0;
-    bool _spanWriter = false;
+    bool _spanWriter = true;
 
     void initPixelOccupationMap(); // Initialize map if needed
 

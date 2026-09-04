@@ -59,7 +59,7 @@ OBJS         := $(CORE_OBJS) $(HARNESS_OBJS)
 
 BIN := $(BUILD)/mpharness
 
-.PHONY: all clean verify bench bake list profile policy verify-float bake-float compare-float compare-int compare-span
+.PHONY: all clean verify bench bake list profile policy verify-float bake-float compare-float compare-int compare-span compare-default
 
 all: $(BIN) $(BUILD)/mppolicy
 
@@ -110,18 +110,30 @@ compare-float: $(BIN)
 # whole number over a fixed denominator, so nothing rounds -- and if it ever
 # stops being identical, that is a bug rather than a trade-off. The check also
 # refuses to pass if the integer path performed no integer transforms.
+# Historical: the exact-integer transform against the Q16.16-only path, which it
+# was byte-identical to. Both are partial configurations now; kept so the
+# 2026-09-04 measurement tables can be reproduced. Not in ci.
 compare-int: $(BIN)
-	$(BIN) compare-paths displaylist displaylist-int --corpus corpus --golden golden
+	$(BIN) compare-paths displaylist-fixed displaylist-int --corpus corpus --golden golden
 
 # The span writer must stay byte-identical to the default, and it is checked on
 # BOTH corpora. The main corpus has no rotated patterned FILL_RECT, and a
 # 27,985-pixel divergence in exactly that case passed `verify` and compared
 # identical here before the ops corpus caught it. A gate is only as good as
 # the cases it contains.
+# Historical, same reason: the span writer was byte-identical to the Q16.16-only
+# path on all three corpora. Not in ci.
 compare-span: $(BIN)
-	$(BIN) compare-paths displaylist displaylist-span --corpus corpus --golden golden
-	$(BIN) compare-paths displaylist displaylist-span --corpus ../device_bench/ops --golden golden
-	$(BIN) compare-paths displaylist displaylist-span --corpus ../device_bench/real --golden golden
+	$(BIN) compare-paths displaylist-fixed displaylist-span --corpus corpus --golden golden
+	$(BIN) compare-paths displaylist-fixed displaylist-span --corpus ../device_bench/ops --golden golden
+	$(BIN) compare-paths displaylist-fixed displaylist-span --corpus ../device_bench/real --golden golden
+
+# How far the default (integer) renderer is from the float one, on all three
+# corpora. A report, not a gate: they differ by design.
+compare-default: $(BIN)
+	-$(BIN) compare-paths displaylist-float displaylist --corpus corpus --golden golden | tail -3
+	-$(BIN) compare-paths displaylist-float displaylist --corpus ../device_bench/ops --golden golden | tail -3
+	-$(BIN) compare-paths displaylist-float displaylist --corpus ../device_bench/real --golden golden | tail -3
 
 # The browse and refresh policy, off-device. Pure logic with an injected clock,
 # so the timing rules that used to be tuned against a panel by hand are pinned
@@ -253,7 +265,7 @@ verify-emulator-wasm: wasm wasm-constrained
 
 # Required pre-deploy gate. The longer generated lifetime soak remains a
 # scheduled/manual CI job; these checks are deterministic and run on every push.
-ci: verify verify-float compare-int compare-span audit-sweep sanitize verify-strict verify-source-parity \
+ci: verify verify-float audit-sweep sanitize verify-strict verify-source-parity \
 	verify-wasm verify-language-wasm verify-device-diagnostics \
 	verify-wasm-constrained verify-emulator-wasm
 
