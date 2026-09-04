@@ -96,3 +96,54 @@ Still float in this path: `narrowSpan` (per-row bisection in `fillRect` and
 `drawAsset`), the display-list bounds pass (per item), `exactReciprocal`
 (per item, computed and unused by the integer branches), and
 `matrix_set_rigid`'s `1/det` (per transform command).
+
+## Step 4 — the last two float sites: `narrowSpan` and the bounds pass
+
+**Bounds pass in Q15.** `calculateScreenBoundsQ15` mirrors the float function
+case for case — four corners, a line, the unit square, centre ± `lr × scale` —
+from the exact integer transform; floor and ceil are shifts, the half-pixel
+widening is `± ONE/2`. It is per item, so it shows where items are many:
+`op_fill_pixel` −17%, `seascape_4` −12%, `art_deco_4` −10%, `op_draw_asset` −7%.
+
+**`narrowSpan` on integers — first shape regressed.** Its threshold type now
+follows `g`'s return type, and the integer path bisects on the same int64
+expression the walk is set up from, so boundary and interior agree by
+construction. Evaluating that expression per probe — two 64-bit multiplies,
+~40 probes a row — cost `disconnected` **+21%**, `reconnected` +12%, `grid` +6%
+against the previous full path. FILL_RECT-heavy scripts, all of them.
+
+**The fix is exact and free.** `(C·dxN(x) + S·dyN) >> 14` is affine in `x`
+with an integer slope: it equals `g(x0) + 2C·(x − x0)` exactly, because
+`C·(x−x0)·2¹⁵` is a multiple of `2¹⁴`. One int64 evaluation per row; each probe
+is a 32-bit multiply and an add. The pixel distance came back identical —
+245 / 9,018 / 6,168 — which is the proof it is the same formula.
+
+`full` against `span`, Watchy, after both:
+
+| | span | full | |
+|---|---|---|---|
+| `thunderstorms` | 52.29 | **41.35** | **−21%** |
+| `eyes` | 22.44 | 17.84 | −21% |
+| `seascape_4` | 74.44 | 60.89 | −18% |
+| `art_deco_4` | 88.21 | 73.72 | −16% |
+| `confetti` | 20.46 | 17.25 | −16% |
+| `seascape_2` | 33.28 | 29.89 | −10% |
+| `disconnected`, `reconnected`, `grid` | | | −1…−3% |
+| `op_draw_asset` | 10.68 | 9.44 | −12% |
+| every other probe | | | flat or better |
+
+Against the float renderer of 2026-09-02: `art_deco_4` **518 → 74 ms**,
+`thunderstorms` 124 → 41, `seascape_4` 148 → 61.
+
+Anomaly on the record: `op_fill_pixel`'s **baseline** read 6.23 ms this run
+against 2.04 in every earlier run, for `fixed` and `span` alike — paths that do
+not execute any new code. A 3x swing on a 120-item probe looks like an
+instruction-cache layout effect from the binary growing (the ESP32 executes
+from flash through a 32 KB cache). Re-checked on the next flash, not explained
+away.
+
+What is still float on the full path: `exactReciprocal` (per item, its result
+unused by the integer branches), `matrix_set_rigid`'s `1/det` (per transform
+command), `mp_sin_deg` for the float matrix (per command), and the float
+fallback loops themselves. All per-item or per-command; none per pixel or per
+row. They go when the float path is compiled out rather than selected.

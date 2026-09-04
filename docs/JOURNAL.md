@@ -1333,3 +1333,22 @@ it costs exactly what the float sqrtf span did: op_fill_circle 5.76 vs 5.77.
 displaylist-full is now -3..-6% against the span path on every real script and
 flat on every probe. art_deco_4: 518 ms on Tuesday, 81 ms now. Precision spent:
 about 200 more pixels on the real corpus at 960x540, at circle edges.
+
+### 16. The last float sites, and an integer bisection that had to be made affine
+
+Bounds pass in Q15: a straight mirror of the float function, per item, and it
+shows where items are many -- op_fill_pixel -17%, seascape_4 -12%.
+
+narrowSpan on integers regressed first: bisecting on the full int64 expression
+-- two 64-bit multiplies per probe, ~40 probes a row -- cost disconnected +21%.
+The expression is affine in x with an integer slope, exactly, so one evaluation
+per row and a 32-bit multiply per probe give the same answer: pixel distance
+identical to the digit, 245 / 9018 / 6168, which is the proof.
+
+displaylist-full is now -1% to -21% against span on every real script. Every
+operation between the display list and the pixels is integer. art_deco_4:
+518 ms on Tuesday, 74 ms now.
+
+op_fill_pixel's baseline read 6.23 ms instead of 2.04, on paths that run no new
+code. Noted as a likely instruction-cache layout effect from the binary growing;
+to be re-checked on the next flash rather than explained.

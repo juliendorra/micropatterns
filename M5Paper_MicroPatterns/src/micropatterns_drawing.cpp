@@ -97,22 +97,27 @@ inline int32_t fxFrom(float v) { return (int32_t)lrintf(v * MP_FX_ONE); }
 // NaN safety: if the transform is degenerate every comparison is false, both
 // searches return `hi`, and the span collapses to empty -- which is what the
 // old per-pixel test did too (all its comparisons were false as well).
-template <typename G>
-inline int firstTrueGE(G g, float t, int lo, int hi) {
+template <typename G, typename T>
+inline int firstTrueGE(G g, T t, int lo, int hi) {
     while (lo < hi) { int m = lo + ((hi - lo) >> 1); if (g(m) >= t) hi = m; else lo = m + 1; }
     return lo;
 }
-template <typename G>
-inline int firstTrueLT(G g, float t, int lo, int hi) {
+template <typename G, typename T>
+inline int firstTrueLT(G g, T t, int lo, int hi) {
     while (lo < hi) { int m = lo + ((hi - lo) >> 1); if (g(m) < t) hi = m; else lo = m + 1; }
     return lo;
 }
 
-template <typename G>
-inline void narrowSpan(G g, float t0, float t1, int& lo, int& hi) {
+// The threshold type follows g's return type, so the same bisection serves the
+// float lambdas and the int64 ones the integer path supplies. In the integer
+// path g IS the expression the Q16.16 walk is set up from (see intDdaRow), so
+// the span boundary and the pattern walk agree by construction -- where the
+// float form decided the boundary in float and walked the interior in fixed.
+template <typename G, typename T>
+inline void narrowSpan(G g, T t0, T t1, int& lo, int& hi) {
     if (lo >= hi) return;
-    const float gLo = g(lo);
-    const float gHi = g(hi - 1);
+    const auto gLo = g(lo);
+    const auto gHi = g(hi - 1);
     if (gLo == gHi) {                       // constant along this scanline
         if (!(gLo >= t0 && gLo < t1)) hi = lo;
         return;
@@ -282,6 +287,11 @@ static inline void xformPointQ15(const DisplayListItem& item, int32_t lx, int32_
 
     sxNum = (int64_t)C * X - (int64_t)S * Y + xf.txNum;
     syNum = (int64_t)S * X + (int64_t)C * Y + xf.tyNum;
+}
+
+void MicroPatternsDrawing::transformPointQ15(const DisplayListItem& item, int32_t lx, int32_t ly,
+                                             int64_t& sxNum, int64_t& syNum) const {
+    xformPointQ15(item, lx, ly, sxNum, syNum);
 }
 
 // Screen AABB of a logical rectangle's four corners, exactly, with no float.
@@ -695,14 +705,36 @@ void MicroPatternsDrawing::fillRect(const DisplayListItem& item) {
         // ((a*x) + (b*y)) + c that matrix_apply_to_point evaluates.
         const float m2y = im2 * fy;
         const float m3y = im3 * fy;
-        auto gx = [&](int x) { return im0 * (static_cast<float>(x) + 0.5f) + m2y + im4; };
-        auto gy = [&](int x) { return im1 * (static_cast<float>(x) + 0.5f) + m3y + im5; };
 
         int x0 = min_sx, x1 = max_sx;
-        narrowSpan(gx, rect_x0, rect_x1, x0, x1);
-        if (x0 >= x1) continue;
-        narrowSpan(gy, rect_y0, rect_y1, x0, x1);
-        if (x0 >= x1) continue;
+        if (_integerDda) {
+            // Same expression as intDdaRow before the divide by s: the scaled
+            // logical coordinate in Q16, exact integers, no division at all.
+            // The rect's edges in the same units are (lx*s) << 16.
+            // Affine in x with an INTEGER slope: (C*dxN(x) + S*dyN) >> 14 equals
+            // g(x0) + 2C*(x - x0) exactly, since C*(x-x0)*2^15 is a multiple
+            // of 2^14. So the two int64 multiplies happen once per row, and
+            // each of the bisection's probes is a 32-bit multiply and an add.
+            // Evaluating the full expression per probe cost disconnected +21%.
+            const int64_t C = item.xf->cosQ15, S = item.xf->sinQ15, sI = item.xf->scaleInt;
+            const int64_t dyN = ((int64_t)sy_iter << 15) + (1 << 14) - item.xf->tyNum;
+            const int64_t dxN0 = ((int64_t)min_sx << 15) + (1 << 14) - item.xf->txNum;
+            const int64_t gx0 = ( C * dxN0 + S * dyN) >> 14, gy0 = (-S * dxN0 + C * dyN) >> 14;
+            const int32_t kx = (int32_t)(2 * C), ky = (int32_t)(-2 * S);
+            auto gxi = [&](int x) { return gx0 + (int64_t)(kx * (x - min_sx)); };
+            auto gyi = [&](int x) { return gy0 + (int64_t)(ky * (x - min_sx)); };
+            narrowSpan(gxi, (int64_t)lx * sI << 16, (int64_t)(lx + lw) * sI << 16, x0, x1);
+            if (x0 >= x1) continue;
+            narrowSpan(gyi, (int64_t)ly * sI << 16, (int64_t)(ly + lh) * sI << 16, x0, x1);
+            if (x0 >= x1) continue;
+        } else {
+            auto gx = [&](int x) { return im0 * (static_cast<float>(x) + 0.5f) + m2y + im4; };
+            auto gy = [&](int x) { return im1 * (static_cast<float>(x) + 0.5f) + m3y + im5; };
+            narrowSpan(gx, rect_x0, rect_x1, x0, x1);
+            if (x0 >= x1) continue;
+            narrowSpan(gy, rect_y0, rect_y1, x0, x1);
+            if (x0 >= x1) continue;
+        }
 
         uint8_t* occRow = occ ? occ + (size_t)sy_iter * _occStride : nullptr;
         if (!patterned) {
@@ -1292,19 +1324,33 @@ void MicroPatternsDrawing::drawAsset(const DisplayListItem& item, const MicroPat
 
         // Both bounds tests are monotone in x, so the exact span is found by
         // bisection on the same expressions the per-pixel test evaluated.
-        auto alx = [&](int x) {
-            const float v = im0 * (static_cast<float>(x) + 0.5f) + m2y + im4;
-            return ((sf == 0.0f) ? v : (useRcp ? v * rcp : v / sf)) - forigin_x;
-        };
-        auto aly = [&](int x) {
-            const float v = im1 * (static_cast<float>(x) + 0.5f) + m3y + im5;
-            return ((sf == 0.0f) ? v : (useRcp ? v * rcp : v / sf)) - forigin_y;
-        };
-
         int x0 = min_sx, x1 = max_sx;
-        narrowSpan(alx, 0.0f, fasset_w, x0, x1);
-        if (x0 >= x1) continue;
-        narrowSpan(aly, 0.0f, fasset_h, x0, x1);
+        if (_integerDda) {
+            // As in fillRect: scaled logical Q16, no division; the asset's
+            // edges are (origin*s) << 16 .. ((origin+w)*s) << 16.
+            const int64_t C = item.xf->cosQ15, S = item.xf->sinQ15, sI = item.xf->scaleInt;
+            const int64_t dyN = ((int64_t)sy_iter << 15) + (1 << 14) - item.xf->tyNum;
+            const int64_t dxN0 = ((int64_t)min_sx << 15) + (1 << 14) - item.xf->txNum;
+            const int64_t gx0 = ( C * dxN0 + S * dyN) >> 14, gy0 = (-S * dxN0 + C * dyN) >> 14;
+            const int32_t kx = (int32_t)(2 * C), ky = (int32_t)(-2 * S);
+            auto axi = [&](int x) { return gx0 + (int64_t)(kx * (x - min_sx)); };   // affine, see fillRect
+            auto ayi = [&](int x) { return gy0 + (int64_t)(ky * (x - min_sx)); };
+            narrowSpan(axi, (int64_t)lx_asset_origin * sI << 16, (int64_t)(lx_asset_origin + asset.width) * sI << 16, x0, x1);
+            if (x0 >= x1) continue;
+            narrowSpan(ayi, (int64_t)ly_asset_origin * sI << 16, (int64_t)(ly_asset_origin + asset.height) * sI << 16, x0, x1);
+        } else {
+            auto alx = [&](int x) {
+                const float v = im0 * (static_cast<float>(x) + 0.5f) + m2y + im4;
+                return ((sf == 0.0f) ? v : (useRcp ? v * rcp : v / sf)) - forigin_x;
+            };
+            auto aly = [&](int x) {
+                const float v = im1 * (static_cast<float>(x) + 0.5f) + m3y + im5;
+                return ((sf == 0.0f) ? v : (useRcp ? v * rcp : v / sf)) - forigin_y;
+            };
+            narrowSpan(alx, 0.0f, fasset_w, x0, x1);
+            if (x0 >= x1) continue;
+            narrowSpan(aly, 0.0f, fasset_h, x0, x1);
+        }
         if (x0 >= x1) continue;
 
         uint8_t* occRow = occ ? occ + (size_t)sy_iter * _occStride : nullptr;

@@ -123,6 +123,11 @@ private:
 
 
     ScreenBounds calculateScreenBounds(const DisplayListItem& item);
+    // The same bounds from the exact integer transform, in Q15, with no float:
+    // floor and ceil are shifts. Used when the integer walk is enabled so the
+    // bounds pass agrees with the rasteriser it feeds, and so no float remains
+    // between a display list and the pixels.
+    ScreenBounds calculateScreenBoundsQ15(const DisplayListItem& item);
     void renderItem(const DisplayListItem& item);
     bool isAssetDataFullyOpaque(const MicroPatternsAsset* asset) const;
     bool determineItemOpacity(const DisplayListItem& item) const;

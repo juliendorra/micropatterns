@@ -51,6 +51,86 @@ bool DisplayListRenderer::determineItemOpacity(const DisplayListItem& item) cons
 }
 
 
+ScreenBounds DisplayListRenderer::calculateScreenBoundsQ15(const DisplayListItem& item) {
+    ScreenBounds bounds;
+    bounds.isOffScreen = true;
+    const int64_t ONE = 1 << 15;
+    int64_t minX = 0, minY = 0, maxX = 0, maxY = 0;
+    bool valid = false;
+
+    auto corners = [&](int lx, int ly, int w, int h) {
+        int64_t px[4], py[4];
+        _drawing.transformPointQ15(item, lx,     ly,     px[0], py[0]);
+        _drawing.transformPointQ15(item, lx + w, ly,     px[1], py[1]);
+        _drawing.transformPointQ15(item, lx + w, ly + h, px[2], py[2]);
+        _drawing.transformPointQ15(item, lx,     ly + h, px[3], py[3]);
+        minX = maxX = px[0]; minY = maxY = py[0];
+        for (int i = 1; i < 4; ++i) {
+            if (px[i] < minX) minX = px[i]; if (px[i] > maxX) maxX = px[i];
+            if (py[i] < minY) minY = py[i]; if (py[i] > maxY) maxY = py[i];
+        }
+        valid = true;
+    };
+
+    if (item.type == CMD_DRAW) {
+        if (item.asset && item.asset->width > 0 && item.asset->height > 0)
+            corners(item.x(), item.y(), item.asset->width, item.asset->height);
+    } else if (item.type == CMD_RECT || item.type == CMD_FILL_RECT) {
+        if (item.w() > 0 && item.h() > 0) corners(item.x(), item.y(), item.w(), item.h());
+    } else if (item.type == CMD_LINE) {
+        int64_t ax, ay, bx, by;
+        _drawing.transformPointQ15(item, item.x1(), item.y1(), ax, ay);
+        _drawing.transformPointQ15(item, item.x2(), item.y2(), bx, by);
+        minX = ax < bx ? ax : bx; maxX = ax < bx ? bx : ax;
+        minY = ay < by ? ay : by; maxY = ay < by ? by : ay;
+        valid = true;
+    } else if (item.type == CMD_PIXEL || item.type == CMD_FILL_PIXEL) {
+        corners(item.x(), item.y(), 1, 1);          // a pixel covers a 1x1 logical unit
+    } else if (item.type == CMD_CIRCLE || item.type == CMD_FILL_CIRCLE) {
+        const int lr = item.radius();
+        if (lr > 0) {
+            int64_t cx, cy;
+            _drawing.transformPointQ15(item, item.x(), item.y(), cx, cy);
+            // The transform is rigid, so the screen radius is exactly lr * scale.
+            int64_t r = (int64_t)lr * (item.xf->scaleInt > 0 ? item.xf->scaleInt : 1) * ONE;
+            if (r < ONE) r = ONE;
+            minX = cx - r; maxX = cx + r; minY = cy - r; maxY = cy + r;
+            valid = true;
+        }
+    }
+
+    if (!valid) {
+        bounds.minX = bounds.minY = bounds.maxX = bounds.maxY = 0;
+        bounds.markingBounds = {0,0,0,0};
+        return bounds;
+    }
+
+    // Same half-pixel widening as the float form, so an axis-aligned LINE has
+    // the one-pixel-thick box the rasteriser will actually touch.
+    auto ensureOnePixelThick = [&](int64_t& lo, int64_t& hi) {
+        if (hi - lo < ONE) { const int64_t mid = (lo + hi) / 2; lo = mid - ONE / 2; hi = mid + ONE / 2; }
+    };
+    ensureOnePixelThick(minX, maxX);
+    ensureOnePixelThick(minY, maxY);
+
+    const int64_t W = (int64_t)_canvasWidth * ONE, H = (int64_t)_canvasHeight * ONE;
+    bounds.isOffScreen = (maxX <= 0 || minX >= W || maxY <= 0 || minY >= H);
+
+    auto floorQ = [](int64_t v) { return (int)(v >> 15); };
+    auto ceilQ  = [](int64_t v) { return (int)(-((-v) >> 15)); };
+    bounds.minX = floorQ(minX < 0 ? 0 : minX);
+    bounds.minY = floorQ(minY < 0 ? 0 : minY);
+    bounds.maxX = ceilQ(maxX > W ? W : maxX);
+    bounds.maxY = ceilQ(maxY > H ? H : maxY);
+    if (bounds.minX >= bounds.maxX || bounds.minY >= bounds.maxY) bounds.isOffScreen = true;
+
+    bounds.markingBounds.minX = bounds.minX;
+    bounds.markingBounds.minY = bounds.minY;
+    bounds.markingBounds.maxX = bounds.maxX;
+    bounds.markingBounds.maxY = bounds.maxY;
+    return bounds;
+}
+
 ScreenBounds DisplayListRenderer::calculateScreenBounds(const DisplayListItem& item) {
     ScreenBounds bounds;
     bounds.isOffScreen = true; // Default to off-screen
@@ -326,7 +406,7 @@ void DisplayListRenderer::render(const std::vector<DisplayListItem>& displayList
         }
 
         const DisplayListItem& item = *it;
-        ScreenBounds bounds = calculateScreenBounds(item);
+        ScreenBounds bounds = (_integerDdaEnabled ? calculateScreenBoundsQ15(item) : calculateScreenBounds(item));
 
         if (bounds.isOffScreen) {
             _culledOffScreen++;

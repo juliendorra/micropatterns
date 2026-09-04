@@ -97,6 +97,11 @@ public: // Made public for DisplayListRenderer
     // default while it is being measured; see docs/measurements/.
     void setIntegerTransformEnabled(bool enable) { _integerTransform = enable; }
     void setIntegerDdaEnabled(bool enable) { _integerDda = enable; }
+
+    // The exact integer forward transform, for callers outside this class
+    // (the display-list bounds pass). Q15 numerators, see xformPointQ15.
+    void transformPointQ15(const DisplayListItem& item, int32_t lx, int32_t ly,
+                           int64_t& sxNum, int64_t& syNum) const;
     unsigned long getIntDdaRows() const { return _intDdaRows; }
 
     // The Q16.16 walk's start and step from the exact integer transform,
