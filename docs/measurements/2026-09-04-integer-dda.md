@@ -195,3 +195,47 @@ pixel identity held on every corpus, including for `PIXEL`.
 Removing the last two is a build-configuration change — compile the float path
 out rather than select it at run time — and it is what will finally make `nm`
 show `__divsf3` and `sqrtf` gone from the binary.
+
+## Step 6 — what the objects actually import, function by function
+
+Read from `nm` and `objdump -dr` on the Watchy build. First correction: an
+earlier pass reported "no renderer object references any float helper" — that
+was my search missing the objects, which PlatformIO places at
+`.pio/build/M5Paper_MicroPatterns/src/` (the `../..` in `build_src_filter`
+normalised away), **outside** the env directory and **shared between the
+normal, bench and profile envs**. SCons recompiles on flag change, so it is
+correct, and it is why alternating envs rebuilds the renderer every time.
+
+The renderer objects DO import float helpers — from the compiled-in float path:
+
+| object | imports | from |
+|---|---|---|
+| `micropatterns_drawing` | `__divsf3` ×17 | float DDA setups, `narrowSpan` float lambdas, `exactReciprocal`, `fillColorFromScaled`, `screenToLogicalBase` |
+| | `sqrtf` | the float circle span |
+| | `roundf` ×15 | float endpoints in `drawRect`, `drawLine`, `drawCircle` |
+| | `lrintf` | `fxFrom` |
+| | **`__divdi3` ×3** | **the unrotated DRAW row clip — on the default path** |
+| `matrix_utils` | `__divsf3` | `1/det` |
+| `display_list_renderer` | `ceilf`, `floorf` | the float bounds pass |
+
+Everything in that table but one row is the selectable float path: compiled in,
+never executed on the default. The exception was the step-5 row clip, written in
+`int64` and measured flat — three libgcc calls per row of every unrotated `DRAW`,
+the only library call left inside a default-path loop. Its operands are bounded
+by the `fxFits` guard, so `int32` gives the same answers:
+
+| | before | int32 clip | |
+|---|---|---|---|
+| `op_draw_asset` | 9.44 | **8.90** | −6% |
+| `seascape_4` | 62.18 | 59.88 | −4% |
+| pixel identity, three corpora | | 21 / 30 / 36 | |
+
+After it, the drawing object imports `__divsf3` and `sqrtf` only, both from the
+float path. **The default path makes no library call in any loop.**
+
+What compiling the float path out would change: `sqrtf`, `roundf`, `lrintf`,
+`ceilf`, `floorf` and ~380 FPU instructions of dead code leave the renderer
+objects; `sqrtf` likely leaves the binary. `__divsf3` stays regardless — the
+Arduino framework's `ColorFormat.c` imports it — so "no soft-float in flash" is
+not reachable from the renderer side on this platform, only "no soft-float in
+the renderer".

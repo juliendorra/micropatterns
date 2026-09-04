@@ -1391,3 +1391,24 @@ What is still float, stated exactly: the float matrices built per transform
 command for the selectable float path, and the float fallback branches, compiled
 in and never run. Nothing per pixel, nothing per row. Compiling the float path
 out is the remaining step, and the nm check is its proof.
+
+### 19. Reading the objects: one libgcc call per row was still in the default path
+
+Asked where the floats were, and after fixing the two holes, went to the objects
+themselves. First pass said the renderer imported nothing -- my search had
+missed the objects, which PlatformIO puts at .pio/build/M5Paper_MicroPatterns/
+src/, outside the env directory and shared by the normal, bench and profile
+envs. Sixth instrument mistake of the week, and the second that was purely me.
+
+The real map, by function: every float helper the renderer imports comes from
+the compiled-in float path -- except three __divdi3 calls, which were the
+unrotated DRAW row clip I wrote in int64 on Thursday and measured flat. A libgcc
+call per row of every DRAW, on the default path, invisible to every gate and
+inside the noise of every measurement. int32 gives the same answers (identity
+21/30/36) and op_draw_asset went 9.44 -> 8.90 ms. The default path now makes
+no library call inside any loop.
+
+Compiling the float path out would remove sqrtf and the float rounding helpers
+from the renderer objects. __divsf3 stays in the binary regardless: the Arduino
+framework's ColorFormat.c imports it. That bounds what "no soft-float" can mean
+here -- in the renderer, not in the flash image.

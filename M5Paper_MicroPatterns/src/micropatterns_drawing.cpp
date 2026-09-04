@@ -1513,14 +1513,19 @@ void MicroPatternsDrawing::drawAsset(const DisplayListItem& item, const MicroPat
                     // A rotated asset's box is up to twice its area; every pixel of the
                     // excess used to cost a shift, two compares and a branch to reject.
                     {
-                        const int span = x1 - x0;
-                        const int64_t a0 = axq, d = daxq, top = ((int64_t)aw << MP_FX_SHIFT);
-                        int64_t k0 = 0, k1 = (int64_t)span - 1;      // inclusive run in k
+                        // int32 throughout. The int64 form of this was three __divdi3
+                        // calls -- libgcc, per row of every unrotated DRAW -- and the
+                        // only library call left in the default path's loops. axq is
+                        // bounded by the fxFits guard and aw << 16 by the asset limit,
+                        // so every quantity here fits, and the divide is one instruction.
+                        const int32_t span = x1 - x0;
+                        const int32_t a0 = axq, d = daxq, top = (int32_t)aw << MP_FX_SHIFT;
+                        int32_t k0 = 0, k1 = span - 1;      // inclusive run in k
                         if (d > 0) {
                             if (a0 < 0)     k0 = (-a0 + d - 1) / d;                 // first k with a >= 0
                             k1 = (top - 1 - a0) >= 0 ? (top - 1 - a0) / d : -1;    // last k with a < top
                         } else if (d < 0) {
-                            const int64_t nd = -d;
+                            const int32_t nd = -d;
                             if (a0 >= top)  k0 = (a0 - top + nd) / nd;              // first k with a < top
                             k1 = a0 >= 0 ? a0 / nd : -1;                            // last k with a >= 0
                         } else if (a0 < 0 || a0 >= top) {
@@ -1530,7 +1535,7 @@ void MicroPatternsDrawing::drawAsset(const DisplayListItem& item, const MicroPat
                         if (k1 > span - 1) k1 = span - 1;
                         if (k0 <= k1) {
                             ++_clippedRows;
-                            int32_t a = (int32_t)(a0 + k0 * d);
+                            int32_t a = a0 + k0 * d;
                             const int xs = x0 + (int)k0, xe = x0 + (int)k1 + 1;
                             for (int sx_iter = xs; sx_iter < xe; ++sx_iter) {
                                 if (assetRow[(int)(a >> MP_FX_SHIFT)] == 1) {
