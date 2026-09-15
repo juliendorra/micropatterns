@@ -164,6 +164,10 @@ nothing look like it landed.
 
 ### Why the timezone is a rule and not an offset
 
+(The full history of this decision — the browser-side derivation that was
+built first and why it was wrong, the newlib verification, and how the panel
+was tested — is in `timezone-provisioning-log.md`.)
+
 Both devices write **local wall time** into their RTC and only re-derive it at an
 NTP sync, and the Watchy's RTC read returns no date at all — so no firmware here
 can notice that the March switch has passed. Daylight saving can therefore only
