@@ -108,6 +108,8 @@ struct MicroPatternsState {
     }
 };
 
+#include "mp_attr.h"
+
 // Snapshot of the transform state shared by a run of display-list items.
 //
 // Transform state changes only on TRANSLATE / ROTATE / SCALE / RESET_TRANSFORMS,

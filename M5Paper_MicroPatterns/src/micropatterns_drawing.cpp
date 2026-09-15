@@ -433,7 +433,7 @@ uint8_t MicroPatternsDrawing::fillColorFromBase(float base_lx, float base_ly, co
 
 // --- Drawing Primitives ---
 
-void MicroPatternsDrawing::drawPixel(const DisplayListItem& item) {
+void MP_HOT MicroPatternsDrawing::drawPixel(const DisplayListItem& item) {
     if (!_canvas) return;
     int lx = item.x();
     int ly = item.y();
@@ -539,7 +539,7 @@ void MicroPatternsDrawing::drawPixel(const DisplayListItem& item) {
     _overdrawSkippedPixels += skipped;
 }
 
-void MicroPatternsDrawing::drawFilledPixel(const DisplayListItem& item) {
+void MP_HOT MicroPatternsDrawing::drawFilledPixel(const DisplayListItem& item) {
     if (!_canvas) return;
     int lx = item.x();
     int ly = item.y();
@@ -660,7 +660,7 @@ void MicroPatternsDrawing::drawFilledPixel(const DisplayListItem& item) {
 }
 
 
-void MicroPatternsDrawing::drawLine(const DisplayListItem& item) {
+void MP_HOT MicroPatternsDrawing::drawLine(const DisplayListItem& item) {
     if (!_canvas) return;
     int lx1 = item.x1();
     int ly1 = item.y1();
@@ -684,7 +684,7 @@ void MicroPatternsDrawing::drawLine(const DisplayListItem& item) {
             static_cast<int>(round(sx2_f)), static_cast<int>(round(sy2_f)), item.color);
 }
 
-void MicroPatternsDrawing::drawRect(const DisplayListItem& item) {
+void MP_HOT MicroPatternsDrawing::drawRect(const DisplayListItem& item) {
     if (!_canvas) return;
     int lx = item.x();
     int ly = item.y();
@@ -728,7 +728,7 @@ void MicroPatternsDrawing::drawRect(const DisplayListItem& item) {
     rawLine(round(s_bl_x), round(s_bl_y), round(s_tl_x), round(s_tl_y), item.color); // Left
 }
 
-void MicroPatternsDrawing::fillRect(const DisplayListItem& item) {
+void MP_HOT MicroPatternsDrawing::fillRect(const DisplayListItem& item) {
     if (!_canvas) return;
     int lx = item.x();
     int ly = item.y();
@@ -1028,7 +1028,7 @@ void MicroPatternsDrawing::fillRect(const DisplayListItem& item) {
     mp_wdt_reset(); // Ensure WDT is reset after the loop
 }
 
-void MicroPatternsDrawing::drawCircle(const DisplayListItem& item) {
+void MP_HOT MicroPatternsDrawing::drawCircle(const DisplayListItem& item) {
     if (!_canvas) return;
     int lcx = item.x();
     int lcy = item.y();
@@ -1079,7 +1079,7 @@ void MicroPatternsDrawing::drawCircle(const DisplayListItem& item) {
     }
 }
 
-void MicroPatternsDrawing::fillCircle(const DisplayListItem& item) {
+void MP_HOT MicroPatternsDrawing::fillCircle(const DisplayListItem& item) {
     if (!_canvas) return;
     int lcx = item.x();
     int lcy = item.y();
@@ -1378,7 +1378,7 @@ void MicroPatternsDrawing::fillCircle(const DisplayListItem& item) {
     mp_wdt_reset();
 }
 
-void MicroPatternsDrawing::drawAsset(const DisplayListItem& item, const MicroPatternsAsset& asset) {
+void MP_HOT MicroPatternsDrawing::drawAsset(const DisplayListItem& item, const MicroPatternsAsset& asset) {
     if (!_canvas || asset.width <= 0 || asset.height <= 0 || asset.data.empty()) return;
     int lx_asset_origin = item.x();
     int ly_asset_origin = item.y();

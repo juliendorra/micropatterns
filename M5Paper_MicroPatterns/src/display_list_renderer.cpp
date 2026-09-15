@@ -1,3 +1,4 @@
+#include "mp_attr.h"
 #include "display_list_renderer.h"
 #include "esp32-hal-log.h"
 #include <algorithm> // For std::min, std::max
@@ -51,7 +52,7 @@ bool DisplayListRenderer::determineItemOpacity(const DisplayListItem& item) cons
 }
 
 
-ScreenBounds DisplayListRenderer::calculateScreenBoundsQ15(const DisplayListItem& item) {
+ScreenBounds MP_HOT DisplayListRenderer::calculateScreenBoundsQ15(const DisplayListItem& item) {
     ScreenBounds bounds;
     bounds.isOffScreen = true;
     const int64_t ONE = 1 << 15;
@@ -308,7 +309,7 @@ static inline int64_t mp_prof_now_us() {
 #endif
 #endif
 
-void DisplayListRenderer::renderItem(const DisplayListItem& item) {
+void MP_HOT DisplayListRenderer::renderItem(const DisplayListItem& item) {
 #if MP_PROFILE_ITEMS
     const int64_t _pt0 = mp_prof_now_us();
 #endif
@@ -340,7 +341,7 @@ void DisplayListRenderer::renderItem(const DisplayListItem& item) {
 #endif
 }
 
-void DisplayListRenderer::render(const std::vector<DisplayListItem>& displayList) {
+void MP_HOT DisplayListRenderer::render(const std::vector<DisplayListItem>& displayList) {
     mp_diagnostic_source_line(0);
     _totalItems = displayList.size();
     _renderedItems = 0;

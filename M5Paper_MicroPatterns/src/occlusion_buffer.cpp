@@ -1,3 +1,4 @@
+#include "mp_attr.h"
 #include "occlusion_buffer.h"
 #include <algorithm> // For std::min, std::max
 #include "esp32-hal-log.h" // For logging (optional)
@@ -41,7 +42,7 @@ void OcclusionBuffer::markAreaOpaque(int screenMinX, int screenMinY, int screenM
     }
 }
 
-bool OcclusionBuffer::isAreaOccluded(int screenMinX, int screenMinY, int screenMaxX, int screenMaxY) const {
+bool MP_HOT OcclusionBuffer::isAreaOccluded(int screenMinX, int screenMinY, int screenMaxX, int screenMaxY) const {
     if (screenMinX >= screenMaxX || screenMinY >= screenMaxY) return false; // Invalid or zero-size area cannot be occluded
 
     GridIndices gi = _getGridIndices(screenMinX, screenMinY, screenMaxX, screenMaxY);
@@ -65,7 +66,7 @@ bool OcclusionBuffer::isAreaOccluded(int screenMinX, int screenMinY, int screenM
     return true; // All blocks covered by the area are opaque
 }
 
-void OcclusionBuffer::updateFromPixelMap(int screenMinX, int screenMinY,
+void MP_HOT OcclusionBuffer::updateFromPixelMap(int screenMinX, int screenMinY,
                                          int screenMaxX, int screenMaxY,
                                          const uint8_t* map, int stride)
 {
