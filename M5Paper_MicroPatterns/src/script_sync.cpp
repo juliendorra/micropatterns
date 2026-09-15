@@ -7,6 +7,7 @@
 #include "mp_wdt.h"
 #include "mp_provisioning.h"
 #include "mp_messages.h"
+#include "mp_clock.h"
 
 namespace
 {
@@ -58,6 +59,29 @@ ScriptSyncResult mp_sync_scripts(MPNetworkManager &net,
         result.status = FetchResultStatus::NO_WIFI;
         result.message = MP_MSG_SYNC_NO_WIFI;
         return result;
+    }
+
+    // Resync the clock while the radio is up, on EVERY sync.
+    //
+    // This is the only moment daylight saving can be applied. Both devices keep
+    // local wall time in the RTC and freeze the offset there, and the Watchy
+    // cannot even read the date back, so nothing on the device can notice that
+    // the March switch has passed -- the stored POSIX rules only take effect
+    // when something asks SNTP again. Doing it here means a device corrects
+    // itself within one script sync of a switch, instead of reading an hour
+    // wrong until someone thinks to reprovision it.
+    //
+    // No bookkeeping and no "is it due yet": WiFi and DNS are already paid for,
+    // one SNTP round trip is a rounding error against fetching every script,
+    // and a stored "last synced" timestamp would need the date the Watchy has
+    // no way to read. A failure is deliberately not fatal to the sync -- the
+    // scripts are what the user asked for, and a wrong hour is better than no
+    // scripts.
+    mp_wdt_reset();
+    report(progress, progressCtx, "Clock");
+    if (!MPClock::syncNow())
+    {
+        log_w("Sync: clock resync failed; carrying on with the fetch");
     }
 
     // NOTE: a full refresh used to call clearAllScriptData() HERE, before the
