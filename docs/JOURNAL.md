@@ -1412,3 +1412,57 @@ Compiling the float path out would remove sqrtf and the float rounding helpers
 from the renderer objects. __divsf3 stays in the binary regardless: the Arduino
 framework's ColorFormat.c imports it. That bounds what "no soft-float" can mean
 here -- in the renderer, not in the flash image.
+
+### 20 (2026-09-05). "Never executed" was true of the branches and false of the setup
+
+"Compiled in but never executed" held for the fallback branches and not for two
+things running on the device with nothing reading them: the float matrices
+built per transform command (~100 a render, with a real float division), and
+the per-item hoists from them. Both now happen only when a float-reading path
+asks; the snapshot says whether they did.
+
+Turning the float build off found two default-path readers of the float matrix
+that no gate had seen, because computing the same thing twice gives the same
+picture: the rotation selector (im1 == 0.0f) in fillRect and drawAsset, and
+drawAsset's asset-row index -- fillRect's twin had been converted on Friday,
+drawAsset's had not. 12 then 7 golden failures, both fixed from the integer
+state, float path untouched. A declined row materialises a matrix and re-runs
+its item; the count is zero on every corpus at both canvas sizes.
+
+### 21 (2026-09-05). The device bench was measuring the linker
+
+The A/B for that step said PIXEL 2.75x slower on the default path. Three shapes
+of the drawing code, same number. HEAD's data forced back on, same number. The
+profiler put the extra time inside the rasteriser AND in the renderer's
+untouched bounds and occlusion code. Every untouched function was the same size
+to the byte; the image had shifted by a few hundred bytes.
+
+HEAD plus a kilobyte of dead code, so that nothing changed but addresses: the
+hot functions moved 8 bytes and real scripts moved up to 35% either way,
+deterministic to the microsecond. Code in flash runs through a small cache and
+the linker decides what that cache does. Every timing verdict on a flash build
+under that size was partly a verdict on placement. The goldens and identity
+gates were never affected; the numbers were.
+
+The instrument is fixed by taking the cache out: the hot rasteriser code goes
+to IRAM in the bench builds (MP_HOT / MP_HOT_IRAM, 21.5KB), where the same
+8-byte shift moves the median by 0.0%. It is bench-only because the shipped
+firmware has no IRAM left on either device -- the Watchy is at 128.0KB of 128KB
+-- so the field speed of a flash build still depends on where the linker put
+things. That is a fact about the device, written down now, not fixable from the
+rasteriser.
+
+Not a good day for the numbers in this document. A good day for knowing what
+they mean.
+
+The raw captures of the day (eleven bench runs, two profiles) lived in a
+session scratch directory and were gone by the time this was committed. The
+measurement doc carries the figures as reported, a table of every run in
+order, and the seven hypotheses in the order they were killed. Keep raw runs in
+the repo from now on; a number without its capture is a claim.
+
+Tooling from the day: `tools/device_bench/profile_watchy.py` captures the
+MPPROF lines from `env:watchy2-profile` and compares two captures split into
+inside-the-rasteriser and around-it, which is the split that exonerated the
+change. `MP_HOT` / `MP_HOT_IRAM` (`mp_attr.h`) is the bench-only IRAM
+placement. `compare-paths` prints the float-fallback counter.

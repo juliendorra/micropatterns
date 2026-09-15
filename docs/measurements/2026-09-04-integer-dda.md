@@ -239,3 +239,149 @@ objects; `sqrtf` likely leaves the binary. `__divsf3` stays regardless — the
 Arduino framework's `ColorFormat.c` imports it — so "no soft-float in flash" is
 not reachable from the renderer side on this platform, only "no soft-float in
 the renderer".
+
+## Step 7 — no float executed per transform command or per item (2026-09-05)
+
+Asked whether "compiled in, never executed" was true, the exact answer was: true
+for the fallback branches, **false** for two things that ran on the device with
+nothing reading their results.
+
+- **Per `TRANSLATE`/`ROTATE`/`RESET`** the runtime built the float `matrix`,
+  `inverseMatrix` and `tx/ty` — `mp_sin_deg`, float accumulation, and
+  `matrix_set_rigid`'s `1/det`, a real `__divsf3` call — alongside the exact
+  integer state. ~100 executions per render, discarded. Now built only when a
+  path asks (`MicroPatternsRuntime::setFloatTransformEnabled`); the float path
+  and the historical partial paths ask, the default does not. The snapshot
+  records whether it was built (`hasFloat`).
+- **Per item**, every fill hoisted `im0..im5` from that matrix. They still are
+  hoisted, as per-item consts exactly as before, but from a zero matrix when
+  there is none; nothing on the default path reads them (see below).
+
+Two readers of the float matrix turned up **on the default path** the moment it
+stopped being built, neither of which any counter or gate had ever flagged
+because doing the work twice gives the same picture:
+
+1. The **rotation selector** `if (im1 == 0.0f)` in `fillRect` and `drawAsset`
+   chose row-hoist vs rotated walk from the float matrix. With no matrix, every
+   rotated fill took the unrotated path: 12 of 21 goldens failed. Now
+   `sinQ15 == 0` when there is no float matrix; the float test when there is,
+   so the float path stays identical.
+2. The **asset row index** in `drawAsset`'s row hoist came from `im1`/`im5`;
+   `fillRect`'s equivalent had been converted, `drawAsset`'s had not. Every
+   `DRAW` case failed — `op_draw_asset`, `city`, `nest`. Now from the integer
+   setup's `y0`, computed before the hoist as in `fillRect`.
+
+A row the integer setup declines (Q16.16 overflow, pattern coordinates beyond
+±2^14 units) needs a matrix for its float fallback. It materialises one from the
+integer state into a scratch member (`floatFallbackMatrix`, out of line), then
+**re-runs the whole item** with that matrix in place, so every coefficient the
+item reads is the materialised one and the hot code keeps its per-item consts.
+The re-run is idempotent: the same pixels in the same colours, and with the
+occupancy map the rows already painted are skipped. It is counted
+(`float-fallback rows`, printed by `compare-paths`): **0** on every corpus at
+960x540 and at the Watchy's 200x200.
+
+Gates: default goldens 21/21; `golden-float` 21/21 untouched; pixel identity
+against a HEAD build 21/21 + 3/3; partial paths 21/21 identical to each other;
+sanitizer clean.
+
+### The device A/B measured the linker, not the change
+
+The first device run said PIXEL was **2.75x slower** on the default path and
+scripts carrying PIXEL 5–25% slower, with the map-off path unchanged. Three
+different shapes of the drawing code gave the same number. Forcing the float
+matrices back on (same code, HEAD's data) gave the same number. The profiling
+build showed the extra time **inside and outside** the rasteriser: the
+renderer's untouched bounds and occlusion code was 2.4x slower per item too.
+Every untouched function was byte-identical in size; the whole image had
+shifted by at most 0x400 bytes.
+
+So: HEAD's code plus ~1KB of dead padding, linked and referenced so the linker
+kept it. The hot functions moved by **8 bytes**. Real scripts moved by up to
+**±35%** (`seascape_4` +30% on `fixed`, +35% on `nomap`, −12% on `float`;
+`nest` ±15%; `thunderstorms` ±14%), same code, same data, deterministic to the
+microsecond. The ESP32 runs code from flash through a small cache, and where the
+linker put each function decides what that cache does. **Every device A/B in
+this document that resolved a delta under ~35% on flash builds was comparing
+placements as much as algorithms.** The goldens and the pixel-identity gates
+are unaffected; only the timings are.
+
+**Instrument:** `MP_HOT` (`mp_attr.h`) marks the rasteriser's hot functions —
+the five fills/pixels, the outline ops, the renderer's per-item path, the
+occlusion buffer — and the bench environments define `MP_HOT_IRAM` to place
+them in IRAM, where there is no cache. Cost: 21.5KB IRAM (62.0 → 83.6KB in the
+bench). With the hot code in IRAM the same 8-byte shift moves the median by
+**0.0%** (worst script 8%, the two ~0.5ms probes). The shipped firmware cannot
+use it: the Watchy firmware's IRAM is at 128.0KB of 128KB (WiFi/BLE) and would
+overflow by 19.8KB, the M5Paper by 14.3KB. So the flash build still has
+placement variance in the field; the IRAM build is how a change is judged.
+
+Against HEAD on flash, the IRAM build of this step is 10–34% faster on the big
+scripts and never worse than 3% — that is IRAM removing cache misses, not this
+step, and it is what the watch would get if it had the IRAM to spare.
+
+### The runs, in order (raster µs, median of 7, deterministic to ±1µs)
+
+The raw captures of this day were kept in a session scratch directory that did
+not survive; these are the figures as reported at the time. `full` is the
+default path; `nomap` is the default with the occupancy map off; `fixed`, `span`
+and `float` are the historical partial paths.
+
+| run | build | `op_fill_pixel` full | `nest` full | `seascape_4` fixed | `seascape_4` nomap | what it showed |
+|---|---|---|---|---|---|---|
+| w29 | HEAD (747d413), 2026-09-04 | 2250 | 11562 | 118521 | 150715 | baseline |
+| w32 | HEAD rebuilt 2026-09-05 | 2250 | 11562 | 118521 | 150715 | builds reproduce to the µs |
+| w30 | step, shape 1: coefficients as mutable locals | 6203 | 14554 | 100716 | 125557 | "PIXEL 2.75x", DRAW-heavy −15% |
+| w33 | step, shape 2: per-row loads, row restart | 6611 | 12110 | 100381 | 124344 | same PIXEL; partial paths ±40% |
+| w34 | step, shape 3: per-item consts, item re-run (kept) | 6197 | 14213 | 101457 | 126433 | same PIXEL: the shape is not the cause |
+| w35 | w34 code, float matrices forced on everywhere | 6699 | 14299 | 100128 | 125009 | same: the data is not the cause |
+| w36 | HEAD + 1KB pad, not linked (GC'd; +4 bytes) | 2250 | 11562 | 118513 | 150693 | null result |
+| w37 | HEAD + 1KB pad, linked (+8 bytes on hot code) | 2213 | 10511 | 154711 | 204104 | **±35% from an 8-byte shift** |
+| w38 | step (w34 code), hot code in IRAM | 2092 | 9630 | 100238 | 125014 | IRAM: 10–34% faster than HEAD-flash |
+| w39 | w38 + the pad | ≈w38 | ≈w38 | ≈w38 | ≈w38 | median 0.0%, worst 8% |
+| w40/w40b | HEAD, hot code in IRAM (stopped at 599 / 688 of 1015) | 2077 | — | 98152 | — | **step vs HEAD, IRAM: flat** |
+
+Profile (env `watchy2-profile`, default path, `op_fill_pixel`, 120 items):
+HEAD total 2421µs of which 1347 inside `drawFilledPixel`; the w34 code total
+6930µs of which 4368 inside — and 2562 vs 1074 **outside**, in the renderer's
+bounds/occlusion code that had not changed. `nest`: DRAW 2937→4727µs,
+FILL_RECT 6534→7002µs. That split is what pointed away from the change.
+
+Symbol sizes (HEAD → w34): every untouched function identical;
+`drawPixel` +152B, `drawFilledPixel` +117B, `fillRect` +296B, `fillCircle` +137B,
+`floatFallbackMatrix` +74B (new, out of line); `.flash.text` +1084B; addresses of
+the renderer shifted by 8 bytes, the drawing functions by ~0x100, the runtime by
+0x410. IRAM: bench 62.0KB → 83.6KB with the hot set; Watchy firmware 128.0KB of
+128KB without it (overflow 19.8KB with); M5Paper overflow 14.3KB.
+
+### Hypotheses tried and killed, in order
+
+1. *The materialiser runs per item because the integer walk declines rows at
+   200x200.* Counter at 200x200: 0 on every corpus. Dead.
+2. *Mutable float locals inside the row loop wreck register allocation.* Shape
+   2 (per-row const loads) and shape 3 (per-item consts, re-run the item) gave
+   the same PIXEL number. Dead — though shape 3 is kept, since it restores the
+   exact HEAD code in the hot path and is the right shape regardless.
+3. *Five inlined copies of a sin/cos/divide blow the inlining budget.* Made it
+   `noinline`: same number. Dead.
+4. *The snapshot's new `bool` adds padding that breaks the `memcmp` dedupe and
+   grows the pool.* The constructor memsets the whole struct; the pool is a
+   deque. Dead on inspection.
+5. *The renderer reads the stale float matrix for PIXEL bounds.* It uses the
+   Q15 bounds on the default path. Dead on inspection.
+6. *It's the data: identity matrices where HEAD had real ones.* Forced the
+   float build on everywhere (w35): same number. Dead.
+7. *Placement.* HEAD + 8 bytes: ±35%. Alive, and confirmed by IRAM removing it.
+
+The first pad attempt (w36) was garbage-collected by the linker and shifted
+nothing; the run looked like a refutation and was a null result. Reference the
+pad from live code or it does not exist.
+
+**This step, IRAM vs IRAM** (HEAD carrying the same hot set): raster median
+**0.0%** on every path (default worst +3.3%, best −6.7%; float path within
+±1.6%, untouched as intended), `op_fill_pixel` **+0.7%** — the "2.75x" was
+placement. Display-list phase on the default path **−3.0%** median, −12% best:
+the float work that no longer runs per command. Coverage: 21 of 29 scripts —
+the HEAD+IRAM firmware stopped reporting partway through both of its runs
+(599 and 688 of 1015 samples, at different points); this step's IRAM builds
+completed all three of theirs. Not investigated; noted.
