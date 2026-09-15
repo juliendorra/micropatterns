@@ -2,6 +2,7 @@
 #include "network_manager.h" // For MPNetworkManager reference in syncTimeWithNTP
 #include <WiFi.h>          // For WiFi status check, should be through MPNetworkManager
 #include "time.h"          // For NTP time struct
+#include "mp_clock.h"      // Shared NTP + timezone, also used by the Watchy
 #include "esp32-hal-log.h"
 #include "esp_task_wdt.h"  // For esp_task_wdt_reset()
 #include "driver/uart.h"   // For uart_set_wakeup_threshold (serial console wakeup)
@@ -16,6 +17,34 @@ const char* SystemManager::NVS_KEY_LAST_FETCH_MONTH = "lf_month";
 const char* SystemManager::NVS_KEY_LAST_FETCH_DAY = "lf_day";
 const char* SystemManager::NVS_KEY_LAST_FETCH_HOUR = "lf_hour";
 const char* SystemManager::NVS_KEY_LAST_FETCH_MINUTE = "lf_min";
+
+// How MPClock writes this device's RTC. A plain function, not a method: the
+// shared module takes a function pointer so it can be given the Watchy's
+// WatchyRTC::set just as easily. M5.RTC is a global, so nothing needs capturing.
+//
+// CALLED FROM TWO TASKS now that mp_sync_scripts() resyncs the clock: this used
+// to be MainControlTask only, and a sync runs on FetchTask. That is safe as far
+// as I2C goes -- Arduino's TwoWire holds a per-instance mutex, so each register
+// transaction is atomic against MainControlTask's getTime()/getDate(). What is
+// NOT atomic is the pair below: a reader landing between them sees the new time
+// with the old date, for well under a millisecond and only at a sync. Nothing
+// here reads the two together and cares -- updateLastFetchTimestamp() already
+// reads them as two separate calls -- so this is noted rather than locked.
+static bool writeM5PaperRTC(const struct tm& local)
+{
+    RTC_Time rtcTime;
+    rtcTime.hour = local.tm_hour;
+    rtcTime.min = local.tm_min;
+    rtcTime.sec = local.tm_sec;
+    M5.RTC.setTime(&rtcTime);
+
+    RTC_Date rtcDate;
+    rtcDate.day = local.tm_mday;
+    rtcDate.mon = local.tm_mon + 1;       // tm_mon is 0-11
+    rtcDate.year = local.tm_year + 1900;  // tm_year is years since 1900
+    M5.RTC.setDate(&rtcDate);
+    return true;   // M5EPD's RTC setters do not report failure
+}
 
 const char* SystemManager::NTP_SERVER_DEFAULT = "pool.ntp.org";
 const uint32_t SystemManager::DEFAULT_SLEEP_DURATION_S = 77;
@@ -45,7 +74,15 @@ bool SystemManager::initialize() {
             return false; // Critical failure
         }
     }
-    log_i("SystemManager initialized. Timezone: %d, FreshStartCounter: %d, FullRefreshIntended: %s", _timezone, _freshStartCounter, _fullRefreshIntended ? "true" : "false");
+    // The shared clock owns "what time is it" for both firmwares now. It needs
+    // two things from this device: how to write the RTC, and the legacy
+    // whole-hour offset to fall back on when no POSIX rule has been provisioned.
+    MPClock::setRtcWriter(&writeM5PaperRTC);
+    MPClock::setFallbackOffsetHours(_timezone);
+    MPClock::apply();
+
+    log_i("SystemManager initialized. Timezone: %s, FreshStartCounter: %d, FullRefreshIntended: %s",
+          MPClock::activeTZ().c_str(), _freshStartCounter, _fullRefreshIntended ? "true" : "false");
     return true;
 }
 
@@ -139,40 +176,23 @@ bool SystemManager::syncTimeWithNTP(MPNetworkManager& netMgr) {
         }
     }
 
-    const long gmtOffset_sec = _timezone * 3600;
-    const int daylightOffset_sec = 0; // Adjust if needed
-
-    log_i("Configuring time with GMT offset %ld sec, DST offset %d sec, NTP server %s", gmtOffset_sec, daylightOffset_sec, NTP_SERVER_DEFAULT);
-    configTime(gmtOffset_sec, daylightOffset_sec, NTP_SERVER_DEFAULT);
-
-    struct tm timeinfo;
-    if (!getLocalTime(&timeinfo, 10000)) { // 10s timeout for getLocalTime
-        log_e("Failed to obtain NTP time after connection.");
-        // netMgr.disconnectWiFi(); // Disconnect if time sync failed
-        return false;
-    }
-
-    printLocalTimeAndSetRTC(timeinfo);
-    // netMgr.disconnectWiFi(); // Disconnect WiFi after successful time sync
-    return true;
+    // The offset, the SNTP request and the RTC write all live in mp_clock now,
+    // shared with the Watchy. This used to pass daylightOffset_sec = 0 to
+    // configTime(), which is why the device was an hour out every summer: that
+    // call has nowhere to say WHEN a daylight correction applies, so it applied
+    // none. MPClock hands newlib the zone's rules instead.
+    return MPClock::syncNow();
 }
 
 void SystemManager::printLocalTimeAndSetRTC(struct tm &timeinfo) {
+    // Kept for callers that have a broken-down time already. The write itself is
+    // writeM5PaperRTC(), so there is one place that knows how this device's RTC
+    // is loaded rather than two that can disagree.
     log_i("NTP time obtained: %s", asctime(&timeinfo));
-
-    RTC_Time rtcTime;
-    rtcTime.hour = timeinfo.tm_hour;
-    rtcTime.min = timeinfo.tm_min;
-    rtcTime.sec = timeinfo.tm_sec;
-    M5.RTC.setTime(&rtcTime);
-
-    RTC_Date rtcDate;
-    rtcDate.day = timeinfo.tm_mday;
-    rtcDate.mon = timeinfo.tm_mon + 1;      // tm_mon is 0-11
-    rtcDate.year = timeinfo.tm_year + 1900; // tm_year is years since 1900
-    M5.RTC.setDate(&rtcDate);
-
-    log_i("RTC set to: %d-%02d-%02d %02d:%02d:%02d", rtcDate.year, rtcDate.mon, rtcDate.day, rtcTime.hour, rtcTime.min, rtcTime.sec);
+    writeM5PaperRTC(timeinfo);
+    log_i("RTC set to: %d-%02d-%02d %02d:%02d:%02d",
+          timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
+          timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
 }
 
 
@@ -276,8 +296,11 @@ void SystemManager::disableWakeupSources() {
 
 
 // --- Getters and Setters for NVS-backed properties ---
+// The legacy whole-hour offset. Superseded by the provisioned POSIX rule, which
+// carries daylight saving this cannot; it survives only as MPClock's fallback
+// for a device that has never been given one. See mp_clock.h.
 int8_t SystemManager::getTimezone() const { return _timezone; }
-void SystemManager::setTimezone(int8_t tz) { _timezone = tz; /* Consider immediate save or flag for saving */ }
+void SystemManager::setTimezone(int8_t tz) { _timezone = tz; MPClock::setFallbackOffsetHours(tz); }
 
 int SystemManager::getFreshStartCounter() const { return _freshStartCounter; }
 void SystemManager::incrementFreshStartCounter() { _freshStartCounter++; }

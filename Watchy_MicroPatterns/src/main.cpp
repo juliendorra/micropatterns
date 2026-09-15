@@ -21,6 +21,7 @@
 #include "watchy_canvas.h"
 #include "watchy_rtc.h"
 #include "mp_provisioning.h"
+#include "mp_clock.h"
 
 // These four are pulled in by the shared managers below, not used directly
 // here. They are named explicitly because PlatformIO's library dependency
@@ -300,17 +301,16 @@ static unsigned long g_lastSerialMs = 0;
 
 static const unsigned long AUTO_RERUN_INTERVAL_MS = 83UL * 1000UL;
 
-// Hours east of UTC written into the RTC at NTP sync. The chip holds no
-// timezone of its own, so whatever offset is applied here is simply what
-// $HOUR reads afterwards.
+// The timezone is no longer a line in this file.
 //
-// Fixed, and matching the M5Paper's default (SystemManager's _timezone starts
-// at 1) so the same script shows the same hour on both devices. That firmware
-// can at least store a different value in NVS; this one has no settings store
-// and no UI to reach one, so changing zone means changing this line. DST is
-// not handled on either device -- the M5Paper passes daylightOffset_sec = 0
-// too, so both are an hour out in summer.
-static const int MP_TZ_OFFSET_HOURS = 1;
+// It used to be `static const int MP_TZ_OFFSET_HOURS = 1`, with a comment
+// admitting that changing zone meant changing the line and that DST was not
+// handled on either device, so both were an hour out every summer. It is now
+// provisioned over BLE from the editor as a POSIX rule -- the offset AND the
+// two dates it changes on -- stored by mp_provisioning and applied by mp_clock,
+// which is shared with the M5Paper. MPClock::DEFAULT_TZ keeps the old UTC+1 for
+// a device nobody has provisioned, so behaviour is unchanged until someone
+// actually sets a zone.
 static unsigned long g_lastRenderMs = 0;
 // Starts spent, so the first update of a session is a full one: a partial
 // update onto a panel of unknown contents leaves it grey.
@@ -847,12 +847,25 @@ static void fullRefresh()
     }
 }
 
-// Sets the RTC from NTP. The M5Paper does this in SystemManager; there is no
-// SystemManager on this device, so the same few steps live here.
+// How MPClock writes this device's RTC. The M5Paper registers its own; the
+// steps either side -- the timezone and the SNTP request -- are shared.
+static bool writeWatchyRTC(const struct tm& local)
+{
+    if (!WatchyRTC::set(local)) {
+        log_e("NTP: got the time but could not write the RTC (%s)", WatchyRTC::chipName());
+        return false;
+    }
+    Serial.printf("MPCON|ntp %02d:%02d:%02d\n", local.tm_hour, local.tm_min, local.tm_sec);
+    return true;
+}
+
+// Brings WiFi up and sets the RTC from NTP.
 //
-// stopRadio() first for the reason mp_provisioning documents: BLE holds tens of
-// KB of internal DRAM and the TLS-capable WiFi stack cannot get its own
-// allocation while that is resident.
+// The clock work itself is MPClock::syncNow(), shared with the M5Paper; what is
+// left here is this device's connection handling. stopRadio() first for the
+// reason mp_provisioning documents: BLE holds tens of KB of internal DRAM and
+// the TLS-capable WiFi stack cannot get its own allocation while that is
+// resident.
 static bool syncTimeFromNTP()
 {
     if (!g_networkManager) return false;
@@ -863,26 +876,9 @@ static bool syncTimeFromNTP()
         return false;
     }
 
-    configTime((long)MP_TZ_OFFSET_HOURS * 3600, 0, "pool.ntp.org");
-
-    struct tm t;
-    // 10s: SNTP needs a round trip and often a DNS lookup first.
-    const bool got = getLocalTime(&t, 10000);
+    const bool ok = MPClock::syncNow();
     g_networkManager->disconnectWiFi();
-
-    if (!got) {
-        log_w("NTP: no reply within 10s");
-        return false;
-    }
-    if (!WatchyRTC::set(t)) {
-        log_e("NTP: got the time but could not write the RTC (%s)", WatchyRTC::chipName());
-        return false;
-    }
-
-    log_i("NTP: RTC set to %02d:%02d:%02d (UTC%+d)", t.tm_hour, t.tm_min, t.tm_sec,
-          MP_TZ_OFFSET_HOURS);
-    Serial.printf("MPCON|ntp %02d:%02d:%02d\n", t.tm_hour, t.tm_min, t.tm_sec);
-    return true;
+    return ok;
 }
 
 // Pulls the script list and every script's content from the API.
@@ -1144,6 +1140,15 @@ void setup()
     }
     g_networkManager = new MPNetworkManager(nullptr);   // no SystemManager on this device
     logHeap("managers up");
+
+    // The shared clock, before the RTC is probed: the untrusted-clock branch
+    // below goes straight to NTP, and MPClock cannot write the chip until it has
+    // been told how. The zone comes from whatever the editor provisioned, or
+    // MPClock's UTC+1 fallback -- the same hour this file used to hardcode.
+    MPClock::setRtcWriter(&writeWatchyRTC);
+    MPClock::apply();
+    log_i("Clock: TZ=%s (%s)", MPClock::activeTZ().c_str(),
+          MPClock::provisioned() ? "provisioned" : "fallback, never provisioned");
 
     // The clock. Probed after the managers because a first-boot watch needs the
     // network to set it, and before the first render because that render is
