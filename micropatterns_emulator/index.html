@@ -159,6 +159,7 @@
            lets the pattern read through the text. */
         #provisioningPanel .prov-section-off .script-mgmt-row,
         #provisioningPanel .prov-section-off .prov-hint,
+        #provisioningPanel .prov-section-off .prov-tz-note,
         #provisioningPanel .prov-section-off #provNetworkList,
         #provisioningPanel .prov-section-off .prov-actions {
             opacity: 0.7;
@@ -174,6 +175,30 @@
         #provisioningPanel .prov-network-note-warn {
             opacity: 1;
             font-weight: bold;
+        }
+
+        /* The timezone readout: what will actually be written, in the same
+           monospace as the log, because a POSIX rule is a thing you read
+           character by character rather than at a glance. */
+        #provisioningPanel .prov-tz-rule {
+            font-family: ui-monospace, Menlo, Consolas, monospace;
+            font-size: 0.8em;
+            word-break: break-all;
+        }
+
+        #provisioningPanel .prov-tz-note {
+            margin: 4px 0 2px;
+            font-size: 0.75em;
+            line-height: 1.35;
+        }
+
+        #provisioningPanel .prov-tz-note-warn {
+            font-weight: bold;
+        }
+
+        #provisioningPanel #provTimezone {
+            flex: 1 1 12em;
+            min-width: 8em;
         }
 
         #provisioningPanel .prov-network-row {
@@ -468,8 +493,8 @@ ENDREPEAT
 
                 <div id="provBody">
                     <p class="prov-hint">
-                        Sends the WiFi networks and your user ID to an M5Paper or a Watchy.
-                        The two are written independently. Tick only what you
+                        Sends the WiFi networks, your user ID and your timezone to an M5Paper or a
+                        Watchy. The three are written independently. Tick only what you
                         want to change: anything left unticked is not touched on the device.
                     </p>
 
@@ -485,6 +510,26 @@ ENDREPEAT
                         <p class="prov-hint">
                             Rotating the ID on its own is the fix for an ID that leaked: tick this, untick
                             the networks below, and the stored WiFi passwords are left exactly as they are.
+                        </p>
+                    </div>
+
+                    <div class="prov-section">
+                        <label class="prov-section-toggle">
+                            <input type="checkbox" id="provSendTimezone" checked> Write the timezone
+                        </label>
+                        <div class="script-mgmt-row">
+                            <label for="provTimezone">Timezone:</label>
+                            <select id="provTimezone"></select>
+                            <button id="provTimezoneHereButton" class="secondary" title="Go back to the timezone this browser is in">This computer</button>
+                        </div>
+                        <p class="prov-tz-note" id="provTimezoneReadout"></p>
+                        <p class="prov-tz-note" id="provTimezoneNote"></p>
+                        <p class="prov-hint">
+                            Defaults to this computer's timezone. The device is sent the zone's
+                            <em>rules</em> — its offset and the two dates on which daylight saving starts and
+                            ends — not just the current offset, so it stays right in both halves of the year.
+                            It applies them whenever it next syncs its clock, which it now does on every
+                            script sync, so a device corrects itself within a sync of a switch.
                         </p>
                     </div>
 
@@ -512,7 +557,7 @@ ENDREPEAT
                     <div class="prov-actions">
                         <button id="provSendButton">Send to device</button>
                         <button id="provStatusButton" class="secondary">Check status</button>
-                        <button id="provForgetButton" class="secondary" title="Wipes both the WiFi networks and the user ID stored on the device.">Erase WiFi + ID</button>
+                        <button id="provForgetButton" class="secondary" title="Wipes both the WiFi networks and the user ID stored on the device. The timezone is kept.">Erase WiFi + ID</button>
                         <button id="provDiagButton" class="secondary">Diagnostics</button>
                     </div>
 

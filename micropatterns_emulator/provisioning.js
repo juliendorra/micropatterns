@@ -4,16 +4,25 @@
 // over a small custom GATT service, so nothing has to be baked into firmware.
 //
 // Wire format (see docs/analysis/device-provisioning-design.md):
-//   editor -> device   {"cmd":"provision","userId":"...","networks":[{"ssid":"...","psk":"..."}]}
+//   editor -> device   {"cmd":"provision","userId":"...","networks":[{"ssid":"...","psk":"..."}],
+//                       "tz":"CET-1CEST,M3.5.0,M10.5.0/3","tzName":"Europe/Paris"}
 //                      {"cmd":"status"}
 //                      {"cmd":"forget"}
 //                      {"cmd":"diag"}
 //   device -> editor   JSON reply
 //
 // "provision" semantics, as the firmware implements them today:
-//   * userId and networks are both OPTIONAL, but at least one must be present.
-//     userId alone rotates the ID and leaves the networks alone; networks alone
-//     replaces the list and leaves the ID alone. Neither is an error.
+//   * userId, networks and tz are ALL OPTIONAL, but at least one must be
+//     present. Each is written independently: userId alone rotates the ID and
+//     leaves the networks alone; networks alone replaces the list and leaves
+//     the ID alone; tz alone changes only the timezone. None of these is an
+//     error.
+//   * tz is a POSIX TZ string -- the offset AND the daylight-saving switch
+//     dates -- looked up from the browser's zone in timezone.js. tzName is the
+//     IANA name it came from and is cosmetic: the device stores it only so
+//     `status` can report something a person recognises.
+//   * "forget" deliberately KEEPS the timezone. Its button says "Erase WiFi +
+//     ID", and a zone is not a credential.
 //   * "networks":[] is REFUSED — clearing is what "forget" is for — so an empty
 //     list must never be sent; omit the key instead.
 //   * A network sent with an empty psk means "keep the password already stored
@@ -25,6 +34,14 @@
 //     or on failure {"ok":false,"error":"...","stored":N}
 // Messages are newline-terminated in BOTH directions and chunked, because the
 // negotiated MTU is around 185 bytes and a three-network payload is bigger.
+
+import {
+    detectTimeZoneName,
+    listTimeZoneNames,
+    describeTimeZone,
+    formatOffset,
+    TZDATA_VERSION
+} from './timezone.js';
 
 const SERVICE_UUID = '6d70726f-7669-7369-6f6e-000000000001';
 const WRITE_CHAR_UUID = '6d70726f-7669-7369-6f6e-000000000002';
@@ -41,6 +58,14 @@ const TIMEOUT_PROVISION = 20000;
 
 const MAX_NETWORKS = 5; // matches the NVS cap in the design doc
 const LOCAL_STORAGE_NETWORKS_KEY = 'micropatterns_provisioning_ssids';
+// The chosen zone is remembered so someone provisioning a watch for somewhere
+// other than where they are sitting does not re-pick it on every page load.
+const LOCAL_STORAGE_TIMEZONE_KEY = 'micropatterns_provisioning_timezone';
+
+// Firmware wire-format version that first understood "tz". A v1 device ignores
+// the field, and would refuse a tz-only provision outright, so the editor
+// checks rather than letting a write look like it landed.
+const TZ_MIN_FIRMWARE_VERSION = 2;
 
 // Same alphabet as the editor's user IDs (nanoid customAlphabet, length 10).
 const ID_ALPHABET = '123456789bcdfghjkmnpqrstvwxyz';
@@ -349,6 +374,11 @@ export function initProvisioning(opts = {}) {
     const rotateButton = document.getElementById('provRotateIdButton');
     const sendUserIdToggle = document.getElementById('provSendUserId');
     const sendNetworksToggle = document.getElementById('provSendNetworks');
+    const sendTimezoneToggle = document.getElementById('provSendTimezone');
+    const timezoneSelect = document.getElementById('provTimezone');
+    const timezoneHereButton = document.getElementById('provTimezoneHereButton');
+    const timezoneReadout = document.getElementById('provTimezoneReadout');
+    const timezoneNote = document.getElementById('provTimezoneNote');
     const networkList = document.getElementById('provNetworkList');
     const addNetworkButton = document.getElementById('provAddNetworkButton');
     const connectButton = document.getElementById('provConnectButton');
@@ -411,6 +441,149 @@ export function initProvisioning(opts = {}) {
             'stored WiFi passwords are then left untouched.');
     });
 
+    // --- timezone ----------------------------------------------------------
+    // The device is sent a POSIX TZ string (offset + the two switch dates), not
+    // an offset, because a sync is the only moment it can apply daylight saving
+    // at all -- see mp_clock.h. The strings come from IANA's own published
+    // rules via timezone.js; nothing here computes one.
+    const browserZone = detectTimeZoneName();
+    let chosenZone = '';
+    try {
+        chosenZone = localStorage.getItem(LOCAL_STORAGE_TIMEZONE_KEY) || '';
+    } catch (e) { /* storage may be unavailable */ }
+
+    // What the device says it currently stores, from the last status reply.
+    // null until we have heard from one.
+    let deviceTz = null;
+    let deviceTzName = null;
+    // Wire-format version the device reports, so a firmware too old to
+    // understand "tz" is caught before a write that would quietly do nothing.
+    let deviceVersion = null;
+
+    if (timezoneSelect) {
+        const zones = listTimeZoneNames();
+        for (const zone of zones) {
+            const option = document.createElement('option');
+            option.value = zone;
+            option.textContent = zone;
+            timezoneSelect.appendChild(option);
+        }
+        // Prefer the remembered choice, then this browser's zone. A remembered
+        // zone missing from the table (the browser updated its data, ours has
+        // not) falls back rather than selecting nothing.
+        const preferred = [chosenZone, browserZone].find((z) => z && zones.indexOf(z) !== -1);
+        if (preferred) {
+            timezoneSelect.value = preferred;
+        } else if (browserZone) {
+            // Keep an unknown zone visible instead of silently substituting
+            // another: describeTimeZone will report it as unsendable and the
+            // note below says what to do about it.
+            const option = document.createElement('option');
+            option.value = browserZone;
+            option.textContent = `${browserZone} (no rule available)`;
+            timezoneSelect.insertBefore(option, timezoneSelect.firstChild);
+            timezoneSelect.value = browserZone;
+        }
+    }
+
+    function selectedZone() {
+        return timezoneSelect ? timezoneSelect.value : browserZone;
+    }
+
+    /** The zone the panel would send, plus everything worth saying about it. */
+    function selectedTimezone() {
+        const zone = selectedZone();
+        return zone ? describeTimeZone(zone) : null;
+    }
+
+    function renderTimezone() {
+        const info = selectedTimezone();
+        if (!timezoneReadout || !timezoneNote) return;
+
+        timezoneNote.className = 'prov-tz-note';
+
+        if (!info) {
+            timezoneReadout.textContent = 'This browser did not report a timezone. Pick one from the list.';
+            timezoneNote.textContent = '';
+            return;
+        }
+
+        const live = info.offsetMinutes === null
+            ? ''
+            : `${formatOffset(info.offsetMinutes)} now${info.localTime ? `, ${info.localTime}` : ''}`;
+
+        if (!info.known) {
+            timezoneReadout.textContent = live ? `${info.zone} — ${live}` : info.zone;
+            timezoneNote.className = 'prov-tz-note prov-tz-note-warn';
+            timezoneNote.textContent =
+                `No published rule for "${info.zone}" in this editor's timezone data (IANA ${TZDATA_VERSION}), ` +
+                'so it cannot be sent. Pick the nearest zone that shares your offset and daylight-saving ' +
+                'dates, or regenerate the table with tools/gen_posix_tz.py.';
+            return;
+        }
+
+        // The rule itself is shown verbatim. It is what the device stores and
+        // acts on, so it is the thing to check when a watch reads wrong.
+        timezoneReadout.textContent = live ? `${info.zone} — ${live}. Rule: ` : `${info.zone}. Rule: `;
+        const rule = document.createElement('span');
+        rule.className = 'prov-tz-rule';
+        rule.textContent = info.tz;
+        timezoneReadout.appendChild(rule);
+
+        const notes = [];
+        if (info.offsetAgrees === false) {
+            // Africa/Casablanca and Africa/El_Aaiun: IANA declines to express
+            // their Ramadan shift in POSIX, publishing a plain offset instead,
+            // so the rule really is wrong for part of the year. Better said out
+            // loud than discovered on the watch.
+            const ruleOffset = info.ruleOffsets ? formatOffset(info.ruleOffsets.std) : 'a different offset';
+            notes.push(
+                `This zone is on ${formatOffset(info.offsetMinutes)} right now, but the only rule IANA ` +
+                `publishes for it is ${ruleOffset} — its offset changes in a pattern POSIX cannot ` +
+                'describe. The watch will be out by the difference for part of the year.'
+            );
+        } else if (!info.hasDstRule) {
+            notes.push('No daylight-saving switch in this rule: the offset is the same all year.');
+        }
+        if (deviceTz !== null && deviceTz !== info.tz) {
+            notes.push(deviceTz
+                ? `The device currently holds ${deviceTzName ? `${deviceTzName}, ` : ''}"${deviceTz}".`
+                : 'The device has no timezone stored yet.');
+        }
+        timezoneNote.className = info.offsetAgrees === false
+            ? 'prov-tz-note prov-tz-note-warn'
+            : 'prov-tz-note';
+        timezoneNote.textContent = notes.join(' ');
+    }
+
+    if (timezoneSelect) {
+        timezoneSelect.addEventListener('change', () => {
+            try {
+                localStorage.setItem(LOCAL_STORAGE_TIMEZONE_KEY, timezoneSelect.value);
+            } catch (e) { /* storage may be unavailable */ }
+            if (sendTimezoneToggle) sendTimezoneToggle.checked = true;
+            renderTimezone();
+            updateSendUi();
+        });
+    }
+
+    if (timezoneHereButton) {
+        timezoneHereButton.addEventListener('click', () => {
+            if (!browserZone) {
+                log('This browser will not say what timezone it is in; pick one from the list.');
+                return;
+            }
+            if (timezoneSelect) timezoneSelect.value = browserZone;
+            try {
+                localStorage.removeItem(LOCAL_STORAGE_TIMEZONE_KEY);
+            } catch (e) { /* storage may be unavailable */ }
+            renderTimezone();
+            updateSendUi();
+        });
+    }
+
+    renderTimezone();
+
     // --- what a "Send" will actually write ----------------------------------
     // The two parts of a provision command are independent on the device, so the
     // form says out loud which of them this click would change.
@@ -420,21 +593,35 @@ export function initProvisioning(opts = {}) {
     function wantsNetworks() {
         return !sendNetworksToggle || sendNetworksToggle.checked;
     }
+    function wantsTimezone() {
+        return !!(sendTimezoneToggle && sendTimezoneToggle.checked);
+    }
 
     function updateSendUi() {
         const id = wantsUserId();
         const nets = wantsNetworks();
+        const tz = wantsTimezone();
         if (provisionButton) {
-            provisionButton.textContent = id && nets
-                ? 'Send ID + networks'
-                : (id ? 'Send user ID only' : (nets ? 'Send networks only' : 'Nothing selected'));
-            provisionButton.title = id && nets
-                ? 'Write the user ID and replace the stored network list'
-                : (id ? 'Rotate the user ID; the stored networks and passwords are left untouched'
-                    : (nets ? 'Replace the stored network list; the user ID is left untouched'
-                        : 'Tick the user ID, the networks, or both'));
+            // Three independent parts is seven combinations, so the label is
+            // assembled rather than enumerated -- and it names the parts, since
+            // "Send to device" alone does not say what is about to be replaced.
+            const parts = [];
+            if (id) parts.push('ID');
+            if (tz) parts.push('timezone');
+            if (nets) parts.push('networks');
+            provisionButton.textContent = parts.length ? `Send ${parts.join(' + ')}` : 'Nothing selected';
+
+            const untouched = [];
+            if (!id) untouched.push('the user ID');
+            if (!tz) untouched.push('the timezone');
+            if (!nets) untouched.push('the networks and their passwords');
+            provisionButton.title = parts.length
+                ? (untouched.length
+                    ? `Writes ${parts.join(', ')}; leaves ${untouched.join(' and ')} untouched`
+                    : 'Writes the user ID, the timezone and the network list')
+                : 'Tick the user ID, the timezone, the networks, or any combination';
         }
-        [[sendUserIdToggle, id], [sendNetworksToggle, nets]].forEach(([toggle, on]) => {
+        [[sendUserIdToggle, id], [sendTimezoneToggle, tz], [sendNetworksToggle, nets]].forEach(([toggle, on]) => {
             if (!toggle) return;
             const section = toggle.closest('.prov-section');
             if (section) section.classList.toggle('prov-section-off', !on);
@@ -444,6 +631,7 @@ export function initProvisioning(opts = {}) {
 
     if (sendUserIdToggle) sendUserIdToggle.addEventListener('change', updateSendUi);
     if (sendNetworksToggle) sendNetworksToggle.addEventListener('change', updateSendUi);
+    if (sendTimezoneToggle) sendTimezoneToggle.addEventListener('change', updateSendUi);
 
     // --- ordered network list ----------------------------------------------
     // SSIDs and their order are remembered locally; passwords never are.
@@ -619,7 +807,7 @@ export function initProvisioning(opts = {}) {
         disconnectButton.disabled = !connected;
         // A provision with neither part ticked is refused by the device, so the
         // button is simply not offered in that state.
-        provisionButton.disabled = !connected || (!wantsUserId() && !wantsNetworks());
+        provisionButton.disabled = !connected || (!wantsUserId() && !wantsNetworks() && !wantsTimezone());
         statusButton.disabled = !connected;
         forgetButton.disabled = !connected;
         if (diagButton) diagButton.disabled = !connected;
@@ -675,6 +863,26 @@ export function initProvisioning(opts = {}) {
         }
     }
 
+    // What the device holds, so the panel can compare rather than assume. The
+    // version matters on its own: a v1 firmware silently ignores "tz".
+    function noteDeviceTimezone(reply) {
+        if (!reply) return;
+        if (typeof reply.tz === 'string') {
+            deviceTz = reply.tz;
+            deviceTzName = typeof reply.tzName === 'string' ? reply.tzName : '';
+            renderTimezone();
+        }
+        if (reply.version !== undefined) {
+            const parsed = parseInt(reply.version, 10);
+            deviceVersion = Number.isNaN(parsed) ? null : parsed;
+            if (deviceVersion !== null && deviceVersion < TZ_MIN_FIRMWARE_VERSION) {
+                log(`This device runs provisioning wire format v${deviceVersion}, which has no timezone ` +
+                    'support. The WiFi networks and user ID will still write normally; the timezone needs ' +
+                    'a firmware update.');
+            }
+        }
+    }
+
     function describeReply(reply) {
         if (reply && reply.ok === false) {
             let line = `Device reported an error: ${reply.error || 'unknown'}`;
@@ -691,6 +899,13 @@ export function initProvisioning(opts = {}) {
         if (typeof reply.rssi === 'number') parts.push(`${reply.rssi} dBm`);
         if (reply.userId) parts.push(`user ID ${reply.userId}`);
         if (reply.version) parts.push(`firmware ${reply.version}`);
+        // The stored rule, not the IANA name: the rule is what the device acts
+        // on, so it is what needs to be visible when a clock reads wrong.
+        if (typeof reply.tz === 'string') {
+            parts.push(reply.tz
+                ? `timezone ${reply.tz}${reply.tzName ? ` (${reply.tzName})` : ''}`
+                : 'no timezone stored');
+        }
         if (typeof reply.count === 'number') parts.push(`${reply.count} network(s) stored`);
         // Firmware v1 reports the stored SSIDs (names only, never passwords)
         // and which one last connected, so the user can confirm both the list
@@ -724,6 +939,7 @@ export function initProvisioning(opts = {}) {
             const reply = await client.request(command, timeout);
             log(`< ${describeReply(reply)}`);
             noteDeviceSsids(reply);
+            noteDeviceTimezone(reply);
             return reply;
         } catch (err) {
             log(await describeConnectError(err));
@@ -736,13 +952,44 @@ export function initProvisioning(opts = {}) {
     provisionButton.addEventListener('click', async () => {
         const sendId = wantsUserId();
         const sendNets = wantsNetworks();
-        if (!sendId && !sendNets) {
-            log('Nothing selected. Tick "Write the user ID", "Write the WiFi networks", or both.');
+        let sendTz = wantsTimezone();
+        if (!sendId && !sendNets && !sendTz) {
+            log('Nothing selected. Tick the user ID, the timezone, the WiFi networks, or any combination.');
             return;
         }
 
         const command = { cmd: 'provision' };
         const summary = [];
+
+        if (sendTz) {
+            const info = selectedTimezone();
+            if (!info || !info.known) {
+                log(info
+                    ? `No published POSIX rule for "${info.zone}", so it cannot be written. Choose a zone ` +
+                      'that shares your offset and daylight-saving dates, or untick "Write the timezone".'
+                    : 'No timezone selected. Choose one, or untick "Write the timezone".');
+                return;
+            }
+            if (deviceVersion !== null && deviceVersion < TZ_MIN_FIRMWARE_VERSION) {
+                // Dropping the field rather than sending it is the honest
+                // option: a v1 device would ignore it and answer "ok", which
+                // reads exactly like a timezone that landed.
+                if (!sendId && !sendNets) {
+                    log(`This device's firmware (wire format v${deviceVersion}) cannot store a timezone, and ` +
+                        'the timezone is the only thing selected. Update the firmware, or tick something else.');
+                    return;
+                }
+                log(`Skipping the timezone: this device's firmware (wire format v${deviceVersion}) does not ` +
+                    'understand it. Sending the rest.');
+                sendTz = false;
+            } else {
+                command.tz = info.tz;
+                // Cosmetic on the device, but it is what makes a later "Check
+                // status" say "Europe/Paris" instead of only the raw rule.
+                command.tzName = info.zone;
+                summary.push(`the timezone (${info.zone})`);
+            }
+        }
 
         if (sendId) {
             const userId = userIdInput.value.trim();
@@ -788,16 +1035,31 @@ export function initProvisioning(opts = {}) {
             summary.push(`${payload.length} network(s)`);
         }
 
+        // "a and b and c" reads badly, and this line is now up to three items.
+        const listed = summary.length > 1
+            ? `${summary.slice(0, -1).join(', ')} and ${summary[summary.length - 1]}`
+            : summary.join('');
         if (sendNets) {
-            log(`Sending ${summary.join(' and ')}, networks in order: ${payload.map((n) => n.ssid).join(' -> ')}`);
+            log(`Sending ${listed}, networks in order: ${payload.map((n) => n.ssid).join(' -> ')}`);
         } else {
-            log('Sending the user ID only. The stored networks and their passwords are left untouched.');
+            log(`Sending ${listed}. The stored networks and their passwords are left untouched.`);
         }
 
         const reply = await send(command, TIMEOUT_PROVISION);
         if (reply && reply.ok !== false) {
             const notes = [];
             if (sendId) notes.push('User ID written.');
+            if (sendTz) {
+                // The clock does not move until the device next syncs, and on a
+                // battery device that may be a while. Saying so here stops the
+                // obvious "I set it and nothing happened".
+                notes.push('Timezone written. The displayed time changes at the device\'s next clock sync — ' +
+                    'it syncs on every script sync, or immediately if you trigger one.');
+            } else if (wantsTimezone()) {
+                notes.push('The timezone was not written; see above.');
+            } else {
+                notes.push('The timezone was not part of this write and is unchanged.');
+            }
             if (sendNets) {
                 notes.push('Networks written. Passwords are stored on the device and are never read back.');
             } else {
@@ -859,10 +1121,12 @@ export function initProvisioning(opts = {}) {
     statusButton.addEventListener('click', () => send({ cmd: 'status' }));
 
     forgetButton.addEventListener('click', async () => {
-        if (!window.confirm('Wipe the WiFi credentials and user ID stored on the device?')) return;
+        if (!window.confirm('Wipe the WiFi credentials and user ID stored on the device?\n\n' +
+            'The timezone is kept — it is not a credential.')) return;
         const reply = await send({ cmd: 'forget' });
         if (reply && reply.ok !== false) {
-            log('Device credentials wiped. A blank password field now means an open network, not a kept one.');
+            log('Device credentials wiped; the timezone was kept. A blank password field now means an open ' +
+                'network, not a kept one.');
             deviceSsids = [];
             refreshNetworkNotes();
         }
