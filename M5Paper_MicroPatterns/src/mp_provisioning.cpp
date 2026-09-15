@@ -110,6 +110,11 @@ void handleCommand(const String& line)
         JsonArray a = out["ssids"].to<JsonArray>();
         for (int i = 0; i < networkCount(); i++) a.add(networkSSID(i));
         out["lastGood"] = lastGoodIndex();
+        // The stored zone. Sent back so the editor can show what the device is
+        // actually on rather than assuming its last write survived -- and so a
+        // device provisioned from someone else's browser is not a mystery.
+        out["tz"] = posixTZ();
+        out["tzName"] = timezoneName();
         // The SSID currently associated, if any, plus signal strength. This is
         // live state, not stored configuration -- it is what tells the user
         // whether provisioning actually worked.
@@ -175,11 +180,26 @@ void handleCommand(const String& line)
     }
 
     if (strcmp(cmd, "forget") == 0) {
+        // The timezone is carried across the wipe. prefs.clear() empties the
+        // whole namespace, and the button that sends this says "Erase WiFi +
+        // ID" -- a zone is not a credential and nobody pressing that means "and
+        // put my watch back on UTC", which is what losing it would do.
+        const String keepTz = posixTZ();
+        const String keepTzName = timezoneName();
+
         prefs.begin(NVS_NS, false);
         prefs.clear();
+        if (keepTz.length()) {
+            prefs.putString("tz.posix", keepTz);
+            prefs.putString("tz.name", keepTzName);
+        }
         prefs.end();
-        log_w("Provisioning: credentials wiped");
-        reply("{\"ok\":true,\"forgotten\":true}");
+        log_w("Provisioning: credentials wiped (timezone '%s' kept)", keepTz.c_str());
+        JsonDocument out;
+        out["ok"] = true;
+        out["forgotten"] = true;
+        out["tz"] = keepTz;
+        String j; serializeJson(out, j); reply(j);
         return;
     }
 
@@ -196,13 +216,30 @@ void handleCommand(const String& line)
         //                     sent nothing" and "erase everything", and it used
         //                     to silently wipe the lot. Clearing is deliberate
         //                     and has its own command.
+        //   tz only        -> set the timezone, touch nothing else. Which is
+        //                     the ordinary case for "I moved" or "the rules
+        //                     changed": no reason to retype WiFi passwords.
         const char* uid = doc["userId"] | "";
         const bool haveUid = strlen(uid) > 0;
         const bool haveNets = doc["networks"].is<JsonArray>();
         JsonArray nets = doc["networks"].as<JsonArray>();
+        const char* tz = doc["tz"] | "";
+        const bool haveTz = strlen(tz) > 0;
 
-        if (!haveUid && !haveNets) {
-            reply("{\"ok\":false,\"error\":\"send userId, networks, or both\"}");
+        if (!haveUid && !haveNets && !haveTz) {
+            reply("{\"ok\":false,\"error\":\"send userId, networks, tz, or any combination\"}");
+            return;
+        }
+        // Length-checked before the write, not after. An over-long string would
+        // be truncated by NVS into a TZ that still PARSES -- "CET-1CE" is a
+        // valid POSIX standard-time-only zone -- so the device would run on a
+        // plausible wrong offset with nothing to show it had happened.
+        if (haveTz && strlen(tz) > MAX_TZ_LEN) {
+            JsonDocument e;
+            e["ok"] = false;
+            e["error"] = "tz too long";
+            e["maxTz"] = (int)MAX_TZ_LEN;
+            String j; serializeJson(e, j); reply(j);
             return;
         }
         if (haveNets && nets.size() == 0) {
@@ -229,8 +266,14 @@ void handleCommand(const String& line)
             reply("{\"ok\":false,\"error\":\"nvs open failed\"}");
             return;
         }
-        size_t wUid = 0, wCount = 0, wSsid0 = 0, wPsk0 = 0;
+        size_t wUid = 0, wCount = 0, wSsid0 = 0, wPsk0 = 0, wTz = 0;
         if (haveUid) wUid = prefs.putString("user.id", uid);
+        if (haveTz) {
+            wTz = prefs.putString("tz.posix", tz);
+            // tzName is cosmetic, so a missing one is not an error: the zone
+            // still works, status just has nothing friendly to show for it.
+            prefs.putString("tz.name", doc["tzName"] | "");
+        }
 
         int n = prevCount, kept = 0, blanks = 0;   // unchanged if no list sent
         if (haveNets) {
@@ -269,7 +312,9 @@ void handleCommand(const String& line)
         // "0 stored, not provisioned", which is how this bug surfaced.
         const int verified = networkCount();
         const bool idOk = isProvisioned();
-        if (verified != n || (haveUid && !idOk)) {
+        const String tzStored = posixTZ();
+        const bool tzOk = !haveTz || tzStored == tz;
+        if (verified != n || (haveUid && !idOk) || !tzOk) {
             // Report every write's return value. Guessing at this has already
             // cost several wrong hypotheses; the numbers say which call failed.
             log_e("Provisioning: write did not persist (asked %d, stored %d, id=%s)",
@@ -284,6 +329,8 @@ void handleCommand(const String& line)
             e["wroteCount"] = wCount;
             e["wroteSsid0"] = wSsid0;
             e["wrotePsk0"] = wPsk0;
+            e["wroteTz"] = wTz;
+            e["tzStored"] = tzStored;
             e["reopenRO"] = prefs.begin(NVS_NS, true);   // can we even read it back?
             e["countRaw"] = prefs.getUChar("w.count", 255);
             e["ssid0Raw"] = prefs.getString(key("w%d.ssid", 0).c_str(), "<none>");
@@ -291,12 +338,18 @@ void handleCommand(const String& line)
             String out; serializeJson(e, out); reply(out);
             return;
         }
-        log_i("Provisioning: stored and verified %d network(s), %d password(s) kept from device, %d left blank",
-              verified, kept, blanks);
-        String s = String("{\"ok\":true,\"networks\":") + verified
-                 + ",\"keptPasswords\":" + kept
-                 + ",\"blankPasswords\":" + blanks + "}";
-        reply(s);
+        log_i("Provisioning: stored and verified %d network(s), %d password(s) kept from device, %d left blank, tz='%s'",
+              verified, kept, blanks, tzStored.c_str());
+        JsonDocument out;
+        out["ok"] = true;
+        out["networks"] = verified;
+        out["keptPasswords"] = kept;
+        out["blankPasswords"] = blanks;
+        // Echo the stored zone whenever this write set one, so the editor
+        // confirms against what the device really holds rather than what it
+        // hoped it sent.
+        if (haveTz) out["tz"] = tzStored;
+        String j; serializeJson(out, j); reply(j);
         return;
     }
 
@@ -537,6 +590,22 @@ String networkPSK(int i)
     if (i < 0 || i >= MAX_NETWORKS) return "";
     prefs.begin(NVS_NS, true);
     String v = prefs.getString(key("w%d.psk", i).c_str(), "");
+    prefs.end();
+    return v;
+}
+
+String posixTZ()
+{
+    prefs.begin(NVS_NS, true);
+    String v = prefs.getString("tz.posix", "");
+    prefs.end();
+    return v;
+}
+
+String timezoneName()
+{
+    prefs.begin(NVS_NS, true);
+    String v = prefs.getString("tz.name", "");
     prefs.end();
     return v;
 }

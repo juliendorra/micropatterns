@@ -15,17 +15,28 @@
 // See docs/analysis/device-provisioning-design.md.
 //
 // Protocol -- newline-terminated JSON, chunked to fit the ~185 byte MTU:
-//   {"cmd":"provision","userId":"...","networks":[{"ssid":"..","psk":".."}]}
-//   {"cmd":"status"}   -> {"ok":true,"userId":"..","ssids":[..],"connected":".."}
+//   {"cmd":"provision","userId":"...","networks":[{"ssid":"..","psk":".."}],
+//                       "tz":"CET-1CEST,M3.5.0,M10.5.0/3","tzName":"Europe/Paris"}
+//   {"cmd":"status"}   -> {"ok":true,"userId":"..","ssids":[..],"connected":"..","tz":".."}
 //   {"cmd":"forget"}   -> wipes stored credentials
 //
 // status NEVER returns stored passwords.
+//
+// All three parts of a provision -- userId, networks, tz -- are INDEPENDENT and
+// individually optional; at least one must be present. `forget` deliberately
+// keeps the timezone: its button says "Erase WiFi + ID", and a zone is not a
+// credential, so wiping it would be a surprise nobody asked for.
 
 #include <Arduino.h>
 
 // Bumped when the wire format changes, so the editor can warn about a firmware
 // it does not understand rather than failing obscurely.
-#define MP_PROVISIONING_VERSION "1"
+//
+//   1  userId + networks
+//   2  adds the timezone ("tz"/"tzName"), reported back by status. An editor
+//      talking to a v1 device would have its tz silently ignored, so it checks
+//      this number before offering to write one.
+#define MP_PROVISIONING_VERSION "2"
 
 namespace MPProvisioning {
 
@@ -72,6 +83,22 @@ String  userId();                 // empty if never provisioned
 int     networkCount();
 String  networkSSID(int index);
 String  networkPSK(int index);
+
+// --- timezone -------------------------------------------------------------
+// The POSIX TZ string the editor derived from the browser's zone, e.g.
+// "CET-1CEST,M3.5.0,M10.5.0/3" -- the standard offset plus the two dates on
+// which it changes, which is the only form of "timezone" these devices can act
+// on. Empty when none was ever written; mp_clock.h owns what to do then.
+String  posixTZ();
+
+// The IANA name that string came from ("Europe/Paris"). Stored for one reason
+// only: so status can echo back something a person recognises. NOTHING on the
+// device reads it -- there is no tzdata here to look it up in.
+String  timezoneName();
+
+// Longest TZ string accepted. The widest real zone (Pacific/Chatham, with
+// quarter-hour offsets on both sides) is 48 characters.
+static const size_t MAX_TZ_LEN = 63;
 
 // Index of the network that last connected successfully, or -1.
 // Try this one FIRST: walking a 5-network list in order costs a full
