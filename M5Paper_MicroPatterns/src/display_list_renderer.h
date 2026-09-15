@@ -58,6 +58,7 @@ public:
     void setSpanWriterEnabled(bool on) { _spanWriterEnabled = on; }
     void setIntegerDdaEnabled(bool on) { _integerDdaEnabled = on; }
     unsigned long getIntDdaRows() const { return _drawing.getIntDdaRows(); }
+    unsigned long getFloatFallbackRows() const { return _drawing.getFloatFallbackRows(); }
     unsigned long getSpanRows() const { return _drawing.getSpanRows(); }
     unsigned long getTiledRows() const { return _drawing.getTiledRows(); }
     unsigned long getClippedRows() const { return _drawing.getClippedRows(); }

@@ -216,9 +216,11 @@ public:
         g_m5Session.runtime = nullptr;
         g_m5Session.runtime = new MicroPatternsRuntime(
             displayMgr.getWidth(), displayMgr.getHeight(), *programToRun);
+        g_m5Session.runtime->setFloatTransformEnabled(!(_fixedPoint && _integerXform && _spanWriter && _integerDda));
         MicroPatternsRuntime& runtime = *g_m5Session.runtime;
 #else
         MicroPatternsRuntime runtime(displayMgr.getWidth(), displayMgr.getHeight(), *programToRun);
+        runtime.setFloatTransformEnabled(!(_fixedPoint && _integerXform && _spanWriter && _integerDda));
 #endif
         runtime.setCounter(seed.counter);
         runtime.setTime(seed.hour, seed.minute, seed.second);
@@ -270,6 +272,7 @@ public:
         out.counters.tiledRows = renderer.getTiledRows();
         out.counters.clippedRows = renderer.getClippedRows();
         out.counters.intDdaRows = renderer.getIntDdaRows();
+        out.counters.floatFallbackRows = renderer.getFloatFallbackRows();
 
 #if MP_DEVICE_CONSTRAINTS
         // The gray browser output is not a device framebuffer. Allocate it from
@@ -404,9 +407,11 @@ private:
         delete g_m5Session.runtime;
         g_m5Session.runtime = nullptr;
         g_m5Session.runtime = new MicroPatternsRuntime(displayMgr.getWidth(), displayMgr.getHeight(), program);
+        g_m5Session.runtime->setFloatTransformEnabled(!(_fixedPoint && _integerXform && _spanWriter && _integerDda));
         MicroPatternsRuntime& runtime = *g_m5Session.runtime;
 #else
         MicroPatternsRuntime runtime(displayMgr.getWidth(), displayMgr.getHeight(), program);
+        runtime.setFloatTransformEnabled(!(_fixedPoint && _integerXform && _spanWriter && _integerDda));
 #endif
         runtime.setCounter(seed.counter);
         runtime.setTime(seed.hour, seed.minute, seed.second);

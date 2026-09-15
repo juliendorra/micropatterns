@@ -56,6 +56,11 @@ private:
     bool _integerTransform = true;
     bool _integerDda = true;
     unsigned long _intDdaRows = 0;   // scanlines whose Q16.16 walk was set up without floats
+    unsigned long _floatFallbackRows = 0;   // rows that had to materialise a float matrix; expect 0
+    // Scratch matrix for a fallback row on a snapshot without float matrices;
+    // valid only during the re-run of the item that materialised it.
+    float _fbIM[6] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+    bool _fbValid = false;
     unsigned int _overdrawSkippedPixels; // For stats
 
     // Pixels emitted through a fixed-point inner loop this render.
@@ -103,6 +108,7 @@ public: // Made public for DisplayListRenderer
     void transformPointQ15(const DisplayListItem& item, int32_t lx, int32_t ly,
                            int64_t& sxNum, int64_t& syNum) const;
     unsigned long getIntDdaRows() const { return _intDdaRows; }
+    unsigned long getFloatFallbackRows() const { return _floatFallbackRows; }
 
     // The Q16.16 walk's start and step from the exact integer transform,
     // with NO float and NO division per pixel.

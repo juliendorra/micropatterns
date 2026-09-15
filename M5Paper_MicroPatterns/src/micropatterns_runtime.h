@@ -18,6 +18,11 @@
 // the picture does. See mp_program.h for what replaced the tree walk.
 class MicroPatternsRuntime {
 public:
+    // Build the float matrices alongside the exact integer transform state.
+    // Off by default: the integer renderer never reads them. The float render
+    // path and the historical partial paths turn it on, which is what keeps
+    // golden-float/ byte-identical.
+    void setFloatTransformEnabled(bool on) { _buildFloat = on; }
     // The program must outlive the runtime AND the display list it produces:
     // DRAW / FILL items point at assets owned by the program.
     MicroPatternsRuntime(int canvasWidth, int canvasHeight, const MpProgram& program);
@@ -53,6 +58,7 @@ private:
     // not a vector, because items hold raw pointers into it and deque never
     // moves existing elements when it grows.
     std::deque<TransformSnapshot> _xfPool;
+    bool _buildFloat = false;
     bool _xfDirty = true;
 
     MicroPatternsState _currentState;

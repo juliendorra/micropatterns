@@ -217,6 +217,7 @@ void MicroPatternsDrawing::resetPixelOccupationMap() {
     _integerXformCalls = 0;
     _spanRows = 0;
     _intDdaRows = 0;
+    _floatFallbackRows = 0;
     _tiledRows = 0;
     _clippedRows = 0;
 }
@@ -236,6 +237,22 @@ void MicroPatternsDrawing::transformPoint(float logical_x, float logical_y, cons
     float scaled_lx = logical_x * item.xf->scale;
     float scaled_ly = logical_y * item.xf->scale;
     matrix_apply_to_point(item.xf->matrix, scaled_lx, scaled_ly, screen_x, screen_y);
+}
+
+
+// A float inverse matrix from the exact integer transform, for the rare row the
+// integer setup declines (Q16.16 overflow, i.e. pattern coordinates beyond
+// +/-2^14 units). Only reached when the runtime did not build the float
+// matrices, which is the default. Counted, and expected to read 0 on every
+// corpus: it exists so an extreme script still paints rather than being
+// silently skipped, not as a path anything normal takes.
+static const float kZeroIM[6] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+// Out of line on purpose: five inlined copies of a sin/cos/divide in the five
+// rasterisers blew their inlining budgets and cost PIXEL 2.75x with no change
+// in the work done (2026-09-05).
+static void __attribute__((noinline)) floatFallbackMatrix(const TransformSnapshot& xf, float im[6]) {
+    float M[6];
+    matrix_set_rigid(M, im, xf.angleDeg, (float)xf.txNum * (1.0f / 32768.0f), (float)xf.tyNum * (1.0f / 32768.0f));
 }
 
 // Exact integer forward transform: a logical point to screen space, returned as
@@ -464,7 +481,19 @@ void MP_HOT MicroPatternsDrawing::drawPixel(const DisplayListItem& item) {
 
 
     // Hoisted: these four products were recomputed on every pixel of the AABB.
-    const float* IM = item.xf->inverseMatrix;
+    // Hoisted only when the snapshot carries a float matrix (a float-reading
+    // path asked the runtime for one). The integer renderer never reads these;
+    // hoisting them anyway was ~10 float ops per item, executed and discarded.
+    // A row that needs them when hasFloat is false materialises a matrix from
+    // the integer state into _fbIM (floatFallbackMatrix, counted), then re-runs
+    // the whole item with _fbValid set so it reads that matrix from the start.
+    // The re-run is idempotent: the same pixels in the same colours, and with
+    // the occupancy map the rows already painted are skipped. This keeps the six
+    // coefficients per-item consts exactly as before, which matters: any other
+    // shape (mutable locals, per-row loads) changed the compiler's decisions
+    // in these functions and cost up to 2.75x on the ESP32 (2026-09-05).
+    const bool hasF = item.xf->hasFloat;
+    const float* const IM = hasF ? item.xf->inverseMatrix : (_fbValid ? _fbIM : kZeroIM);
     const float im0 = IM[0], im1 = IM[1], im2 = IM[2], im3 = IM[3], im4 = IM[4], im5 = IM[5];
     const float sf = item.xf->scale;
     const float px0 = static_cast<float>(lx) * sf;
@@ -525,6 +554,7 @@ void MP_HOT MicroPatternsDrawing::drawPixel(const DisplayListItem& item) {
             continue;
         }
         pixel_float_row:
+        if (!hasF && !_fbValid) { ++_floatFallbackRows; floatFallbackMatrix(*item.xf, _fbIM); _fbValid = true; _overdrawSkippedPixels += skipped; drawPixel(item); _fbValid = false; return; }
         const float fy = static_cast<float>(sy_iter) + 0.5f;
         const float m2y = im2 * fy, m3y = im3 * fy;
         for (int sx_iter = min_sx; sx_iter < max_sx; ++sx_iter) {
@@ -568,7 +598,19 @@ void MP_HOT MicroPatternsDrawing::drawFilledPixel(const DisplayListItem& item) {
 
 
     // Hoisted: these four products were recomputed on every pixel of the AABB.
-    const float* IM = item.xf->inverseMatrix;
+    // Hoisted only when the snapshot carries a float matrix (a float-reading
+    // path asked the runtime for one). The integer renderer never reads these;
+    // hoisting them anyway was ~10 float ops per item, executed and discarded.
+    // A row that needs them when hasFloat is false materialises a matrix from
+    // the integer state into _fbIM (floatFallbackMatrix, counted), then re-runs
+    // the whole item with _fbValid set so it reads that matrix from the start.
+    // The re-run is idempotent: the same pixels in the same colours, and with
+    // the occupancy map the rows already painted are skipped. This keeps the six
+    // coefficients per-item consts exactly as before, which matters: any other
+    // shape (mutable locals, per-row loads) changed the compiler's decisions
+    // in these functions and cost up to 2.75x on the ESP32 (2026-09-05).
+    const bool hasF = item.xf->hasFloat;
+    const float* const IM = hasF ? item.xf->inverseMatrix : (_fbValid ? _fbIM : kZeroIM);
     const float im0 = IM[0], im1 = IM[1], im2 = IM[2], im3 = IM[3], im4 = IM[4], im5 = IM[5];
     const float sf = item.xf->scale;
     const float px0 = static_cast<float>(lx) * sf;
@@ -644,6 +686,7 @@ void MP_HOT MicroPatternsDrawing::drawFilledPixel(const DisplayListItem& item) {
             continue;
         }
         pixel_float_row:
+        if (!hasF && !_fbValid) { ++_floatFallbackRows; floatFallbackMatrix(*item.xf, _fbIM); _fbValid = true; _overdrawSkippedPixels += skipped; drawFilledPixel(item); _fbValid = false; return; }
         const float fy = static_cast<float>(sy_iter) + 0.5f;
         const float m2y = im2 * fy, m3y = im3 * fy;
         for (int sx_iter = min_sx; sx_iter < max_sx; ++sx_iter) {
@@ -761,7 +804,19 @@ void MP_HOT MicroPatternsDrawing::fillRect(const DisplayListItem& item) {
     // Loop invariants, hoisted. These four products used to be recomputed on
     // every single pixel; the compiler could not hoist them itself because the
     // canvas write in the loop body may alias `item`.
-    const float* IM = item.xf->inverseMatrix;
+    // Hoisted only when the snapshot carries a float matrix (a float-reading
+    // path asked the runtime for one). The integer renderer never reads these;
+    // hoisting them anyway was ~10 float ops per item, executed and discarded.
+    // A row that needs them when hasFloat is false materialises a matrix from
+    // the integer state into _fbIM (floatFallbackMatrix, counted), then re-runs
+    // the whole item with _fbValid set so it reads that matrix from the start.
+    // The re-run is idempotent: the same pixels in the same colours, and with
+    // the occupancy map the rows already painted are skipped. This keeps the six
+    // coefficients per-item consts exactly as before, which matters: any other
+    // shape (mutable locals, per-row loads) changed the compiler's decisions
+    // in these functions and cost up to 2.75x on the ESP32 (2026-09-05).
+    const bool hasF = item.xf->hasFloat;
+    const float* const IM = hasF ? item.xf->inverseMatrix : (_fbValid ? _fbIM : kZeroIM);
     const float im0 = IM[0], im1 = IM[1], im2 = IM[2], im3 = IM[3], im4 = IM[4], im5 = IM[5];
     const float sf = item.xf->scale;
     const float rect_x0 = static_cast<float>(lx) * sf;
@@ -850,13 +905,14 @@ void MP_HOT MicroPatternsDrawing::fillRect(const DisplayListItem& item) {
         // constant across the scanline, so its transform / unscale / floor /
         // modulo happen once per row instead of once per pixel.
         const uint8_t* patRow = nullptr;
-        if (im1 == 0.0f && patW > 0) {
+        if ((hasF ? (im1 == 0.0f) : (item.xf->sinQ15 == 0)) && patW > 0) {
             int py;
             if (idda.ok) {
                 // Row index from the integer setup: y0 is the scaled logical y
                 // in Q16 -- constant along an unrotated row.
                 py = (int)(idda.y0 >> MP_FX_SHIFT) % patH;
             } else {
+                if (!hasF && !_fbValid) { ++_floatFallbackRows; floatFallbackMatrix(*item.xf, _fbIM); _fbValid = true; _overdrawSkippedPixels += skipped; fillRect(item); _fbValid = false; return; }
                 float v = im1 * (static_cast<float>(x0) + 0.5f) + m3y + im5;
                 if (sf != 0.0f) v = useRcp ? v * rcp : v / sf;
                 py = ifloor_i(v) % patH;
@@ -870,6 +926,7 @@ void MP_HOT MicroPatternsDrawing::fillRect(const DisplayListItem& item) {
         // The float setup -- including a float DIVISION when SCALE is not a
         // power of two -- is computed only when the integer setup did not
         // take the row. It used to run every row and be thrown away.
+        if (!idda.ok && !hasF && !_fbValid) { ++_floatFallbackRows; floatFallbackMatrix(*item.xf, _fbIM); _fbValid = true; _overdrawSkippedPixels += skipped; fillRect(item); _fbValid = false; return; }
         const float invSf = idda.ok ? 1.0f : ((sf != 0.0f) ? (useRcp ? rcp : 1.0f / sf) : 1.0f);
         const float bx0 = idda.ok ? 0.0f : (im0 * (static_cast<float>(x0) + 0.5f) + m2y + im4) * invSf;
         const float dbx = idda.ok ? 0.0f : im0 * invSf;
@@ -1146,7 +1203,19 @@ void MP_HOT MicroPatternsDrawing::fillCircle(const DisplayListItem& item) {
     if (min_sx >= max_sx || min_sy >= max_sy) return;
 
     const float logical_radius_sq = logical_radius * logical_radius;
-    const float* IM = item.xf->inverseMatrix;
+    // Hoisted only when the snapshot carries a float matrix (a float-reading
+    // path asked the runtime for one). The integer renderer never reads these;
+    // hoisting them anyway was ~10 float ops per item, executed and discarded.
+    // A row that needs them when hasFloat is false materialises a matrix from
+    // the integer state into _fbIM (floatFallbackMatrix, counted), then re-runs
+    // the whole item with _fbValid set so it reads that matrix from the start.
+    // The re-run is idempotent: the same pixels in the same colours, and with
+    // the occupancy map the rows already painted are skipped. This keeps the six
+    // coefficients per-item consts exactly as before, which matters: any other
+    // shape (mutable locals, per-row loads) changed the compiler's decisions
+    // in these functions and cost up to 2.75x on the ESP32 (2026-09-05).
+    const bool hasF = item.xf->hasFloat;
+    const float* const IM = hasF ? item.xf->inverseMatrix : (_fbValid ? _fbIM : kZeroIM);
     const float im0 = IM[0], im1 = IM[1], im2 = IM[2], im3 = IM[3], im4 = IM[4], im5 = IM[5];
     const float sf = item.xf->scale;
     const float flcx = static_cast<float>(lcx);
@@ -1274,6 +1343,7 @@ void MP_HOT MicroPatternsDrawing::fillCircle(const DisplayListItem& item) {
                 const int cspan = fx1 - fx0;
                 IntDda cidda; cidda.ok = false;
                 if (_integerDda) cidda = intDdaRow(*item.xf, fx0, sy_iter, 0, 0);
+                if (!cidda.ok && !hasF && !_fbValid) { ++_floatFallbackRows; floatFallbackMatrix(*item.xf, _fbIM); _fbValid = true; _overdrawSkippedPixels += skipped; fillCircle(item); _fbValid = false; return; }
                 const float invSf = cidda.ok ? 1.0f : ((sf != 0.0f) ? (useRcp ? rcp : 1.0f / sf) : 1.0f);
                 const float cbx0 = cidda.ok ? 0.0f : (im0 * (static_cast<float>(fx0) + 0.5f) + m2y + im4) * invSf;
                 const float cby0 = cidda.ok ? 0.0f : (im1 * (static_cast<float>(fx0) + 0.5f) + m3y + im5) * invSf;
@@ -1408,7 +1478,19 @@ void MP_HOT MicroPatternsDrawing::drawAsset(const DisplayListItem& item, const M
 
     if (min_sx >= max_sx || min_sy >= max_sy) return;
 
-    const float* IM = item.xf->inverseMatrix;
+    // Hoisted only when the snapshot carries a float matrix (a float-reading
+    // path asked the runtime for one). The integer renderer never reads these;
+    // hoisting them anyway was ~10 float ops per item, executed and discarded.
+    // A row that needs them when hasFloat is false materialises a matrix from
+    // the integer state into _fbIM (floatFallbackMatrix, counted), then re-runs
+    // the whole item with _fbValid set so it reads that matrix from the start.
+    // The re-run is idempotent: the same pixels in the same colours, and with
+    // the occupancy map the rows already painted are skipped. This keeps the six
+    // coefficients per-item consts exactly as before, which matters: any other
+    // shape (mutable locals, per-row loads) changed the compiler's decisions
+    // in these functions and cost up to 2.75x on the ESP32 (2026-09-05).
+    const bool hasF = item.xf->hasFloat;
+    const float* const IM = hasF ? item.xf->inverseMatrix : (_fbValid ? _fbIM : kZeroIM);
     const float im0 = IM[0], im1 = IM[1], im2 = IM[2], im3 = IM[3], im4 = IM[4], im5 = IM[5];
     const float sf = item.xf->scale;
     const float forigin_x = static_cast<float>(lx_asset_origin);
@@ -1474,21 +1556,35 @@ void MP_HOT MicroPatternsDrawing::drawAsset(const DisplayListItem& item, const M
         // so the y half of the work -- transform, unscale, floor, row offset --
         // is hoisted out of the pixel loop. im1 * fx is exactly +0 for every
         // finite fx, so this is the identical value the general path computes.
+        IntDda aidda; aidda.ok = false;
+        if (_integerDda) aidda = intDdaRow(*item.xf, x0, sy_iter, lx_asset_origin, ly_asset_origin);
+
         const uint8_t* assetRow = nullptr;
-        if (im1 == 0.0f) {
-            float v = im1 * (static_cast<float>(x0) + 0.5f) + m3y + im5;
-            if (sf != 0.0f) v = useRcp ? v * rcp : v / sf;
-            const float aly_v = v - forigin_y;
-            if (!(aly_v >= 0 && aly_v < fasset_h)) continue;   // whole scanline misses the asset
-            const int iy = ifloor_i(aly_v);
+        if ((hasF ? (im1 == 0.0f) : (item.xf->sinQ15 == 0))) {
+            int iy;
+            if (aidda.ok) {
+                // Asset row from the integer setup: y0 is the base y with the
+                // origin already subtracted, in Q16 -- constant along an
+                // unrotated row. This used to come from the float matrix, which
+                // made DRAW the one primitive still reading it on the default path.
+                const int32_t ay = aidda.y0 >> MP_FX_SHIFT;
+                if (ay < 0 || ay >= asset.height) continue;   // whole scanline misses the asset
+                iy = ay;
+            } else {
+                if (!hasF && !_fbValid) { ++_floatFallbackRows; floatFallbackMatrix(*item.xf, _fbIM); _fbValid = true; _overdrawSkippedPixels += skipped; drawAsset(item, asset); _fbValid = false; return; }
+                float v = im1 * (static_cast<float>(x0) + 0.5f) + m3y + im5;
+                if (sf != 0.0f) v = useRcp ? v * rcp : v / sf;
+                const float aly_v = v - forigin_y;
+                if (!(aly_v >= 0 && aly_v < fasset_h)) continue;   // whole scanline misses the asset
+                iy = ifloor_i(aly_v);
+            }
             if (iy >= 0 && (long)iy * aw + aw <= (long)adata_size) assetRow = adata + (size_t)iy * aw;
         }
 
         // Same Q16.16 recurrence as fillRect. Asset-local coordinates, so the
         // origin is folded into the start value and never subtracted per pixel.
         const int   span = x1 - x0;
-        IntDda aidda; aidda.ok = false;
-        if (_integerDda) aidda = intDdaRow(*item.xf, x0, sy_iter, lx_asset_origin, ly_asset_origin);
+        if (!aidda.ok && !hasF && !_fbValid) { ++_floatFallbackRows; floatFallbackMatrix(*item.xf, _fbIM); _fbValid = true; _overdrawSkippedPixels += skipped; drawAsset(item, asset); _fbValid = false; return; }
         const float invSf = aidda.ok ? 1.0f : ((sf != 0.0f) ? (useRcp ? rcp : 1.0f / sf) : 1.0f);
         const float ax0 = aidda.ok ? 0.0f : (im0 * (static_cast<float>(x0) + 0.5f) + m2y + im4) * invSf - forigin_x;
         const float dax = aidda.ok ? 0.0f : im0 * invSf;

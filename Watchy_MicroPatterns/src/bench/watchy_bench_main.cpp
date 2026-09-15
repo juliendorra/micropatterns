@@ -126,6 +126,7 @@ static void profileOne(const MPBenchScript& s, int pathMode)
     MicroPatternsParser parser;
     if (!parser.parse(String(s.src))) return;
     MicroPatternsRuntime runtime(W, H, parser.getProgram());
+    runtime.setFloatTransformEnabled(pathMode != MPB_INT);   // every mode but the integer one reads the float matrices
     runtime.setCounter(kCounter);
     runtime.setTime(kHour, kMinute, kSecond);
     runtime.generateDisplayList();
@@ -199,6 +200,7 @@ static void benchOne(const MPBenchScript& s, int pathMode)
 
         t0 = esp_timer_get_time();
         MicroPatternsRuntime runtime(W, H, parser.getProgram());
+    runtime.setFloatTransformEnabled(pathMode != MPB_INT);   // every mode but the integer one reads the float matrices
         runtime.setCounter(kCounter);
         runtime.setTime(kHour, kMinute, kSecond);
         runtime.generateDisplayList();

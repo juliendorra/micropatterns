@@ -134,6 +134,12 @@ struct TransformSnapshot {
     // place they belong.
     int32_t cosQ15 = MP_Q15_ONE;
     int32_t sinQ15 = 0;
+    // True when matrix/inverseMatrix/tx/ty were actually built. The integer
+    // renderer never reads them, so by default the runtime does not build them
+    // (~100 float ops and a float division per render, discarded); only a
+    // float-reading path asks for them. A fallback that needs a matrix when
+    // this is false materialises one from the integer state.
+    bool hasFloat = false;
 
     TransformSnapshot() {
         // Zero the whole object INCLUDING PADDING before setting any field.

@@ -588,7 +588,7 @@ int main(int argc, char** argv) {
         printf("PATH EQUIVALENCE: %s vs %s\n", A->name(), B->name());
         printf("(This is the \"All path gives same result\" gate, in C++.)\n\n");
         int pass = 0, fail = 0;
-        unsigned long fxA = 0, fxB = 0, ixA = 0, ixB = 0, spA = 0, spB = 0, tlA = 0, tlB = 0, clA = 0, clB = 0, ddA = 0, ddB = 0;
+        unsigned long fxA = 0, fxB = 0, ixA = 0, ixB = 0, spA = 0, spB = 0, tlA = 0, tlB = 0, clA = 0, clB = 0, ddA = 0, ddB = 0, ffA = 0, ffB = 0;
         for (const std::string& sp : listCorpus(o.corpus)) {
             std::string script;
             if (!readTextFile(sp, script)) continue;
@@ -610,6 +610,8 @@ int main(int argc, char** argv) {
                 clB += rb.counters.clippedRows;
                 ddA += ra.counters.intDdaRows;
                 ddB += rb.counters.intDdaRows;
+                ffA += ra.counters.floatFallbackRows;
+                ffB += rb.counters.floatFallbackRows;
                 int fx, fy;
                 int nd = diffImages(ra.image, rb.image, nullptr, fx, fy);
                 if (nd == 0) { printf("  SAME  %-34s\n", caseName.c_str()); pass++; }
@@ -639,6 +641,7 @@ int main(int argc, char** argv) {
         printf("tiled rows:         %s=%lu  %s=%lu\n", A->name(), tlA, B->name(), tlB);
         printf("clipped DRAW rows:  %s=%lu  %s=%lu\n", A->name(), clA, B->name(), clB);
         printf("integer DDA rows:   %s=%lu  %s=%lu\n", A->name(), ddA, B->name(), ddB);
+        printf("float-fallback rows:%s=%lu  %s=%lu   (rows that materialised a float matrix; expect 0)\n", A->name(), ffA, B->name(), ffB);
         {
             auto isSpan = [&](const char* n) { return !isFloatN(n) && (!isPartial(n) || std::string(n).find("-span") != std::string::npos); };
             struct SC { const char* nm; unsigned long sp; };

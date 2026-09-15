@@ -86,6 +86,7 @@ const TransformSnapshot* MicroPatternsRuntime::currentTransform() {
         snap.sinQ15 = mp_sin_q15(_currentState.angleDeg);
         snap.txNum = _currentState.txNum;
         snap.tyNum = _currentState.tyNum;
+        snap.hasFloat = _buildFloat;
         // A loop body that does RESET_TRANSFORMS / SCALE / TRANSLATE with the
         // same arguments every iteration marks the state dirty every iteration
         // but recomputes the same numbers, so compare against the last snapshot
@@ -307,14 +308,16 @@ void MicroPatternsRuntime::generateDisplayList() {
                 // bad one.
                 const int32_t idx = resolve(in.op[0], in.line);
                 const int32_t idy = resolve(in.op[1], in.line);
-                const float dx = (float)idx;
-                const float dy = (float)idy;
-                // M' = M * T(d), so the offset moves by the CURRENT rotation
-                // applied to d. The angle is untouched.
-                const float s = mp_sin_deg(_currentState.angleDeg);
-                const float c = mp_sin_deg(_currentState.angleDeg + 90);
-                _currentState.tx += c * dx - s * dy;
-                _currentState.ty += s * dx + c * dy;
+                if (_buildFloat) {
+                    const float dx = (float)idx;
+                    const float dy = (float)idy;
+                    // M' = M * T(d), so the offset moves by the CURRENT rotation
+                    // applied to d. The angle is untouched.
+                    const float s = mp_sin_deg(_currentState.angleDeg);
+                    const float c = mp_sin_deg(_currentState.angleDeg + 90);
+                    _currentState.tx += c * dx - s * dy;
+                    _currentState.ty += s * dx + c * dy;
+                }
                 // The same step, kept exactly. Both operands are integers and
                 // both table entries are whole numbers over MP_Q15_ONE, so each
                 // product is a whole number over MP_Q15_ONE and the running
@@ -325,8 +328,8 @@ void MicroPatternsRuntime::generateDisplayList() {
                     _currentState.txNum += C * idx - S * idy;
                     _currentState.tyNum += S * idx + C * idy;
                 }
-                matrix_set_rigid(_currentState.matrix, _currentState.inverseMatrix,
-                                 _currentState.angleDeg, _currentState.tx, _currentState.ty);
+                if (_buildFloat) matrix_set_rigid(_currentState.matrix, _currentState.inverseMatrix,
+                                                  _currentState.angleDeg, _currentState.tx, _currentState.ty);
                 _xfDirty = true;
                 ++pc;
                 continue;
@@ -339,8 +342,8 @@ void MicroPatternsRuntime::generateDisplayList() {
                 int32_t a = (_currentState.angleDeg + d) % 360;
                 if (a < 0) a += 360;
                 _currentState.angleDeg = a;
-                matrix_set_rigid(_currentState.matrix, _currentState.inverseMatrix,
-                                 _currentState.angleDeg, _currentState.tx, _currentState.ty);
+                if (_buildFloat) matrix_set_rigid(_currentState.matrix, _currentState.inverseMatrix,
+                                                  _currentState.angleDeg, _currentState.tx, _currentState.ty);
                 _xfDirty = true;
                 ++pc;
                 continue;
